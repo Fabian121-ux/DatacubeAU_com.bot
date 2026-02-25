@@ -1,0 +1,36 @@
+# Environment
+.env
+.env.local
+
+# Dependencies
+node_modules/
+admin/node_modules/
+
+# WhatsApp session (contains auth credentials)
+session/
+*.session
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+logs/
+*.log
+
+# Next.js build
+admin/.next/
+admin/out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# PM2
+.pm2/

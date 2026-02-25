@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --app-bg: #030c16;
+  --app-text: #e9f1f8;
+  --brand-1: #20c5a5;
+  --brand-2: #f5b068;
+  --line-soft: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--app-text);
+  font-family: var(--font-title), 'Space Grotesk', 'Avenir Next', sans-serif;
+  background:
+    radial-gradient(circle at 12% -5%, rgba(32, 197, 165, 0.2), transparent 36%),
+    radial-gradient(circle at 88% 0%, rgba(245, 176, 104, 0.15), transparent 34%),
+    linear-gradient(180deg, #030c16 0%, #071425 100%);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono), 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-[rgba(255,255,255,0.1)] bg-[rgba(6,16,28,0.72)] shadow-[0_18px_55px_rgba(0,0,0,0.28)];
+  }
+
+  .panel-soft {
+    @apply rounded-xl border border-[rgba(255,255,255,0.08)] bg-[rgba(8,20,34,0.75)];
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium tracking-wide;
+  }
+
+  .section-title {
+    @apply text-xl font-semibold text-white md:text-2xl;
+  }
+
+  .animate-slide-up {
+    animation: slide-up 420ms ease forwards;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

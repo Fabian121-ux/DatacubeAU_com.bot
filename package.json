@@ -1,0 +1,39 @@
+{
+  "name": "datacubeau-bot",
+  "version": "1.0.0",
+  "description": "Datacube AU WhatsApp AI Assistant Bot",
+  "main": "bot/index.js",
+  "scripts": {
+    "start": "node api/server.js",
+    "dev": "node --watch api/server.js",
+    "bot:start": "node bot/index.js",
+    "setup": "node scripts/setup.js",
+    "seed": "node scripts/seed-context.js",
+    "health": "node scripts/health-check.js",
+    "api": "node api/server.js",
+    "prod:start": "pm2 start ecosystem.config.js",
+    "prod:reload": "pm2 reload ecosystem.config.js --update-env",
+    "prod:restart": "pm2 restart ecosystem.config.js --update-env",
+    "prod:stop": "pm2 stop ecosystem.config.js",
+    "prod:logs": "pm2 logs"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "sql.js": "^1.11.0",
+    "express": "^4.18.3",
+    "axios": "^1.6.8",
+    "winston": "^3.12.0",
+    "dotenv": "^16.4.5",
+    "qrcode": "^1.5.3",
+    "cors": "^2.8.5",
+    "pino": "^8.19.0",
+    "pino-pretty": "^11.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
