@@ -34,3 +34,19 @@ Thumbs.db
 
 # PM2
 .pm2/
+
+# Frontend-only mode (ignore backend code at repo root)
+ai/
+api/
+bot/
+context/
+db/
+docs/
+handlers/
+plans/
+router/
+scripts/
+utils/
+ecosystem.config.js
+package.json
+package-lock.json
