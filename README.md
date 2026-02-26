@@ -66,6 +66,39 @@ npm run dev
 
 Open `http://localhost:3000/login`.
 
+## Vercel Deploy (Frontend)
+
+This repository is a monorepo-style layout:
+
+- Frontend: `admin/` (Next.js 14 app router)
+- Backend: root-level Node/Express code (deploy separately to VPS)
+
+To avoid Vercel `404: NOT_FOUND`, the Vercel project must build from `admin/`.
+
+Required Vercel Project Settings:
+
+- Framework Preset: `Next.js`
+- Root Directory: `admin`
+- Install Command: `npm ci`
+- Build Command: `npm run build`
+- Output Directory: leave empty/default
+- Node.js version: 18+ (20 recommended)
+
+Required Vercel Environment Variables:
+
+- `ADMIN_API_BASE_URL` = your backend public URL (example: `https://api.example.com` or `http://69.164.244.66:3001`)
+- `ADMIN_API_TOKEN` = same value as backend `ADMIN_TOKEN`
+- `ADMIN_LOGIN_USERNAME`
+- `ADMIN_LOGIN_PASSWORD`
+- `ADMIN_SESSION_SECRET`
+- `NEXTAUTH_SECRET` (same as `ADMIN_SESSION_SECRET`)
+- `NEXTAUTH_URL` = your Vercel frontend URL
+
+Why this fixes 404:
+
+- Next.js routes (`/`, `/login`, `/admin`, deep links) are served only when Vercel runs from the `admin` app root.
+- Deploying from repository root can produce platform-level 404s because root is not the Next app package.
+
 ## API endpoints
 
 All protected routes require `Authorization: Bearer <ADMIN_TOKEN>`.
