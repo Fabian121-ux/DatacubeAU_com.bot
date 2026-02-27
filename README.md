@@ -84,6 +84,18 @@ Required Vercel Project Settings:
 - Output Directory: leave empty/default
 - Node.js version: 18+ (20 recommended)
 
+Short Redeploy Checklist:
+
+1. In Vercel Project Settings, set `Root Directory` to `admin`.
+2. Confirm `Framework Preset` is `Next.js`.
+3. Save settings, then trigger a new deployment from branch `main`.
+4. Use **Redeploy** with **Use existing Build Cache = OFF** once.
+5. Open the latest deployment URL directly and verify:
+   - `/`
+   - `/login`
+   - `/admin`
+6. Assign/refresh the production domain to that latest successful deployment.
+
 Required Vercel Environment Variables:
 
 - `ADMIN_API_BASE_URL` = your backend public URL (example: `https://api.example.com` or `http://69.164.244.66:3001`)
