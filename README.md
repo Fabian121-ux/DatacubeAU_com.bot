@@ -75,6 +75,11 @@ This repository is a monorepo-style layout:
 
 To avoid Vercel `404: NOT_FOUND`, the Vercel project must build from `admin/`.
 
+Repository fallback guard:
+
+- Root `vercel.json` is included to force building from `admin/package.json` if project root is mistakenly set to repository root.
+- `admin/vercel.json` declares Next.js framework when `Root Directory=admin` is used.
+
 Required Vercel Project Settings:
 
 - Framework Preset: `Next.js`
