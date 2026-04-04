@@ -1,0 +1,30 @@
+# Environment files
+.env
+.env.production
+.env.production.example
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deploy
+deploy/backups/
+deploy/ssl/
+deploy/logs/
