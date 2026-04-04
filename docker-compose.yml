@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datacube
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      WAHA_SERVICE_URL: ${WAHA_SERVICE_URL:-http://waha:3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datacube
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  waha:
+    image: ${WAHA_IMAGE:?Set WAHA_IMAGE in .env.production}
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      WHATSAPP_API_KEY: ${WAHA_API_KEY}
+      WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://api:8080/webhooks/waha}
+      WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message}
+    depends_on:
+      api:
+        condition: service_healthy
+    expose:
+      - "3000"
+    ports:
+      - "${WAHA_HTTP_PORT:-3000}:3000"
+    volumes:
+      - waha_data:${WAHA_CONTAINER_DATA_PATH:-/app/.sessions}
+      - waha_media:${WHATSAPP_FILES_FOLDER:-/app/.media}
+    networks:
+      - datacube
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["ops"]
+    command: ["/bin/sh", "/srv/app/deploy/scripts/run-migrations.sh"]
+    networks:
+      - datacube
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${PUBLIC_HTTP_PORT:-80}:80"
+      - "${PUBLIC_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/ssl:/etc/nginx/ssl:ro
+    networks:
+      - datacube
+
+volumes:
+  postgres_data:
+  waha_data:
+  waha_media:
+    driver: local
+
+networks:
+  datacube:
+    driver: bridge

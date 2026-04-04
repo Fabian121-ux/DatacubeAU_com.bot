@@ -1,0 +1,32 @@
+[Unit]
+Description=Datacube Docker Compose Application
+Documentation=https://github.com/datacube-ai/bot
+Requires=docker.service
+After=network.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/datacube
+ExecStartPre=/usr/bin/docker compose pull -q
+ExecStart=/usr/local/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/local/bin/docker compose down
+TimeoutStartSec=300
+TimeoutStopSec=300
+User=deploy
+Group=deploy
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+# Allow write to necessary directories
+ReadWritePaths=/srv/datacube/deploy/backups
+ReadWritePaths=/srv/datacube/deploy/logs
+ReadWritePaths=/srv/datacube/deploy/ssl
+
+[Install]
+WantedBy=multi-user.target
