@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Datacube AU — Admin Panel</title>
+<meta name="description" content="Datacube AU WhatsApp Bot Admin Control Panel">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0e14;--surface:#131720;--surface2:#1a1f2e;--surface3:#222839;
+  --border:#2a3040;--border-light:#3a4560;
+  --text:#e2e8f0;--text-muted:#8892a8;--text-dim:#5a6478;
+  --accent:#6c5ce7;--accent-light:#a29bfe;--accent-dim:#4834d4;
+  --green:#00cec9;--red:#ff6b6b;--orange:#fdcb6e;--blue:#74b9ff;
+  --radius:10px;--radius-sm:6px;
+}
+html{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:14px;color:var(--text);background:var(--bg)}
+body{min-height:100vh;display:flex;flex-direction:column}
+a{color:var(--accent-light);text-decoration:none}
+button{font-family:inherit;cursor:pointer;border:none;border-radius:var(--radius-sm);font-size:.85rem;padding:.5rem 1rem;transition:all .2s}
+input,textarea,select{font-family:inherit;font-size:.85rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.5rem .7rem;outline:none;transition:border .2s}
+input:focus,textarea:focus,select:focus{border-color:var(--accent)}
+textarea{resize:vertical;min-height:60px}
+
+/* Layout */
+.app{display:flex;min-height:100vh}
+.sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);padding:1.2rem 0;display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:10;overflow-y:auto}
+.sidebar .logo{padding:0 1.2rem .8rem;font-weight:700;font-size:1.05rem;color:var(--accent-light);border-bottom:1px solid var(--border);margin-bottom:.6rem;display:flex;align-items:center;gap:.5rem}
+.sidebar .logo span{font-size:1.3rem}
+.sidebar nav{flex:1;display:flex;flex-direction:column;gap:2px;padding:0 .6rem}
+.sidebar nav button{text-align:left;background:transparent;color:var(--text-muted);padding:.55rem .8rem;border-radius:var(--radius-sm);font-weight:500;width:100%;display:flex;align-items:center;gap:.6rem;font-size:.82rem}
+.sidebar nav button:hover{background:var(--surface2);color:var(--text)}
+.sidebar nav button.active{background:var(--accent-dim);color:#fff}
+.sidebar nav button .icon{font-size:1.05rem;width:20px;text-align:center}
+.sidebar .auth{padding:.8rem 1rem;border-top:1px solid var(--border);margin-top:auto}
+.sidebar .auth input{width:100%;font-size:.75rem}
+.sidebar .auth label{font-size:.7rem;color:var(--text-dim);margin-bottom:.3rem;display:block}
+
+.main{margin-left:220px;flex:1;padding:1.5rem 2rem;max-width:1100px}
+.main h2{font-size:1.3rem;margin-bottom:1rem;font-weight:600;display:flex;align-items:center;gap:.5rem}
+
+/* Cards */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem;margin-bottom:1rem;backdrop-filter:blur(10px)}
+.card h3{font-size:.9rem;font-weight:600;margin-bottom:.6rem;color:var(--text-muted)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.8rem;margin-bottom:1.2rem}
+.stat{background:linear-gradient(135deg,var(--surface2),var(--surface3));border:1px solid var(--border);border-radius:var(--radius);padding:1rem;text-align:center}
+.stat .val{font-size:1.6rem;font-weight:700;color:var(--accent-light)}
+.stat .lbl{font-size:.72rem;color:var(--text-muted);margin-top:.2rem;text-transform:uppercase;letter-spacing:.5px}
+
+/* Table */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th{text-align:left;padding:.55rem .6rem;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.72rem;text-transform:uppercase;letter-spacing:.5px}
+td{padding:.5rem .6rem;border-bottom:1px solid var(--border);color:var(--text);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:hover td{background:var(--surface2)}
+
+/* Buttons */
+.btn{padding:.45rem .9rem;border-radius:var(--radius-sm);font-weight:500;font-size:.8rem}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--accent-dim)}
+.btn-danger{background:var(--red);color:#fff;opacity:.85}.btn-danger:hover{opacity:1}
+.btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border)}.btn-ghost:hover{border-color:var(--accent);color:var(--text)}
+.btn-sm{padding:.3rem .6rem;font-size:.72rem}
+.btn-group{display:flex;gap:.4rem;flex-wrap:wrap}
+
+/* Forms */
+.form-row{display:flex;gap:.7rem;margin-bottom:.7rem;align-items:flex-end;flex-wrap:wrap}
+.form-row>div{display:flex;flex-direction:column;gap:.25rem}
+.form-row label{font-size:.72rem;color:var(--text-muted);font-weight:500}
+.form-row input,.form-row select,.form-row textarea{min-width:140px}
+.form-wide textarea{width:100%;min-height:100px}
+
+/* Badges */
+.badge{display:inline-block;padding:.15rem .45rem;border-radius:3px;font-size:.68rem;font-weight:600}
+.badge-green{background:rgba(0,206,201,.15);color:var(--green)}
+.badge-red{background:rgba(255,107,107,.15);color:var(--red)}
+.badge-orange{background:rgba(253,203,110,.15);color:var(--orange)}
+.badge-blue{background:rgba(116,185,255,.15);color:var(--blue)}
+.badge-purple{background:rgba(108,92,231,.15);color:var(--accent-light)}
+.badge-gray{background:rgba(136,146,168,.15);color:var(--text-muted)}
+
+/* Toast */
+.toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surface2);border:1px solid var(--border);padding:.7rem 1.2rem;border-radius:var(--radius);font-size:.82rem;z-index:100;opacity:0;transform:translateY(10px);transition:all .3s;pointer-events:none}
+.toast.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.toast.error{border-color:var(--red)}
+
+/* Tab panels */
+.panel{display:none}.panel.active{display:block}
+
+/* Responsive */
+@media(max-width:768px){
+  .sidebar{width:56px;overflow:hidden}.sidebar .logo span,.sidebar nav button span:not(.icon),.sidebar .auth{display:none}
+  .main{margin-left:56px;padding:1rem}
+  .form-row{flex-direction:column}
+  .form-row>div{width:100%}
+  .form-row input,.form-row select,.form-row textarea{min-width:auto;width:100%}
+}
+
+/* Loading spinner */
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="logo"><span>⚡</span> Datacube AU</div>
+    <nav id="nav">
+      <button data-tab="status" class="active"><span class="icon">📊</span><span>Overview</span></button>
+      <button data-tab="identity"><span class="icon">👤</span><span>Identity</span></button>
+      <button data-tab="knowledge"><span class="icon">📚</span><span>Knowledge Base</span></button>
+      <button data-tab="groups"><span class="icon">👥</span><span>Groups</span></button>
+      <button data-tab="rules"><span class="icon">📋</span><span>Reply Rules</span></button>
+      <button data-tab="decisions"><span class="icon">🐞</span><span>Debugger</span></button>
+      <button data-tab="waha"><span class="icon">📱</span><span>WAHA</span></button>
+      <button data-tab="memory"><span class="icon">🧠</span><span>Memory</span></button>
+      <button data-tab="cache"><span class="icon">💾</span><span>Cache</span></button>
+      <button data-tab="logs"><span class="icon">📝</span><span>Logs</span></button>
+      <button data-tab="test"><span class="icon">🧪</span><span>Test Bot</span></button>
+      <button data-tab="config"><span class="icon">⚙️</span><span>AI Behavior</span></button>
+    </nav>
+    <div class="auth">
+      <label>Admin Token</label>
+      <input type="password" id="tokenInput" placeholder="Enter token…" autocomplete="off">
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main">
+
+    <!-- STATUS / OVERVIEW -->
+    <div id="tab-status" class="panel active">
+      <h2>📊 System Overview</h2>
+      
+      <div class="card" style="background:var(--surface2); border-color:var(--accent-dim); margin-bottom:1.5rem">
+        <h3 style="color:var(--accent-light)">Bot Architecture Flow</h3>
+        <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; font-family:monospace; font-size:0.8rem; margin-top:0.5rem">
+          <span class="badge badge-green">WhatsApp</span> → 
+          <span class="badge badge-blue">WAHA</span> → 
+          <span class="badge badge-purple">Webhook</span> → 
+          <span class="badge badge-orange">Rules</span> → 
+          <span class="badge badge-gray">Cache</span> → 
+          <span class="badge badge-blue">Memory</span> → 
+          <span class="badge badge-orange">KB</span> → 
+          <span class="badge badge-purple">AI</span> → 
+          <span class="badge badge-green">Response</span>
+        </div>
+      </div>
+
+      <div class="stats" id="statusStats"></div>
+      <div class="card">
+        <h3>System Health</h3>
+        <div id="healthInfo">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Database Storage & Cleanup</h3>
+        <div class="form-row">
+          <div><label>DB Size</label><input type="text" id="dbSizeDisplay" readonly placeholder="..." style="width:120px;background:transparent;border:none;font-weight:bold;color:var(--blue)"></div>
+          <div><label>Keep Last (Days)</label><input type="number" id="cleanupDays" value="30" style="width:80px"></div>
+          <div><button class="btn btn-danger" onclick="runCleanup()">Run Cleanup</button></div>
+          <div><button class="btn btn-ghost" onclick="loadStorage()">Refresh Size</button></div>
+        </div>
+        <div id="cleanupResult" style="margin-top:.8rem;font-size:.8rem;color:var(--text-muted)"></div>
+      </div>
+    </div>
+
+    <!-- IDENTITY -->
+    <div id="tab-identity" class="panel">
+      <h2>👤 Identity & Profile Editor</h2>
+      <div class="card">
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem">This data dynamically builds the AI System Prompt.</p>
+        <div id="identityPanel">Loading...</div>
+      </div>
+    </div>
+
+    <!-- KNOWLEDGE -->
+    <div id="tab-knowledge" class="panel">
+      <h2>📚 Knowledge Base</h2>
+      <div class="card">
+        <h3>Add Text Document</h3>
+        <div class="form-row">
+          <div><label>Title</label><input type="text" id="kbTitle" placeholder="e.g. Refund Policy"></div>
+          <div><label>Source Type</label>
+            <select id="kbType"><option value="faq">FAQ</option><option value="product_docs">Product Docs</option><option value="architecture">Architecture</option><option value="policy">Policy</option></select>
+          </div>
+          <div style="flex:1"><label>Content</label><textarea id="kbText" style="width:100%" placeholder="Paste Markdown or text here..."></textarea></div>
+          <div><button class="btn btn-primary" onclick="createKnowledge()">Ingest</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Test Retrieval Search</h3>
+        <div class="form-row">
+          <div style="flex:1"><input type="text" id="kbSearchQ" placeholder="Type a user question..." style="width:100%"></div>
+          <div><button class="btn btn-ghost" onclick="searchKnowledge()">Search</button></div>
+        </div>
+        <div id="kbSearchResult" style="margin-top:1rem"></div>
+      </div>
+      <div class="card">
+        <h3>Documents</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadKnowledge()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="kbTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- GROUPS -->
+    <div id="tab-groups" class="panel">
+      <h2>👥 Group Configuration</h2>
+      <div class="card">
+        <h3>Update Group Settings</h3>
+        <div class="form-row">
+          <div><label>Chat ID</label><input type="text" id="grpId" placeholder="123@g.us"></div>
+          <div><label>Reply Mode</label>
+            <select id="grpMode"><option value="mention_only">Mention Only</option><option value="off">Off</option></select>
+          </div>
+          <div><label>Enabled</label>
+            <select id="grpEnabled"><option value="true">Yes</option><option value="false">No</option></select>
+          </div>
+          <div><label>Cooldown (sec)</label><input type="number" id="grpCooldown" value="45" style="width:60px"></div>
+          <div><button class="btn btn-primary" onclick="updateGroup()">Update</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Configured Groups</h3>
+        <div class="tbl-wrap" id="groupsTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- TEST BOT -->
+    <div id="tab-test" class="panel">
+      <h2>🧪 Test Bot</h2>
+      <div class="card">
+        <h3>Send a test message</h3>
+        <div class="form-row">
+          <div style="flex:1"><label>Message</label><input type="text" id="testMsg" placeholder="Type a message…" style="width:100%"></div>
+          <div><label>Type</label>
+            <select id="testChatType"><option value="dm">DM</option><option value="group">Group</option></select>
+          </div>
+          <div><button class="btn btn-primary" onclick="testReply()">Send</button></div>
+        </div>
+        <div id="testResult" style="margin-top:.8rem"></div>
+      </div>
+    </div>
+
+    <!-- REPLY RULES -->
+    <div id="tab-rules" class="panel">
+      <h2>📋 Reply Rules</h2>
+      <div class="card">
+        <h3>Add Rule</h3>
+        <div class="form-row">
+          <div><label>Keyword</label><input type="text" id="ruleKeyword" placeholder="e.g. hello"></div>
+          <div style="flex:1"><label>Response</label><input type="text" id="ruleResponse" placeholder="Response text" style="width:100%"></div>
+          <div><label>Mode</label>
+            <select id="ruleMode"><option value="exact">Exact</option><option value="contains">Contains</option><option value="startswith">Starts with</option></select>
+          </div>
+          <div><label>Filter</label>
+            <select id="ruleFilter"><option value="">All</option><option value="dm">DM</option><option value="group">Group</option></select>
+          </div>
+          <div><label>Priority</label><input type="number" id="rulePriority" value="0" style="width:60px"></div>
+          <div><button class="btn btn-primary" onclick="createRule()">Add</button></div>
+        </div>
+      </div>
+      <div class="card"><h3>Rules</h3><div class="tbl-wrap" id="rulesTable">Loading…</div></div>
+    </div>
+
+    <!-- DECISIONS -->
+    <div id="tab-decisions" class="panel">
+      <h2>🤔 Router Decisions</h2>
+      <div class="card">
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadDecisions()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="decisionsTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- WAHA -->
+    <div id="tab-waha" class="panel">
+      <h2>📱 WAHA Session Control</h2>
+      <div class="card">
+        <div class="form-row">
+          <div><button class="btn btn-primary" onclick="wahaAction('start')">Start Session</button></div>
+          <div><button class="btn btn-danger" onclick="wahaAction('stop')">Stop Session</button></div>
+          <div><button class="btn btn-ghost" onclick="window.open(window.location.origin + ':3000/dashboard', '_blank')">Open WAHA Dashboard</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MEMORY -->
+    <div id="tab-memory" class="panel">
+      <h2>🧠 User Memory</h2>
+      <div class="card"><h3>All Users</h3><div class="tbl-wrap" id="memoryTable">Loading…</div></div>
+    </div>
+
+    <!-- CACHE -->
+    <div id="tab-cache" class="panel">
+      <h2>💾 Cached Responses</h2>
+      <div class="card">
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-danger btn-sm" onclick="clearCache()">Clear All Cache</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadCache()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="cacheTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- LOGS -->
+    <div id="tab-logs" class="panel">
+      <h2>📝 Recent Audit Logs & Messages</h2>
+      <div class="card">
+        <h3>Audit Logs</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadAuditLogs()">Refresh Audit Logs</button>
+        </div>
+        <div class="tbl-wrap" id="auditLogsTable">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Messages</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadLogs()">Refresh Messages</button>
+        </div>
+        <div class="tbl-wrap" id="logsTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- CONFIG -->
+    <div id="tab-config" class="panel">
+      <h2>⚙️ Configuration</h2>
+      <div class="card" id="configPanel">Loading…</div>
+    </div>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ========================================================================
+   Datacube AU Admin Panel — Vanilla JS
+   ======================================================================== */
+const BASE = window.location.origin;
+
+// Token management
+const tokenEl = document.getElementById('tokenInput');
+tokenEl.value = localStorage.getItem('dcau_token') || '';
+tokenEl.addEventListener('input', () => localStorage.setItem('dcau_token', tokenEl.value));
+function token() { return tokenEl.value; }
+
+// Toast
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => t.className = 'toast', 3000);
+}
+
+// API helper
+async function api(path, opts = {}) {
+  const headers = { 'x-admin-token': token(), 'Content-Type': 'application/json', ...opts.headers };
+  try {
+    const res = await fetch(BASE + path, { ...opts, headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    return await res.json();
+  } catch (e) {
+    toast('Error: ' + e.message, true);
+    throw e;
+  }
+}
+
+// Tab switching
+document.getElementById('nav').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-tab]');
+  if (!btn) return;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  loadTab(btn.dataset.tab);
+});
+
+function loadTab(tab) {
+  const loaders = { 
+    status: loadStatus, rules: loadRules, memory: loadMemory, 
+    cache: loadCache, logs: loadLogsCombined, config: loadConfig, 
+    knowledge: loadKnowledge, groups: loadGroups, decisions: loadDecisions, 
+    identity: loadIdentity, waha: null 
+  };
+  if (loaders[tab]) loaders[tab]();
+}
+
+// ---- STATUS ----
+async function loadStatus() {
+  try {
+    const [health, usage] = await Promise.all([
+      api('/health'),
+      api('/admin/usage')
+    ]);
+    const stats = document.getElementById('statusStats');
+    const db = health.database || 'unknown';
+    const waha = typeof health.waha === 'object' ? (health.waha.status || 'unknown') : health.waha;
+    stats.innerHTML = `
+      <div class="stat"><div class="val">${waha === 'WORKING' || waha === 'SCAN_QR_CODE' ? '🟢' : '🔴'}</div><div class="lbl">WAHA</div></div>
+      <div class="stat"><div class="val">${db === 'ok' ? '🟢' : '🔴'}</div><div class="lbl">Database</div></div>
+      <div class="stat"><div class="val">${health.ai_enabled ? '🟢' : '⚪'}</div><div class="lbl">AI</div></div>
+      <div class="stat"><div class="val">${usage.today.messages}</div><div class="lbl">Msgs Today</div></div>
+      <div class="stat"><div class="val">${usage.today.ai_calls}</div><div class="lbl">AI Calls Today</div></div>
+      <div class="stat"><div class="val">${usage.today.total_tokens}</div><div class="lbl">Tokens Today</div></div>
+      <div class="stat"><div class="val">${usage.totals.contacts}</div><div class="lbl">Contacts</div></div>
+      <div class="stat"><div class="val">${usage.totals.memory_entries}</div><div class="lbl">Memories</div></div>
+    `;
+    const hi = document.getElementById('healthInfo');
+    hi.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:1rem">
+        <span class="badge badge-${db==='ok'?'green':'red'}">DB: ${db}</span>
+        <span class="badge badge-${waha==='WORKING'?'green':waha==='SCAN_QR_CODE'?'orange':'red'}">WAHA: ${waha}</span>
+        <span class="badge badge-blue">Env: ${health.environment}</span>
+        <span class="badge badge-purple">Cache: ${usage.totals.cache_entries}</span>
+      </div>
+    `;
+    loadStorage();
+  } catch (_) {}
+}
+
+async function loadStorage() {
+  try {
+    const d = await api('/admin/storage/size');
+    document.getElementById('dbSizeDisplay').value = d.database_size_mb ? d.database_size_mb + ' MB' : 'Error';
+  } catch (_) {
+    document.getElementById('dbSizeDisplay').value = 'Failed';
+  }
+}
+
+async function runCleanup() {
+  const days = parseInt(document.getElementById('cleanupDays').value) || 30;
+  if (!confirm(`Delete all messages, router decisions, AI calls, and audit logs older than ${days} days? This cannot be undone.`)) return;
+  
+  const div = document.getElementById('cleanupResult');
+  div.innerHTML = '<span class="spinner"></span> Cleaning up...';
+  try {
+    const r = await api(`/admin/storage/cleanup?days_to_keep=${days}`, { method: 'POST' });
+    div.innerHTML = `<span style="color:var(--green)">✓ Cleanup complete!</span> Deleted: ${r.deleted.messages} msgs, ${r.deleted.decisions} decisions, ${r.deleted.audit_logs} logs, ${r.deleted.ai_calls} AI calls.`;
+    loadStorage();
+    loadStatus();
+  } catch (e) {
+    div.innerHTML = `<span style="color:var(--red)">Failed: ${e.message}</span>`;
+  }
+}
+
+// ---- KNOWLEDGE ----
+async function loadKnowledge() {
+  try {
+    const d = await api('/admin/knowledge/documents');
+    if (!d.items.length) { document.getElementById('kbTable').innerHTML = '<em>No documents yet.</em>'; return; }
+    document.getElementById('kbTable').innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Status</th><th>Enabled</th><th>Reindex</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td>${m.id}</td>
+        <td>${esc(m.title)}</td>
+        <td><span class="badge badge-blue">${m.source_type}</span></td>
+        <td><span class="badge ${m.status==='active'?'badge-green':(m.status==='error'?'badge-red':'badge-orange')}">${m.status}</span></td>
+        <td><span class="badge ${m.is_enabled?'badge-green':'badge-gray'}">${m.is_enabled?'yes':'no'}</span></td>
+        <td><button class="btn btn-ghost btn-sm" onclick="reindexKb(${m.id})">Reindex</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function createKnowledge() {
+  const title = document.getElementById('kbTitle').value.trim();
+  const type = document.getElementById('kbType').value;
+  const text = document.getElementById('kbText').value.trim();
+  if (!title || !text) return toast('Title and content required', true);
+  await api('/admin/knowledge/text', {
+    method: 'POST',
+    body: JSON.stringify({ title: title, source_type: type, raw_text: text })
+  });
+  document.getElementById('kbTitle').value = '';
+  document.getElementById('kbText').value = '';
+  toast('Document ingested successfully');
+  loadKnowledge();
+}
+async function reindexKb(id) {
+  toast('Reindexing...');
+  await api(`/admin/knowledge/reindex/${id}`, { method: 'POST' });
+  toast('Document reindexed');
+  loadKnowledge();
+}
+async function searchKnowledge() {
+  const q = document.getElementById('kbSearchQ').value.trim();
+  if (q.length < 2) return toast('Query too short', true);
+  const div = document.getElementById('kbSearchResult');
+  div.innerHTML = '<span class="spinner"></span> Searching...';
+  try {
+    const r = await api(`/admin/knowledge/search?q=${encodeURIComponent(q)}`);
+    if (!r.results.length) {
+      div.innerHTML = '<em>No relevant chunks found.</em>';
+      return;
+    }
+    div.innerHTML = r.results.map(chunk => `
+      <div style="background:var(--surface2);padding:.8rem;border-radius:var(--radius-sm);margin-bottom:.5rem">
+        <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:.3rem">Score: ${(chunk.score||0).toFixed(2)} | Doc ID: ${chunk.document_id} | <span class="badge badge-blue">${chunk.source_type}</span></div>
+        <div style="font-size:.85rem;font-weight:600;margin-bottom:.3rem">${esc(chunk.heading||chunk.title)}</div>
+        <div style="font-size:.8rem;color:var(--text)">${esc(chunk.content_preview)}...</div>
+      </div>
+    `).join('');
+  } catch (_) { div.innerHTML = '<span class="badge badge-red">Failed</span>'; }
+}
+
+// ---- GROUPS ----
+async function loadGroups() {
+  try {
+    const d = await api('/admin/groups');
+    if (!d.items.length) { document.getElementById('groupsTable').innerHTML = '<em>No groups configured.</em>'; return; }
+    document.getElementById('groupsTable').innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Chat ID</th><th>Reply Mode</th><th>Enabled</th><th>Cooldown</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td>${m.id}</td>
+        <td>${esc(m.chat_id)}</td>
+        <td><span class="badge badge-purple">${m.reply_mode}</span></td>
+        <td><span class="badge ${m.is_enabled?'badge-green':'badge-red'}">${m.is_enabled?'yes':'no'}</span></td>
+        <td>${m.cooldown_seconds}s</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function updateGroup() {
+  const cid = document.getElementById('grpId').value.trim();
+  if (!cid) return toast('Chat ID required', true);
+  await api('/admin/group-mode', {
+    method: 'POST',
+    body: JSON.stringify({
+      chat_id: cid,
+      reply_mode: document.getElementById('grpMode').value,
+      is_enabled: document.getElementById('grpEnabled').value === 'true',
+      cooldown_seconds: parseInt(document.getElementById('grpCooldown').value) || 45
+    })
+  });
+  toast('Group updated');
+  loadGroups();
+}
+
+// ---- DECISIONS ----
+async function loadDecisions() {
+  try {
+    const d = await api('/admin/router-decisions/recent?limit=50');
+    if (!d.items.length) { document.getElementById('decisionsTable').innerHTML = '<em>No decisions logged yet.</em>'; return; }
+    document.getElementById('decisionsTable').innerHTML = `<table>
+      <thead><tr><th>Time</th><th>Msg ID</th><th>Source / Decision</th><th>Reason</th><th>Conf</th><th>Tokens</th><th>Sent?</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
+        <td>${m.message_id}</td>
+        <td>
+          <span class="badge ${m.decision_type.includes('ai_')?'badge-purple':(m.decision_type==='escalated'?'badge-red':'badge-blue')}">
+            ${m.decision_type}
+          </span>
+        </td>
+        <td title="${esc(m.reason)}">${esc((m.reason||'').substring(0,40))}</td>
+        <td>${(m.confidence||0).toFixed(2)}</td>
+        <td>${m.ai_tokens > 0 ? m.ai_tokens : '—'}</td>
+        <td><span class="badge ${m.reply_sent?'badge-green':'badge-gray'}">${m.reply_sent?'yes':'no'}</span></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+
+// ---- WAHA ----
+async function wahaAction(action) {
+  try {
+    await api(`/admin/waha/${action}`, { method: 'POST' });
+    toast(`WAHA session ${action} requested.`);
+    loadStatus();
+  } catch (_) {}
+}
+
+// ---- TEST BOT ----
+async function testReply() {
+  const msg = document.getElementById('testMsg').value.trim();
+  if (!msg) return toast('Enter a message', true);
+  const chatType = document.getElementById('testChatType').value;
+  const div = document.getElementById('testResult');
+  div.innerHTML = '<span class="spinner"></span> Processing…';
+  try {
+    const r = await api('/admin/test-reply', {
+      method: 'POST',
+      body: JSON.stringify({ message_text: msg, chat_type: chatType, is_bot_mentioned: chatType === 'group' })
+    });
+    div.innerHTML = `
+      <div class="card" style="background:var(--surface2)">
+        <div style="margin-bottom:.5rem"><span class="badge badge-purple">${r.decision_type}</span> <span class="badge badge-blue">${r.ai_used ? 'AI' : 'No AI'}</span></div>
+        <div style="font-size:.9rem;line-height:1.5;color:var(--text)">${r.reply_text || '<em>No reply</em>'}</div>
+        <div style="margin-top:.4rem;font-size:.72rem;color:var(--text-dim)">Reason: ${r.reason} | KB confidence: ${(r.kb_confidence||0).toFixed(2)}</div>
+      </div>
+    `;
+  } catch (_) { div.innerHTML = '<span class="badge badge-red">Failed</span>'; }
+}
+document.getElementById('testMsg').addEventListener('keydown', e => { if (e.key === 'Enter') testReply(); });
+
+// ---- RULES ----
+async function loadRules() {
+  try {
+    const d = await api('/admin/reply-rules');
+    if (!d.items.length) { document.getElementById('rulesTable').innerHTML = '<em>No rules. Add one above.</em>'; return; }
+    document.getElementById('rulesTable').innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Keyword</th><th>Response</th><th>Mode</th><th>Filter</th><th>Priority</th><th>Enabled</th><th></th></tr></thead>
+      <tbody>${d.items.map(r => `<tr>
+        <td>${r.id}</td><td>${esc(r.keyword)}</td><td title="${esc(r.response_text)}">${esc(r.response_text.substring(0,60))}</td>
+        <td><span class="badge badge-blue">${r.match_mode}</span></td>
+        <td>${r.chat_type_filter||'all'}</td><td>${r.priority}</td>
+        <td><span class="badge ${r.is_enabled?'badge-green':'badge-red'}">${r.is_enabled?'on':'off'}</span></td>
+        <td><button class="btn btn-ghost btn-sm" onclick="toggleRule(${r.id},${!r.is_enabled})">${r.is_enabled?'Disable':'Enable'}</button> <button class="btn btn-danger btn-sm" onclick="deleteRule(${r.id})">Del</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function createRule() {
+  const kw = document.getElementById('ruleKeyword').value.trim();
+  const resp = document.getElementById('ruleResponse').value.trim();
+  if (!kw || !resp) return toast('Keyword and response required', true);
+  await api('/admin/reply-rules', {
+    method: 'POST',
+    body: JSON.stringify({
+      keyword: kw, response_text: resp,
+      match_mode: document.getElementById('ruleMode').value,
+      chat_type_filter: document.getElementById('ruleFilter').value || null,
+      priority: parseInt(document.getElementById('rulePriority').value) || 0,
+      is_enabled: true
+    })
+  });
+  document.getElementById('ruleKeyword').value = '';
+  document.getElementById('ruleResponse').value = '';
+  toast('Rule created');
+  loadRules();
+}
+async function toggleRule(id, enabled) {
+  await api(`/admin/reply-rules/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled: enabled }) });
+  toast(enabled ? 'Rule enabled' : 'Rule disabled');
+  loadRules();
+}
+async function deleteRule(id) {
+  if (!confirm('Delete this rule?')) return;
+  await api(`/admin/reply-rules/${id}`, { method: 'DELETE' });
+  toast('Rule deleted');
+  loadRules();
+}
+
+// ---- MEMORY ----
+async function loadMemory() {
+  try {
+    const d = await api('/admin/memory');
+    if (!d.items.length) { document.getElementById('memoryTable').innerHTML = '<em>No user memories yet.</em>'; return; }
+    document.getElementById('memoryTable').innerHTML = `<table>
+      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Preferences</th><th>Notes</th><th>Onboarded</th><th>Actions</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td>${m.display_name||'—'}</td><td>${esc(m.whatsapp_id)}</td>
+        <td>${esc(m.user_name||'—')}</td>
+        <td title="${esc(m.preferences||'')}">${esc((m.preferences||'—').substring(0,40))}</td>
+        <td title="${esc(m.context_notes||'')}">${esc((m.context_notes||'—').substring(0,40))}</td>
+        <td><span class="badge ${m.onboarding_complete?'badge-green':'badge-orange'}">${m.onboarding_complete?'yes':'no'}</span></td>
+        <td>
+          <select onchange="if(this.value){deleteMemory(${m.contact_id}, this.value); this.value='';}">
+            <option value="">Clean...</option>
+            <option value="low">Low (Notes)</option>
+            <option value="medium">Med (Prefs)</option>
+            <option value="high">High (Full Mem)</option>
+            <option value="critical">Critical (All)</option>
+          </select>
+        </td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function deleteMemory(cid, risk) {
+  const msgs = {
+    low: "LOW RISK: Delete temporary conversation context notes?",
+    medium: "MEDIUM RISK: Delete user preferences and context notes?",
+    high: "HIGH RISK: Delete full user memory profile? (Summaries kept)",
+    critical: "CRITICAL RISK: Delete ALL memory AND conversation summaries for this user?"
+  };
+  if (!confirm(msgs[risk] || "Delete memory?")) return;
+  await api(`/admin/memory/${cid}?level=${risk}`, { method: 'DELETE' });
+  toast(`Memory cleared (${risk})`);
+  loadMemory();
+}
+
+// ---- CACHE ----
+async function loadCache() {
+  try {
+    const d = await api('/admin/cache');
+    if (!d.items.length) { document.getElementById('cacheTable').innerHTML = '<em>Cache is empty.</em>'; return; }
+    document.getElementById('cacheTable').innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Question</th><th>Answer</th><th>Mode</th><th>Hits</th><th>Conf</th><th></th></tr></thead>
+      <tbody>${d.items.map(c => `<tr>
+        <td>${c.id}</td>
+        <td title="${esc(c.normalized_question)}">${esc(c.normalized_question.substring(0,50))}</td>
+        <td title="${esc(c.answer_text)}">${esc(c.answer_text.substring(0,60))}</td>
+        <td><span class="badge badge-blue">${c.answer_mode}</span></td>
+        <td>${c.hit_count}</td>
+        <td>${(c.confidence||0).toFixed(2)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteCache(${c.id})">Del</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function deleteCache(id) {
+  await api(`/admin/cache/${id}`, { method: 'DELETE' });
+  toast('Cache entry deleted');
+  loadCache();
+}
+async function clearCache() {
+  if (!confirm('Clear ALL cached responses?')) return;
+  await api('/admin/cache/clear', { method: 'POST' });
+  toast('Cache cleared');
+  loadCache();
+}
+
+// ---- LOGS ----
+function loadLogsCombined() {
+  loadAuditLogs();
+  loadLogs();
+}
+async function loadAuditLogs() {
+  try {
+    const d = await api('/admin/logs/recent?limit=20');
+    if (!d.items.length) { document.getElementById('auditLogsTable').innerHTML = '<em>No audit logs.</em>'; return; }
+    document.getElementById('auditLogsTable').innerHTML = `<table>
+      <thead><tr><th>Time</th><th>Action</th><th>Type</th><th>ID</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
+        <td><span class="badge badge-purple">${m.action}</span></td>
+        <td>${m.entity_type}</td>
+        <td>${m.entity_id||'—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function loadLogs() {
+  try {
+    const d = await api('/admin/messages/recent?limit=50');
+    if (!d.items.length) { document.getElementById('logsTable').innerHTML = '<em>No messages yet.</em>'; return; }
+    document.getElementById('logsTable').innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Time</th><th>Chat</th><th>Type</th><th>Dir</th><th>Message</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td>${m.id}</td>
+        <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
+        <td title="${esc(m.chat_id)}">${esc(m.chat_id.substring(0,18))}</td>
+        <td><span class="badge badge-blue">${m.chat_type}</span></td>
+        <td><span class="badge ${m.direction==='inbound'?'badge-green':'badge-purple'}">${m.direction}</span></td>
+        <td title="${esc(m.message_text)}">${esc(m.message_text.substring(0,80))}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+
+// ---- IDENTITY ----
+async function loadIdentity() {
+  try {
+    const d = await api('/admin/config');
+    const cfg = d.config;
+    const panel = document.getElementById('identityPanel');
+    panel.innerHTML = `
+      <div class="form-wide" style="margin-bottom:1rem">
+        <label>Bio</label>
+        <textarea onchange="saveConfig('identity_bio',this.value)" rows="2">${esc(cfg.identity_bio)}</textarea>
+      </div>
+      <div class="form-row">
+        <div style="flex:1"><label>Projects</label><textarea onchange="saveConfig('identity_projects',this.value)" rows="2">${esc(cfg.identity_projects)}</textarea></div>
+        <div style="flex:1"><label>Services</label><textarea onchange="saveConfig('identity_services',this.value)" rows="2">${esc(cfg.identity_services)}</textarea></div>
+      </div>
+      <div class="form-row">
+        <div style="flex:1"><label>Skills</label><input type="text" onchange="saveConfig('identity_skills',this.value)" value="${esc(cfg.identity_skills)}" style="width:100%"></div>
+        <div style="flex:1"><label>Interests</label><input type="text" onchange="saveConfig('identity_interests',this.value)" value="${esc(cfg.identity_interests)}" style="width:100%"></div>
+      </div>
+      <div class="form-row">
+        <div style="flex:1"><label>Current Focus</label><input type="text" onchange="saveConfig('identity_focus',this.value)" value="${esc(cfg.identity_focus)}" style="width:100%"></div>
+        <div style="flex:1"><label>Comm Style</label><input type="text" onchange="saveConfig('identity_style',this.value)" value="${esc(cfg.identity_style)}" style="width:100%"></div>
+      </div>
+      <div class="form-wide" style="margin-top:1rem">
+        <label>FAQ Entries (e.g. Q: What is X? A: Y)</label>
+        <textarea onchange="saveConfig('identity_faq',this.value)" rows="5">${esc(cfg.identity_faq)}</textarea>
+      </div>
+    `;
+  } catch (_) { document.getElementById('identityPanel').innerHTML = '<em>Failed to load identity.</em>'; }
+}
+
+// ---- CONFIG / AI BEHAVIOR ----
+async function loadConfig() {
+  try {
+    const d = await api('/admin/config');
+    const cfg = d.config;
+    const panel = document.getElementById('configPanel');
+    panel.innerHTML = `
+      <h3>AI Core Settings</h3>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>AI Enabled</label>
+          <select id="cfgAi" onchange="saveConfig('ai_enabled',this.value)">
+            <option value="true" ${cfg.ai_enabled==='true'?'selected':''}>Enabled</option>
+            <option value="false" ${cfg.ai_enabled!=='true'?'selected':''}>Disabled</option>
+          </select>
+        </div>
+        <div><label>AI Model (Light)</label><input id="cfgModelLight" value="${esc(cfg.ai_model_light)}" onchange="saveConfig('ai_model_light',this.value)"></div>
+        <div><label>AI Model (Deep)</label><input id="cfgModelDeep" value="${esc(cfg.ai_model_deep)}" onchange="saveConfig('ai_model_deep',this.value)"></div>
+      </div>
+      
+      <h3 style="margin-top:1.5rem;margin-bottom:0.8rem">AI Behavior Control</h3>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>Strictness</label>
+          <select onchange="saveConfig('ai_strictness',this.value)">
+            <option value="low" ${cfg.ai_strictness==='low'?'selected':''}>Low</option>
+            <option value="medium" ${cfg.ai_strictness==='medium'?'selected':''}>Medium</option>
+            <option value="high" ${cfg.ai_strictness==='high'?'selected':''}>High</option>
+          </select>
+        </div>
+        <div><label>Hallucination Protect</label>
+          <select onchange="saveConfig('ai_hallucination_protection',this.value)">
+            <option value="medium" ${cfg.ai_hallucination_protection==='medium'?'selected':''}>Medium</option>
+            <option value="high" ${cfg.ai_hallucination_protection==='high'?'selected':''}>High (Escalate if unsure)</option>
+          </select>
+        </div>
+        <div><label>Escalation KB Threshold</label><input type="number" step="0.1" value="${esc(cfg.ai_escalation_threshold)}" onchange="saveConfig('ai_escalation_threshold',this.value)" style="width:80px"></div>
+        <div><label>Creativity (Temp)</label><input type="number" step="0.1" value="${esc(cfg.ai_creativity)}" onchange="saveConfig('ai_creativity',this.value)" style="width:80px"></div>
+      </div>
+      
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>User Daily Limit</label><input type="number" value="${esc(cfg.rate_limit_per_user_daily)}" onchange="saveConfig('rate_limit_per_user_daily',this.value)" style="width:80px"></div>
+        <div><label>Cooldown (sec)</label><input type="number" value="${esc(cfg.rate_limit_cooldown_seconds)}" onchange="saveConfig('rate_limit_cooldown_seconds',this.value)" style="width:80px"></div>
+        <div><label>Global AI Daily Limit</label><input type="number" value="${esc(cfg.rate_limit_global_daily)}" onchange="saveConfig('rate_limit_global_daily',this.value)" style="width:80px"></div>
+      </div>
+      <h3 style="margin-top:1.5rem;margin-bottom:0.8rem">Personality Layer</h3>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>Tone</label>
+          <select onchange="saveConfig('personality_tone',this.value)">
+            <option value="casual" ${cfg.personality_tone==='casual'?'selected':''}>Casual</option>
+            <option value="professional" ${cfg.personality_tone==='professional'?'selected':''}>Professional</option>
+            <option value="technical" ${cfg.personality_tone==='technical'?'selected':''}>Technical</option>
+            <option value="friendly" ${cfg.personality_tone==='friendly'?'selected':''}>Friendly</option>
+          </select>
+        </div>
+        <div><label>Humor</label>
+          <select onchange="saveConfig('personality_humor',this.value)">
+            <option value="low" ${cfg.personality_humor==='low'?'selected':''}>Low</option>
+            <option value="medium" ${cfg.personality_humor==='medium'?'selected':''}>Medium</option>
+            <option value="high" ${cfg.personality_humor==='high'?'selected':''}>High</option>
+          </select>
+        </div>
+        <div><label>Reply Length</label>
+          <select onchange="saveConfig('personality_reply_length',this.value)">
+            <option value="short" ${cfg.personality_reply_length==='short'?'selected':''}>Short</option>
+            <option value="balanced" ${cfg.personality_reply_length==='balanced'?'selected':''}>Balanced</option>
+            <option value="detailed" ${cfg.personality_reply_length==='detailed'?'selected':''}>Detailed</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>Tech Depth</label>
+          <select onchange="saveConfig('personality_tech_depth',this.value)">
+            <option value="beginner" ${cfg.personality_tech_depth==='beginner'?'selected':''}>Beginner</option>
+            <option value="medium" ${cfg.personality_tech_depth==='medium'?'selected':''}>Medium</option>
+            <option value="advanced" ${cfg.personality_tech_depth==='advanced'?'selected':''}>Advanced</option>
+          </select>
+        </div>
+        <div><label>Emoji Usage</label>
+          <select onchange="saveConfig('personality_emoji',this.value)">
+            <option value="off" ${cfg.personality_emoji==='off'?'selected':''}>Off</option>
+            <option value="light" ${cfg.personality_emoji==='light'?'selected':''}>Light</option>
+            <option value="heavy" ${cfg.personality_emoji==='heavy'?'selected':''}>Heavy</option>
+          </select>
+        </div>
+      </div>
+    `;
+  } catch (_) { document.getElementById('configPanel').innerHTML = '<em>Failed to load config.</em>'; }
+}
+async function saveConfig(key, value) {
+  await api('/admin/config', { method: 'POST', body: JSON.stringify({ key, value }) });
+  toast(`Config "${key}" saved`);
+}
+
+// ---- Utilities ----
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Initial load
+loadStatus();
+</script>
+</body>
+</html>

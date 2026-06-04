@@ -1,7 +1,6 @@
 # Environment files
 .env
 .env.production
-.env.production.example
 .env.local
 .env.*.local
 

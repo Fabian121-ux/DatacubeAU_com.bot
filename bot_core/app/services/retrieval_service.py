@@ -71,15 +71,27 @@ class RetrievalService:
         return len(chunks)
 
     async def search(self, query: str, limit: int | None = None) -> SearchResult:
+        query_norm = normalize_text(query)
+        query_tokens = [token for token in query_norm.split() if token]
+        # Skip search if query has no meaningful tokens
+        if not query_tokens:
+            return SearchResult(chunks=[], confidence=0.0)
+
+        from sqlalchemy import or_
+
         stmt = (
             select(KnowledgeChunk, KnowledgeDocument)
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
             .where(KnowledgeDocument.is_enabled.is_(True))
             .where(KnowledgeDocument.status == KnowledgeDocumentStatus.ACTIVE.value)
         )
+        
+        # Optimize search by pre-filtering in DB using ILIKE
+        ilike_clauses = [KnowledgeChunk.normalized_content.ilike(f"%{token}%") for token in query_tokens if len(token) > 2]
+        if ilike_clauses:
+            stmt = stmt.where(or_(*ilike_clauses))
+
         rows = (await self.session.execute(stmt)).all()
-        query_norm = normalize_text(query)
-        query_tokens = [token for token in query_norm.split() if token]
         chunks: list[RetrievedChunk] = []
 
         for chunk_model, document_model in rows:

@@ -5,7 +5,7 @@ import logging
 
 from fastapi import FastAPI
 
-from app.api import admin, health, inbound, knowledge
+from app.api import admin, admin_ui, health, inbound, knowledge
 from app.config import settings
 from app.db import engine, ping_database
 from app.services.logging_service import configure_logging, log_event
@@ -33,3 +33,5 @@ app.include_router(health.router)
 app.include_router(inbound.router)
 app.include_router(admin.router)
 app.include_router(knowledge.router)
+app.include_router(admin_ui.router)
+

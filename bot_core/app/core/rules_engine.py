@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType, DecisionType, Direction, GroupReplyMode
-from app.models.schema import DMConfig, GroupConfig, Message
-from app.utils.text import is_greeting, normalize_text
+from app.models.schema import DMConfig, GroupConfig, Message, ReplyRule
+from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
 
@@ -47,9 +47,9 @@ class RulesEngine:
         if await self._cooldown_active(message.chat_id, int(cfg["cooldown_seconds"])):
             return RulesResult(False, DecisionType.COOLDOWN_BLOCK, "group cooldown active", None)
 
-        static_reply = self._resolve_static_reply(message.message_text, ChatType.GROUP)
-        if static_reply:
-            return RulesResult(False, DecisionType.STATIC_REPLY, "matched static group reply", static_reply)
+        rule_reply = await self._resolve_reply_rule(message.message_text, ChatType.GROUP)
+        if rule_reply:
+            return RulesResult(False, DecisionType.REPLY_RULE, "matched reply rule", rule_reply)
 
         return RulesResult(True, None, "group rules passed", None)
 
@@ -60,9 +60,9 @@ class RulesEngine:
         if await self._cooldown_active(message.chat_id, int(cfg["cooldown_seconds"])):
             return RulesResult(False, DecisionType.COOLDOWN_BLOCK, "dm cooldown active", None)
 
-        static_reply = self._resolve_static_reply(message.message_text, ChatType.DM)
-        if static_reply:
-            return RulesResult(False, DecisionType.STATIC_REPLY, "matched static dm reply", static_reply)
+        rule_reply = await self._resolve_reply_rule(message.message_text, ChatType.DM)
+        if rule_reply:
+            return RulesResult(False, DecisionType.REPLY_RULE, "matched reply rule", rule_reply)
 
         return RulesResult(True, None, "dm rules passed", None)
 
@@ -103,19 +103,26 @@ class RulesEngine:
             return {"is_enabled": True, "cooldown_seconds": settings.dm_default_cooldown_seconds}
         return {"is_enabled": model.is_enabled, "cooldown_seconds": model.cooldown_seconds}
 
-    @staticmethod
-    def _resolve_static_reply(message_text: str, chat_type: ChatType) -> str | None:
+    async def _resolve_reply_rule(self, message_text: str, chat_type: ChatType) -> str | None:
+        """Query reply_rules table for a matching rule, ordered by priority."""
         normalized = normalize_text(message_text)
-        if normalized in {"help", "/help", "commands"}:
-            return "Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply."
-        if normalized in {"status", "/status", "health", "ping"}:
-            return "Datacube AU bot status: online. Knowledge search is enabled. AI is optional and currently configuration-gated."
-        if normalized in {"mode", "/mode", "reply mode"}:
-            if chat_type == ChatType.GROUP:
-                return "Group mode is mention-only with cooldown protection."
-            return "DM mode uses static replies, knowledge lookup, and optional AI fallback."
-        if normalized in {"what is datacube au", "who are you"}:
-            return "I am the Datacube AU WhatsApp backend bot for support, product, and knowledge-driven replies."
-        if is_greeting(message_text):
-            return "Hello. Ask a Datacube AU question or use /help."
+        stmt = (
+            select(ReplyRule)
+            .where(ReplyRule.is_enabled.is_(True))
+            .where(
+                (ReplyRule.chat_type_filter.is_(None)) | (ReplyRule.chat_type_filter == chat_type.value)
+            )
+            .order_by(ReplyRule.priority.desc())
+        )
+        rules = (await self.session.execute(stmt)).scalars().all()
+
+        for rule in rules:
+            rule_keyword = normalize_text(rule.keyword)
+            if rule.match_mode == "exact" and normalized == rule_keyword:
+                return rule.response_text
+            if rule.match_mode == "contains" and rule_keyword in normalized:
+                return rule.response_text
+            if rule.match_mode == "startswith" and normalized.startswith(rule_keyword):
+                return rule.response_text
+
         return None

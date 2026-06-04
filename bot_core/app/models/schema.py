@@ -170,3 +170,40 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(120))
     details_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class ReplyRule(Base):
+    __tablename__ = "reply_rules"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    keyword: Mapped[str] = mapped_column(String(220), nullable=False)
+    response_text: Mapped[str] = mapped_column(Text, nullable=False)
+    match_mode: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'contains'"))
+    chat_type_filter: Mapped[str | None] = mapped_column(String(20))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class UserMemory(Base):
+    __tablename__ = "user_memory"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, unique=True)
+    user_name: Mapped[str | None] = mapped_column(String(180))
+    preferences: Mapped[str | None] = mapped_column(Text)
+    context_notes: Mapped[str | None] = mapped_column(Text)
+    onboarding_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class BotConfig(Base):
+    __tablename__ = "bot_config"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    config_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    config_value: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+

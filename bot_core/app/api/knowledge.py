@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_admin_token
 from app.config import settings
 from app.db import get_db_session
 from app.models.enums import KnowledgeDocumentStatus, SourceType
@@ -14,12 +15,7 @@ from app.models.schema import AuditLog, KnowledgeDocument
 from app.services.retrieval_service import RetrievalService
 
 
-router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"])
-
-
-def require_admin_token(x_admin_token: str | None) -> None:
-    if settings.admin_api_token and x_admin_token != settings.admin_api_token:
-        raise HTTPException(status_code=401, detail="invalid admin token")
+router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_token)])
 
 
 class KnowledgeTextIn(BaseModel):
@@ -34,10 +30,8 @@ async def upload_document(
     file: UploadFile = File(...),
     source_type: SourceType = Form(...),
     title: str | None = Form(default=None),
-    x_admin_token: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    require_admin_token(x_admin_token)
     if not file.filename or not file.filename.lower().endswith((".txt", ".md")):
         raise HTTPException(status_code=400, detail="only .txt and .md files are supported")
     raw_text = (await file.read()).decode("utf-8", errors="ignore").strip()
@@ -74,10 +68,8 @@ async def upload_document(
 @router.post("/text")
 async def create_document_from_text(
     payload: KnowledgeTextIn,
-    x_admin_token: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    require_admin_token(x_admin_token)
     if not payload.raw_text.strip():
         raise HTTPException(status_code=400, detail="raw_text is empty")
 
@@ -111,10 +103,8 @@ async def create_document_from_text(
 @router.post("/reindex/{document_id}")
 async def reindex_document(
     document_id: int,
-    x_admin_token: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    require_admin_token(x_admin_token)
     retrieval = RetrievalService(db)
     try:
         chunks = await retrieval.reindex_document(document_id)
@@ -139,10 +129,8 @@ async def reindex_document(
 async def search_knowledge(
     q: str = Query(..., min_length=2),
     limit: int = Query(default=5, ge=1, le=20),
-    x_admin_token: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    require_admin_token(x_admin_token)
     retrieval = RetrievalService(db)
     result = await retrieval.search(q, limit=limit)
     return {
@@ -165,11 +153,9 @@ async def search_knowledge(
 
 @router.get("/documents")
 async def list_documents(
-    x_admin_token: str | None = Header(default=None),
     limit: int = Query(default=settings.recent_items_limit, ge=1, le=200),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    require_admin_token(x_admin_token)
     stmt = select(KnowledgeDocument).order_by(KnowledgeDocument.updated_at.desc()).limit(limit)
     rows = (await db.execute(stmt)).scalars().all()
     return {

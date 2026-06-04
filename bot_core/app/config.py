@@ -22,15 +22,15 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=20, alias="DB_MAX_OVERFLOW")
 
-    waha_service_url: str = Field(
-        default="http://localhost:3000",
-        validation_alias=AliasChoices("WAHA_SERVICE_URL", "WAHA_BASE_URL"),
-    )
+    waha_service_url: str = Field(default="http://localhost:3000", alias="WAHA_SERVICE_URL")
+    waha_base_url: str = Field(default="", alias="WAHA_BASE_URL")
     waha_api_key: str = Field(default="", validation_alias=AliasChoices("WAHA_API_KEY", "WHATSAPP_API_KEY"))
     waha_session_name: str = Field(default="default", alias="WAHA_SESSION_NAME")
     waha_send_path: str = Field(default="/api/sendText", alias="WAHA_SEND_PATH")
     waha_session_status_path: str = Field(default="/api/sessions", alias="WAHA_SESSION_STATUS_PATH")
     waha_request_timeout_seconds: int = Field(default=15, alias="WAHA_REQUEST_TIMEOUT_SECONDS")
+    waha_request_retry_count: int = Field(default=2, alias="WAHA_REQUEST_RETRY_COUNT")
+    waha_request_retry_backoff_seconds: float = Field(default=1.0, alias="WAHA_REQUEST_RETRY_BACKOFF_SECONDS")
 
     bot_wa_number: str = Field(default="", alias="BOT_WA_NUMBER")
     bot_mention_aliases: str = Field(default="datacube bot,datacubeau", alias="BOT_MENTION_ALIASES")
@@ -59,9 +59,13 @@ class Settings(BaseSettings):
         if not self.database_url:
             errors.append("DATABASE_URL is required.")
         if not self.waha_service_url:
-            errors.append("WAHA_SERVICE_URL or WAHA_BASE_URL is required.")
+            errors.append("WAHA_SERVICE_URL is required.")
         if not self.waha_session_name:
             errors.append("WAHA_SESSION_NAME is required.")
+        if self.waha_request_retry_count < 0:
+            errors.append("WAHA_REQUEST_RETRY_COUNT must be 0 or greater.")
+        if self.waha_request_retry_backoff_seconds < 0:
+            errors.append("WAHA_REQUEST_RETRY_BACKOFF_SECONDS must be 0 or greater.")
         if self.group_default_reply_mode not in {"mention_only", "off"}:
             errors.append("GROUP_DEFAULT_REPLY_MODE must be 'mention_only' or 'off'.")
         if self.kb_min_score < 0 or self.kb_min_score > 1:
@@ -85,8 +89,11 @@ class Settings(BaseSettings):
             "database_url_configured": bool(self.database_url),
             "startup_validate_db": self.startup_validate_db,
             "waha_service_url": self.waha_service_url,
+            "waha_base_url": self.waha_base_url,
             "waha_session_name": self.waha_session_name,
             "waha_send_path": self.waha_send_path,
+            "waha_request_retry_count": self.waha_request_retry_count,
+            "waha_request_retry_backoff_seconds": self.waha_request_retry_backoff_seconds,
             "enable_auto_reply": self.enable_auto_reply,
             "group_default_reply_mode": self.group_default_reply_mode,
             "group_default_cooldown_seconds": self.group_default_cooldown_seconds,

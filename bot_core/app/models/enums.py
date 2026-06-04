@@ -50,6 +50,10 @@ class DecisionType(StrEnum):
     NO_MATCH = "no_match"
     AI_REPLY_LIGHT = "ai_reply_light"
     AI_REPLY_DEEP = "ai_reply_deep"
+    REPLY_RULE = "reply_rule"
+    MEMORY_ONBOARD = "memory_onboard"
+    RATE_LIMITED = "rate_limited"
+    ESCALATED = "escalated"
 
 
 class AIMode(StrEnum):
