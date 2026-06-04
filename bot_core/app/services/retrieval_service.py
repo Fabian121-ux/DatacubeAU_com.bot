@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
 import logging
 
 from sqlalchemy import delete, select
@@ -28,6 +29,7 @@ class RetrievedChunk:
     heading: str | None
     content: str
     score: float
+    diagnostics: dict[str, float]
 
 
 @dataclass(slots=True)
@@ -77,25 +79,24 @@ class RetrievalService:
         if not query_tokens:
             return SearchResult(chunks=[], confidence=0.0)
 
-        from sqlalchemy import or_
-
         stmt = (
             select(KnowledgeChunk, KnowledgeDocument)
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
             .where(KnowledgeDocument.is_enabled.is_(True))
             .where(KnowledgeDocument.status == KnowledgeDocumentStatus.ACTIVE.value)
         )
-        
-        # Optimize search by pre-filtering in DB using ILIKE
-        ilike_clauses = [KnowledgeChunk.normalized_content.ilike(f"%{token}%") for token in query_tokens if len(token) > 2]
-        if ilike_clauses:
-            stmt = stmt.where(or_(*ilike_clauses))
 
         rows = (await self.session.execute(stmt)).all()
         chunks: list[RetrievedChunk] = []
 
         for chunk_model, document_model in rows:
-            score = self._score_chunk(query_norm, query_tokens, chunk_model.normalized_content, document_model.source_type)
+            score, diagnostics = self._score_chunk(
+                query_norm,
+                query_tokens,
+                chunk_model.normalized_content,
+                normalize_text(chunk_model.heading or ""),
+                document_model.source_type,
+            )
             if score <= 0:
                 continue
             chunks.append(
@@ -107,6 +108,7 @@ class RetrievalService:
                     heading=chunk_model.heading,
                     content=chunk_model.content,
                     score=score,
+                    diagnostics=diagnostics,
                 )
             )
 
@@ -177,22 +179,72 @@ class RetrievalService:
                 "heading": chunk.heading,
                 "content": chunk.content[:700],
                 "score": chunk.score,
+                "retrieval_diagnostics": chunk.diagnostics,
             }
             for chunk in result.chunks[: settings.kb_max_chunks]
         ]
 
     @staticmethod
-    def _score_chunk(query_norm: str, query_tokens: list[str], normalized_content: str, source_type: str) -> float:
+    def _score_chunk(
+        query_norm: str,
+        query_tokens: list[str],
+        normalized_content: str,
+        normalized_heading: str,
+        source_type: str,
+    ) -> tuple[float, dict[str, float]]:
         if not query_tokens or not normalized_content:
-            return 0.0
+            return 0.0, {
+                "keyword_score": 0.0,
+                "fuzzy_score": 0.0,
+                "phrase_score": 0.0,
+                "source_boost": 0.0,
+                "retrieval_score": 0.0,
+            }
 
-        content_tokens = set(normalized_content.split())
-        overlap = len(set(query_tokens) & content_tokens)
-        score = overlap / max(1, len(set(query_tokens)))
+        content_tokens = list({token for token in normalized_content.split() if token})
+        heading_tokens = list({token for token in normalized_heading.split() if token})
+        searchable_tokens = content_tokens + heading_tokens
+        query_set = set(query_tokens)
+        content_set = set(searchable_tokens)
 
+        overlap = len(query_set & content_set)
+        keyword_overlap_score = overlap / max(1, len(query_set))
+
+        fuzzy_matches = 0
+        fuzzy_ratios: list[float] = []
+        for token in query_set:
+            best = max(
+                (difflib.SequenceMatcher(None, token, content_token).ratio() for content_token in searchable_tokens),
+                default=0.0,
+            )
+            fuzzy_ratios.append(best)
+            if best >= 0.78:
+                fuzzy_matches += 1
+        fuzzy_match_score = fuzzy_matches / max(1, len(query_set))
+        keyword_score = max(keyword_overlap_score, fuzzy_match_score * 0.85)
+        fuzzy_score = sum(fuzzy_ratios) / max(1, len(fuzzy_ratios))
+
+        phrase_targets = [
+            normalized_heading,
+            normalized_content[:500],
+            normalized_content[:1200],
+        ]
+        phrase_score = max(
+            (difflib.SequenceMatcher(None, query_norm, target).ratio() for target in phrase_targets if target),
+            default=0.0,
+        )
         if query_norm and query_norm in normalized_content:
-            score += 0.3
-        if source_type == "faq":
-            score += 0.05
+            phrase_score = max(phrase_score, 1.0)
+        if normalized_heading and query_norm and query_norm in normalized_heading:
+            phrase_score = max(phrase_score, 1.0)
 
-        return min(score, 0.99)
+        source_boost = 0.05 if source_type == "faq" else 0.0
+        retrieval_score = (keyword_score * fuzzy_score * max(phrase_score, 0.25)) + source_boost
+        diagnostics = {
+            "keyword_score": round(keyword_score, 4),
+            "fuzzy_score": round(fuzzy_score, 4),
+            "phrase_score": round(phrase_score, 4),
+            "source_boost": round(source_boost, 4),
+            "retrieval_score": round(min(retrieval_score, 0.99), 4),
+        }
+        return min(retrieval_score, 0.99), diagnostics

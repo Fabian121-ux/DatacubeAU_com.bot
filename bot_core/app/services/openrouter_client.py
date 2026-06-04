@@ -43,10 +43,8 @@ class OpenRouterClient:
         user_context: str = "",
         model_override: str = "",
     ) -> OpenRouterResult:
-        if not settings.ai_enabled:
-            raise OpenRouterClientError("AI is disabled by configuration.")
         if not settings.openrouter_api_key:
-            raise OpenRouterClientError("OPENROUTER_API_KEY is required when AI is enabled.")
+            raise OpenRouterClientError("OPENROUTER_API_KEY is required before AI calls can be made.")
 
         # Use override model if provided and non-empty, else fall back to settings
         if model_override and model_override.strip():

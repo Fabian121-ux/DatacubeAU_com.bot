@@ -195,8 +195,65 @@ class UserMemory(Base):
     preferences: Mapped[str | None] = mapped_column(Text)
     context_notes: Mapped[str | None] = mapped_column(Text)
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    profession: Mapped[str | None] = mapped_column(String(180))
+    interests: Mapped[str | None] = mapped_column(Text)
+    projects: Mapped[str | None] = mapped_column(Text)
+    goals: Mapped[str | None] = mapped_column(Text)
+    communication_style: Mapped[str | None] = mapped_column(String(180))
+    relationship: Mapped[str | None] = mapped_column(String(180))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class UserMemoryTimeline(Base):
+    __tablename__ = "user_memory_timeline"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    memory_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class FAQEntry(Base):
+    __tablename__ = "faq_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_question: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class OutboundMessage(Base):
+    __tablename__ = "outbound_queue"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    message_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class WahaOutage(Base):
+    __tablename__ = "waha_outages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    previous_status: Mapped[str | None] = mapped_column(String(40))
+    current_status: Mapped[str | None] = mapped_column(String(40))
+    reconnect_attempted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    reconnect_success: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class BotConfig(Base):
@@ -206,4 +263,3 @@ class BotConfig(Base):
     config_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     config_value: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
-

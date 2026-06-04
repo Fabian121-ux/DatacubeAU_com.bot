@@ -71,6 +71,15 @@ tr:hover td{background:var(--surface2)}
 .form-row label{font-size:.72rem;color:var(--text-muted);font-weight:500}
 .form-row input,.form-row select,.form-row textarea{min-width:140px}
 .form-wide textarea{width:100%;min-height:100px}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.7rem}
+.detail{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem}
+.detail .k{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:.25rem}
+.detail .v{font-size:.85rem;color:var(--text);line-height:1.35;white-space:pre-wrap}
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.8rem}
+.profile-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem}
+.profile-card input,.profile-card textarea{width:100%;margin-top:.25rem}
+.profile-card label{display:block;font-size:.68rem;color:var(--text-muted);margin-top:.5rem}
+.debug-json{background:#070a10;border:1px solid var(--border);border-radius:var(--radius-sm);padding:.7rem;max-height:220px;overflow:auto;font-size:.72rem;line-height:1.45;white-space:pre-wrap}
 
 /* Badges */
 .badge{display:inline-block;padding:.15rem .45rem;border-radius:3px;font-size:.68rem;font-weight:600}
@@ -112,11 +121,14 @@ tr:hover td{background:var(--surface2)}
       <button data-tab="status" class="active"><span class="icon">📊</span><span>Overview</span></button>
       <button data-tab="identity"><span class="icon">👤</span><span>Identity</span></button>
       <button data-tab="knowledge"><span class="icon">📚</span><span>Knowledge Base</span></button>
+      <button data-tab="faq"><span class="icon">❓</span><span>FAQ Manager</span></button>
       <button data-tab="groups"><span class="icon">👥</span><span>Groups</span></button>
       <button data-tab="rules"><span class="icon">📋</span><span>Reply Rules</span></button>
       <button data-tab="decisions"><span class="icon">🐞</span><span>Debugger</span></button>
       <button data-tab="waha"><span class="icon">📱</span><span>WAHA</span></button>
+      <button data-tab="queue"><span class="icon">📬</span><span>Queue</span></button>
       <button data-tab="memory"><span class="icon">🧠</span><span>Memory</span></button>
+      <button data-tab="profiles"><span class="icon">🪪</span><span>Profiles</span></button>
       <button data-tab="cache"><span class="icon">💾</span><span>Cache</span></button>
       <button data-tab="logs"><span class="icon">📝</span><span>Logs</span></button>
       <button data-tab="test"><span class="icon">🧪</span><span>Test Bot</span></button>
@@ -138,15 +150,16 @@ tr:hover td{background:var(--surface2)}
       <div class="card" style="background:var(--surface2); border-color:var(--accent-dim); margin-bottom:1.5rem">
         <h3 style="color:var(--accent-light)">Bot Architecture Flow</h3>
         <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; font-family:monospace; font-size:0.8rem; margin-top:0.5rem">
-          <span class="badge badge-green">WhatsApp</span> → 
-          <span class="badge badge-blue">WAHA</span> → 
-          <span class="badge badge-purple">Webhook</span> → 
-          <span class="badge badge-orange">Rules</span> → 
-          <span class="badge badge-gray">Cache</span> → 
-          <span class="badge badge-blue">Memory</span> → 
-          <span class="badge badge-orange">KB</span> → 
-          <span class="badge badge-purple">AI</span> → 
-          <span class="badge badge-green">Response</span>
+          <span class="badge badge-green">WhatsApp</span> →
+          <span class="badge badge-blue">WAHA</span> →
+          <span class="badge badge-purple">Webhook</span> →
+          <span class="badge badge-orange">Rules</span> →
+          <span class="badge badge-purple">FAQ</span> →
+          <span class="badge badge-orange">KB</span> →
+          <span class="badge badge-blue">Memory</span> →
+          <span class="badge badge-purple">AI</span> →
+          <span class="badge badge-gray">Queue</span> →
+          <span class="badge badge-green">WAHA</span>
         </div>
       </div>
 
@@ -154,6 +167,10 @@ tr:hover td{background:var(--surface2)}
       <div class="card">
         <h3>System Health</h3>
         <div id="healthInfo">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Identity Status</h3>
+        <div id="identityStatusPanel">Loading…</div>
       </div>
       <div class="card">
         <h3>Database Storage & Cleanup</h3>
@@ -171,8 +188,30 @@ tr:hover td{background:var(--surface2)}
     <div id="tab-identity" class="panel">
       <h2>👤 Identity & Profile Editor</h2>
       <div class="card">
-        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem">This data dynamically builds the AI System Prompt.</p>
         <div id="identityPanel">Loading...</div>
+      </div>
+    </div>
+
+    <!-- FAQ MANAGER -->
+    <div id="tab-faq" class="panel">
+      <h2>❓ Core FAQ Manager</h2>
+      <div class="card">
+        <div class="form-row">
+          <div><label>Markdown File</label><input type="file" id="faqUpload" accept=".md,.txt"></div>
+          <div><button class="btn btn-primary" onclick="uploadFaq()">Upload</button></div>
+          <div><button class="btn btn-ghost" onclick="loadFaq()">Refresh</button></div>
+        </div>
+        <div class="form-wide">
+          <label>core_faq.md</label>
+          <textarea id="faqEditor" rows="12" style="min-height:260px"></textarea>
+        </div>
+        <div class="btn-group" style="margin-top:.8rem">
+          <button class="btn btn-primary" onclick="saveFaq()">Save & Sync</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Parsed Entries</h3>
+        <div id="faqEntries">Loading…</div>
       </div>
     </div>
 
@@ -290,10 +329,48 @@ tr:hover td{background:var(--surface2)}
       </div>
     </div>
 
+    <!-- QUEUE -->
+    <div id="tab-queue" class="panel">
+      <h2>📬 Outbound Queue</h2>
+      <div class="card">
+        <div class="form-row">
+          <div><label>Status</label>
+            <select id="queueStatus">
+              <option value="">All</option>
+              <option value="pending">Pending</option>
+              <option value="sending">Sending</option>
+              <option value="retrying">Retrying</option>
+              <option value="sent">Sent</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+          <div><button class="btn btn-ghost" onclick="loadQueue()">Refresh</button></div>
+        </div>
+        <div class="tbl-wrap" id="queueTable">Loading…</div>
+      </div>
+    </div>
+
     <!-- MEMORY -->
     <div id="tab-memory" class="panel">
       <h2>🧠 User Memory</h2>
       <div class="card"><h3>All Users</h3><div class="tbl-wrap" id="memoryTable">Loading…</div></div>
+    </div>
+
+    <!-- PROFILES -->
+    <div id="tab-profiles" class="panel">
+      <h2>🪪 User Profiles</h2>
+      <div class="card">
+        <div class="form-row">
+          <div style="flex:1"><label>Search</label><input id="profileSearch" type="text" placeholder="Name, WhatsApp, project, interest…" style="width:100%"></div>
+          <div><button class="btn btn-primary" onclick="loadProfiles()">Search</button></div>
+          <div><button class="btn btn-ghost" onclick="document.getElementById('profileSearch').value='';loadProfiles()">Reset</button></div>
+        </div>
+      </div>
+      <div class="profile-grid" id="profilesGrid">Loading…</div>
+      <div class="card">
+        <h3>Memory Timeline</h3>
+        <div id="timelinePanel">Select a profile.</div>
+      </div>
     </div>
 
     <!-- CACHE -->
@@ -360,7 +437,8 @@ function toast(msg, isError) {
 
 // API helper
 async function api(path, opts = {}) {
-  const headers = { 'x-admin-token': token(), 'Content-Type': 'application/json', ...opts.headers };
+  const isForm = opts.body instanceof FormData;
+  const headers = { 'x-admin-token': token(), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...opts.headers };
   try {
     const res = await fetch(BASE + path, { ...opts, headers });
     if (!res.ok) {
@@ -386,11 +464,11 @@ document.getElementById('nav').addEventListener('click', e => {
 });
 
 function loadTab(tab) {
-  const loaders = { 
-    status: loadStatus, rules: loadRules, memory: loadMemory, 
-    cache: loadCache, logs: loadLogsCombined, config: loadConfig, 
-    knowledge: loadKnowledge, groups: loadGroups, decisions: loadDecisions, 
-    identity: loadIdentity, waha: null 
+  const loaders = {
+    status: loadStatus, rules: loadRules, memory: loadMemory,
+    cache: loadCache, logs: loadLogsCombined, config: loadConfig,
+    knowledge: loadKnowledge, groups: loadGroups, decisions: loadDecisions,
+    identity: loadIdentity, faq: loadFaq, queue: loadQueue, profiles: loadProfiles, waha: null
   };
   if (loaders[tab]) loaders[tab]();
 }
@@ -425,7 +503,27 @@ async function loadStatus() {
       </div>
     `;
     loadStorage();
+    loadIdentityStatus();
   } catch (_) {}
+}
+
+async function loadIdentityStatus() {
+  try {
+    const d = await api('/admin/identity/status');
+    const sources = d.active_knowledge_sources || {};
+    const docs = sources.knowledge_documents || {};
+    const docText = Object.keys(docs).length ? Object.entries(docs).map(([k,v]) => `${esc(k)}: ${v}`).join(', ') : 'none';
+    document.getElementById('identityStatusPanel').innerHTML = `
+      <div class="detail-grid">
+        <div class="detail"><div class="k">Assistant</div><div class="v">${esc(d.assistant_name)}<br>${esc(d.assistant_role)}</div></div>
+        <div class="detail"><div class="k">Owner</div><div class="v">${esc(d.owner_name)}</div></div>
+        <div class="detail"><div class="k">Personality</div><div class="v">${esc(d.active_personality_settings.tone)} · ${esc(d.active_personality_settings.reply_length)} · ${esc(d.active_personality_settings.technical_depth)}</div></div>
+        <div class="detail"><div class="k">Sources</div><div class="v">FAQ: ${sources.core_faq_entries || 0}<br>Docs: ${docText}<br>Profiles: ${sources.memory_profiles || 0}<br>Cache: ${sources.qa_cache_entries || 0}</div></div>
+      </div>
+    `;
+  } catch (_) {
+    document.getElementById('identityStatusPanel').innerHTML = '<em>Failed to load identity status.</em>';
+  }
 }
 
 async function loadStorage() {
@@ -451,6 +549,42 @@ async function runCleanup() {
   } catch (e) {
     div.innerHTML = `<span style="color:var(--red)">Failed: ${e.message}</span>`;
   }
+}
+
+// ---- FAQ MANAGER ----
+async function loadFaq() {
+  try {
+    const d = await api('/admin/faq');
+    document.getElementById('faqEditor').value = d.content || '';
+    const entries = document.getElementById('faqEntries');
+    if (!d.items.length) { entries.innerHTML = '<em>No FAQ entries parsed.</em>'; return; }
+    entries.innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Question</th><th>Answer</th><th>Enabled</th></tr></thead>
+      <tbody>${d.items.map(f => `<tr>
+        <td>${f.id}</td>
+        <td title="${esc(f.question)}">${esc((f.question||'').substring(0,70))}</td>
+        <td title="${esc(f.answer)}">${esc((f.answer||'').substring(0,90))}</td>
+        <td><span class="badge ${f.is_enabled?'badge-green':'badge-gray'}">${f.is_enabled?'yes':'no'}</span></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+async function saveFaq() {
+  const content = document.getElementById('faqEditor').value;
+  const r = await api('/admin/faq/save', { method: 'POST', body: JSON.stringify({ content }) });
+  toast(`FAQ synced: ${r.entries} entries`);
+  loadFaq();
+  loadIdentityStatus();
+}
+async function uploadFaq() {
+  const input = document.getElementById('faqUpload');
+  if (!input.files.length) return toast('Choose a markdown file', true);
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  const r = await api('/admin/faq/upload', { method: 'POST', body: fd });
+  toast(`FAQ uploaded: ${r.entries} entries`);
+  input.value = '';
+  loadFaq();
+  loadIdentityStatus();
 }
 
 // ---- KNOWLEDGE ----
@@ -549,7 +683,7 @@ async function loadDecisions() {
     const d = await api('/admin/router-decisions/recent?limit=50');
     if (!d.items.length) { document.getElementById('decisionsTable').innerHTML = '<em>No decisions logged yet.</em>'; return; }
     document.getElementById('decisionsTable').innerHTML = `<table>
-      <thead><tr><th>Time</th><th>Msg ID</th><th>Source / Decision</th><th>Reason</th><th>Conf</th><th>Tokens</th><th>Sent?</th></tr></thead>
+      <thead><tr><th>Time</th><th>Msg ID</th><th>Source / Decision</th><th>Reason</th><th>Conf</th><th>AI</th><th>Tokens</th><th>Latency</th><th>Queued?</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
         <td>${m.message_id}</td>
@@ -560,7 +694,9 @@ async function loadDecisions() {
         </td>
         <td title="${esc(m.reason)}">${esc((m.reason||'').substring(0,40))}</td>
         <td>${(m.confidence||0).toFixed(2)}</td>
+        <td title="${esc(m.prompt_hash||'')}">${esc(m.ai_model || '—')}</td>
         <td>${m.ai_tokens > 0 ? m.ai_tokens : '—'}</td>
+        <td>${m.latency_ms ? `${m.latency_ms}ms` : '—'}</td>
         <td><span class="badge ${m.reply_sent?'badge-green':'badge-gray'}">${m.reply_sent?'yes':'no'}</span></td>
       </tr>`).join('')}</tbody></table>`;
   } catch (_) {}
@@ -573,6 +709,46 @@ async function wahaAction(action) {
     toast(`WAHA session ${action} requested.`);
     loadStatus();
   } catch (_) {}
+}
+
+// ---- QUEUE ----
+document.getElementById('queueStatus').addEventListener('change', () => loadQueue());
+async function loadQueue() {
+  try {
+    const status = document.getElementById('queueStatus').value;
+    const d = await api('/admin/queue' + (status ? `?status=${encodeURIComponent(status)}` : ''));
+    if (!d.items.length) { document.getElementById('queueTable').innerHTML = '<em>No queue messages.</em>'; return; }
+    document.getElementById('queueTable').innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Status</th><th>Chat</th><th>Message</th><th>Retries</th><th>Next Attempt</th><th>Error</th><th></th></tr></thead>
+      <tbody>${d.items.map(q => `<tr>
+        <td>${q.id}</td>
+        <td><span class="badge ${queueBadge(q.status)}">${q.status}</span></td>
+        <td title="${esc(q.chat_id)}">${esc(q.chat_id.substring(0,22))}</td>
+        <td title="${esc(q.message_text)}">${esc(q.message_text.substring(0,70))}</td>
+        <td>${q.retry_count}/${q.max_retries}</td>
+        <td style="white-space:nowrap">${q.next_attempt_at ? new Date(q.next_attempt_at).toLocaleString() : '—'}</td>
+        <td title="${esc(q.error_message||'')}">${esc((q.error_message||'—').substring(0,36))}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="resendQueue(${q.id})">Resend</button> <button class="btn btn-danger btn-sm" onclick="deleteQueue(${q.id})">Del</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+function queueBadge(status) {
+  if (status === 'sent') return 'badge-green';
+  if (status === 'failed') return 'badge-red';
+  if (status === 'retrying') return 'badge-orange';
+  if (status === 'sending') return 'badge-purple';
+  return 'badge-blue';
+}
+async function resendQueue(id) {
+  await api(`/admin/queue/${id}/resend`, { method: 'POST' });
+  toast('Queue message reset');
+  loadQueue();
+}
+async function deleteQueue(id) {
+  if (!confirm('Delete this queued message?')) return;
+  await api(`/admin/queue/${id}`, { method: 'DELETE' });
+  toast('Queue message deleted');
+  loadQueue();
 }
 
 // ---- TEST BOT ----
@@ -592,6 +768,8 @@ async function testReply() {
         <div style="margin-bottom:.5rem"><span class="badge badge-purple">${r.decision_type}</span> <span class="badge badge-blue">${r.ai_used ? 'AI' : 'No AI'}</span></div>
         <div style="font-size:.9rem;line-height:1.5;color:var(--text)">${r.reply_text || '<em>No reply</em>'}</div>
         <div style="margin-top:.4rem;font-size:.72rem;color:var(--text-dim)">Reason: ${r.reason} | KB confidence: ${(r.kb_confidence||0).toFixed(2)}</div>
+        <div class="debug-json" style="margin-top:.7rem">${esc(JSON.stringify(r.debugger || {}, null, 2))}</div>
+        <div class="debug-json" style="margin-top:.7rem">${esc(JSON.stringify(r.source_diagnostics || {}, null, 2))}</div>
       </div>
     `;
   } catch (_) { div.innerHTML = '<span class="badge badge-red">Failed</span>'; }
@@ -651,12 +829,13 @@ async function loadMemory() {
     const d = await api('/admin/memory');
     if (!d.items.length) { document.getElementById('memoryTable').innerHTML = '<em>No user memories yet.</em>'; return; }
     document.getElementById('memoryTable').innerHTML = `<table>
-      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Preferences</th><th>Notes</th><th>Onboarded</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Profession</th><th>Interests</th><th>Projects</th><th>Onboarded</th><th>Actions</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td>${m.display_name||'—'}</td><td>${esc(m.whatsapp_id)}</td>
         <td>${esc(m.user_name||'—')}</td>
-        <td title="${esc(m.preferences||'')}">${esc((m.preferences||'—').substring(0,40))}</td>
-        <td title="${esc(m.context_notes||'')}">${esc((m.context_notes||'—').substring(0,40))}</td>
+        <td title="${esc(m.profession||'')}">${esc((m.profession||'—').substring(0,34))}</td>
+        <td title="${esc(m.interests||'')}">${esc((m.interests||'—').substring(0,34))}</td>
+        <td title="${esc(m.projects||'')}">${esc((m.projects||'—').substring(0,34))}</td>
         <td><span class="badge ${m.onboarding_complete?'badge-green':'badge-orange'}">${m.onboarding_complete?'yes':'no'}</span></td>
         <td>
           <select onchange="if(this.value){deleteMemory(${m.contact_id}, this.value); this.value='';}">
@@ -681,6 +860,71 @@ async function deleteMemory(cid, risk) {
   await api(`/admin/memory/${cid}?level=${risk}`, { method: 'DELETE' });
   toast(`Memory cleared (${risk})`);
   loadMemory();
+}
+
+// ---- PROFILES ----
+async function loadProfiles() {
+  try {
+    const q = document.getElementById('profileSearch').value.trim();
+    const d = await api('/admin/profiles' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+    const grid = document.getElementById('profilesGrid');
+    if (!d.items.length) { grid.innerHTML = '<em>No profiles found.</em>'; return; }
+    grid.innerHTML = d.items.map(p => `
+      <div class="profile-card">
+        <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start">
+          <div>
+            <strong>${esc(p.display_name || p.user_name || p.whatsapp_id)}</strong>
+            <div style="font-size:.72rem;color:var(--text-muted)">${esc(p.whatsapp_id)}</div>
+          </div>
+          <span class="badge ${p.onboarding_complete?'badge-green':'badge-orange'}">${p.onboarding_complete?'onboarded':'open'}</span>
+        </div>
+        ${profileInput(p.contact_id,'user_name','Name',p.user_name)}
+        ${profileInput(p.contact_id,'profession','Profession',p.profession)}
+        ${profileText(p.contact_id,'interests','Interests',p.interests)}
+        ${profileText(p.contact_id,'projects','Projects',p.projects)}
+        ${profileText(p.contact_id,'goals','Goals',p.goals)}
+        ${profileInput(p.contact_id,'communication_style','Style',p.communication_style)}
+        ${profileInput(p.contact_id,'relationship','Relationship',p.relationship)}
+        <div class="btn-group" style="margin-top:.7rem">
+          <button class="btn btn-primary btn-sm" onclick="saveProfile(${p.contact_id})">Save</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadTimeline(${p.contact_id})">Timeline</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteProfile(${p.contact_id})">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (_) {}
+}
+function profileInput(cid, field, label, value) {
+  return `<label>${label}<input data-profile="${cid}" data-field="${field}" value="${esc(value||'')}"></label>`;
+}
+function profileText(cid, field, label, value) {
+  return `<label>${label}<textarea data-profile="${cid}" data-field="${field}" rows="2">${esc(value||'')}</textarea></label>`;
+}
+async function saveProfile(cid) {
+  const fields = {};
+  document.querySelectorAll(`[data-profile="${cid}"]`).forEach(el => fields[el.dataset.field] = el.value);
+  await api(`/admin/profiles/${cid}`, { method: 'PUT', body: JSON.stringify(fields) });
+  toast('Profile saved');
+  loadProfiles();
+  loadIdentityStatus();
+}
+async function deleteProfile(cid) {
+  if (!confirm('Delete this profile and timeline facts?')) return;
+  await api(`/admin/profiles/${cid}`, { method: 'DELETE' });
+  toast('Profile deleted');
+  loadProfiles();
+  document.getElementById('timelinePanel').innerHTML = 'Select a profile.';
+}
+async function loadTimeline(cid) {
+  const d = await api(`/admin/memory/${cid}/timeline`);
+  const panel = document.getElementById('timelinePanel');
+  if (!d.items.length) { panel.innerHTML = '<em>No timeline facts yet.</em>'; return; }
+  panel.innerHTML = d.items.map(t => `
+    <div class="detail" style="margin-bottom:.5rem">
+      <div class="k">${new Date(t.created_at).toLocaleString()} · ${esc(t.source)} · ${(t.confidence||0).toFixed(2)}</div>
+      <div class="v">${esc(t.memory_text)}</div>
+    </div>
+  `).join('');
 }
 
 // ---- CACHE ----
@@ -752,32 +996,55 @@ async function loadLogs() {
 // ---- IDENTITY ----
 async function loadIdentity() {
   try {
-    const d = await api('/admin/config');
-    const cfg = d.config;
+    const d = await api('/admin/identity');
+    const cfg = d.identity;
     const panel = document.getElementById('identityPanel');
     panel.innerHTML = `
+      <div class="form-row">
+        <div style="flex:1"><label>Assistant Name</label><input id="idAssistantName" value="${esc(cfg.assistant_name)}" style="width:100%"></div>
+        <div style="flex:1"><label>Assistant Role</label><input id="idAssistantRole" value="${esc(cfg.assistant_role)}" style="width:100%"></div>
+        <div style="flex:1"><label>Owner Name</label><input id="idOwnerName" value="${esc(cfg.owner_name)}" style="width:100%"></div>
+      </div>
       <div class="form-wide" style="margin-bottom:1rem">
-        <label>Bio</label>
-        <textarea onchange="saveConfig('identity_bio',this.value)" rows="2">${esc(cfg.identity_bio)}</textarea>
+        <label>Owner Bio</label>
+        <textarea id="idOwnerBio" rows="2">${esc(cfg.owner_bio)}</textarea>
       </div>
       <div class="form-row">
-        <div style="flex:1"><label>Projects</label><textarea onchange="saveConfig('identity_projects',this.value)" rows="2">${esc(cfg.identity_projects)}</textarea></div>
-        <div style="flex:1"><label>Services</label><textarea onchange="saveConfig('identity_services',this.value)" rows="2">${esc(cfg.identity_services)}</textarea></div>
+        <div style="flex:1"><label>Projects</label><textarea id="idProjects" rows="2">${esc(cfg.projects)}</textarea></div>
+        <div style="flex:1"><label>Services</label><textarea id="idServices" rows="2">${esc(cfg.services)}</textarea></div>
       </div>
       <div class="form-row">
-        <div style="flex:1"><label>Skills</label><input type="text" onchange="saveConfig('identity_skills',this.value)" value="${esc(cfg.identity_skills)}" style="width:100%"></div>
-        <div style="flex:1"><label>Interests</label><input type="text" onchange="saveConfig('identity_interests',this.value)" value="${esc(cfg.identity_interests)}" style="width:100%"></div>
+        <div style="flex:1"><label>Skills</label><input id="idSkills" type="text" value="${esc(cfg.skills)}" style="width:100%"></div>
+        <div style="flex:1"><label>Interests</label><input id="idInterests" type="text" value="${esc(cfg.interests)}" style="width:100%"></div>
       </div>
       <div class="form-row">
-        <div style="flex:1"><label>Current Focus</label><input type="text" onchange="saveConfig('identity_focus',this.value)" value="${esc(cfg.identity_focus)}" style="width:100%"></div>
-        <div style="flex:1"><label>Comm Style</label><input type="text" onchange="saveConfig('identity_style',this.value)" value="${esc(cfg.identity_style)}" style="width:100%"></div>
+        <div style="flex:1"><label>Current Focus</label><input id="idFocus" type="text" value="${esc(cfg.current_focus)}" style="width:100%"></div>
+        <div style="flex:1"><label>Communication Style</label><input id="idCommStyle" type="text" value="${esc(cfg.communication_style)}" style="width:100%"></div>
       </div>
-      <div class="form-wide" style="margin-top:1rem">
-        <label>FAQ Entries (e.g. Q: What is X? A: Y)</label>
-        <textarea onchange="saveConfig('identity_faq',this.value)" rows="5">${esc(cfg.identity_faq)}</textarea>
+      <div class="btn-group" style="margin-top:.8rem">
+        <button class="btn btn-primary" onclick="saveIdentity()">Save Identity</button>
       </div>
     `;
   } catch (_) { document.getElementById('identityPanel').innerHTML = '<em>Failed to load identity.</em>'; }
+}
+async function saveIdentity() {
+  await api('/admin/identity', {
+    method: 'PUT',
+    body: JSON.stringify({
+      assistant_name: document.getElementById('idAssistantName').value,
+      assistant_role: document.getElementById('idAssistantRole').value,
+      owner_name: document.getElementById('idOwnerName').value,
+      owner_bio: document.getElementById('idOwnerBio').value,
+      projects: document.getElementById('idProjects').value,
+      services: document.getElementById('idServices').value,
+      skills: document.getElementById('idSkills').value,
+      interests: document.getElementById('idInterests').value,
+      current_focus: document.getElementById('idFocus').value,
+      communication_style: document.getElementById('idCommStyle').value
+    })
+  });
+  toast('Identity saved');
+  loadIdentityStatus();
 }
 
 // ---- CONFIG / AI BEHAVIOR ----

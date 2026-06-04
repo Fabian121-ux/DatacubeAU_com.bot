@@ -46,6 +46,7 @@ class DecisionType(StrEnum):
     IGNORE = "ignore"
     STATIC_REPLY = "static_reply"
     KB_REPLY = "kb_reply"
+    FAQ_REPLY = "faq_reply"
     COOLDOWN_BLOCK = "cooldown_block"
     NO_MATCH = "no_match"
     AI_REPLY_LIGHT = "ai_reply_light"

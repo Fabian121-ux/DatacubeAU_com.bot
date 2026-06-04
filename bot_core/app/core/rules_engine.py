@@ -10,6 +10,7 @@ from app.config import settings
 from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType, DecisionType, Direction, GroupReplyMode
 from app.models.schema import DMConfig, GroupConfig, Message, ReplyRule
+from app.services.bot_config_service import BotConfigService
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
@@ -25,6 +26,7 @@ class RulesResult:
 class RulesEngine:
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.bot_config = BotConfigService(session)
 
     async def evaluate(self, message: NormalizedMessage, contact_id: int | None) -> RulesResult:
         if not message.message_text.strip():
@@ -106,6 +108,9 @@ class RulesEngine:
     async def _resolve_reply_rule(self, message_text: str, chat_type: ChatType) -> str | None:
         """Query reply_rules table for a matching rule, ordered by priority."""
         normalized = normalize_text(message_text)
+        if self._is_identity_question(normalized):
+            return await self.bot_config.introduction_reply()
+
         stmt = (
             select(ReplyRule)
             .where(ReplyRule.is_enabled.is_(True))
@@ -126,3 +131,16 @@ class RulesEngine:
                 return rule.response_text
 
         return None
+
+    @staticmethod
+    def _is_identity_question(normalized_text: str) -> bool:
+        identity_questions = {
+            "who are you",
+            "what is your name",
+            "whats your name",
+            "your name",
+            "tell me your name",
+            "introduce yourself",
+            "who is this",
+        }
+        return normalized_text in identity_questions

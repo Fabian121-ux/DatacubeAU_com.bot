@@ -11,6 +11,7 @@ from app.core.rules_engine import RulesEngine
 from app.models.enums import AIMode, ChatType, DecisionType
 from app.models.schema import AICall, ConversationSession
 from app.services.bot_config_service import BotConfigService
+from app.services.faq_service import FAQService
 from app.services.memory_service import MemoryService
 from app.services.openrouter_client import OpenRouterClient, OpenRouterClientError
 from app.services.rate_limiter import RateLimiter
@@ -28,6 +29,7 @@ class PlannedReply:
     reply_text: str | None
     kb_confidence: float = 0.0
     matched_chunks: list[dict[str, object]] = field(default_factory=list)
+    source_diagnostics: dict[str, object] = field(default_factory=dict)
     ai_used: bool = False
     ai_call: AICall | None = None
 
@@ -36,6 +38,7 @@ class ReplyPlanner:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.rules = RulesEngine(session)
+        self.faq = FAQService(session)
         self.retrieval = RetrievalService(session)
         self.memory_service = MemoryService(session)
         self.rate_limiter = RateLimiter(session)
@@ -50,9 +53,10 @@ class ReplyPlanner:
                 reason=rules_result.reason,
                 should_reply=rules_result.reply_text is not None,
                 reply_text=rules_result.reply_text,
+                source_diagnostics={"rules": {"matched": bool(rules_result.reply_text), "reason": rules_result.reason}},
             )
 
-        # 2. Rate limit check (per-user daily)
+        # Guardrail: rate limit before spending retrieval/AI work.
         if contact_id:
             rate_check = await self.rate_limiter.check_user_daily_limit(contact_id)
             if not rate_check.allowed:
@@ -61,9 +65,63 @@ class ReplyPlanner:
                     reason=rate_check.reason,
                     should_reply=True,
                     reply_text="You've reached the daily message limit. Please try again tomorrow. 🕐",
+                    source_diagnostics={"rate_limit": {"allowed": False, "reason": rate_check.reason}},
                 )
 
-        # 3. Memory onboarding check (DM only)
+        # 2. Core FAQ layer.
+        faq_entry, faq_score = await self.faq.search_faq(message.message_text)
+        if faq_entry:
+            return PlannedReply(
+                decision_type=DecisionType.FAQ_REPLY,
+                reason="core FAQ match above threshold",
+                should_reply=True,
+                reply_text=faq_entry.answer,
+                kb_confidence=faq_score,
+                source_diagnostics={
+                    "faq": {
+                        "matched": True,
+                        "score": faq_score,
+                        "entry_id": faq_entry.id,
+                        "question": faq_entry.question,
+                    }
+                },
+            )
+
+        # Cached answer lookup sits below FAQ so edited core FAQ answers win immediately.
+        cache_hit = await self.retrieval.lookup_cache(message.message_text)
+        if cache_hit:
+            return PlannedReply(
+                decision_type=DecisionType.KB_REPLY,
+                reason="cached faq/knowledge match",
+                should_reply=True,
+                reply_text=cache_hit.answer_text,
+                kb_confidence=float(cache_hit.confidence),
+                matched_chunks=[],
+                source_diagnostics={
+                    "faq": {"matched": False, "score": faq_score},
+                    "cache": {"hit": True, "cache_id": cache_hit.id, "answer_mode": cache_hit.answer_mode},
+                },
+            )
+
+        # 3. Knowledge search.
+        search_result = await self.retrieval.search(message.message_text)
+        retrieval_context = self.retrieval.prompt_context(search_result)
+        if search_result.chunks and search_result.confidence >= settings.kb_min_score:
+            return PlannedReply(
+                decision_type=DecisionType.KB_REPLY,
+                reason="knowledge match above threshold",
+                should_reply=True,
+                reply_text=self.retrieval.build_kb_reply(search_result),
+                kb_confidence=search_result.confidence,
+                matched_chunks=retrieval_context,
+                source_diagnostics={
+                    "faq": {"matched": False, "score": faq_score},
+                    "cache": {"hit": False},
+                    "kb": {"matched": True, "confidence": search_result.confidence, "chunks": retrieval_context},
+                },
+            )
+
+        # 4. Memory onboarding check (DM only), after FAQ/KB so useful answers are not blocked.
         if contact_id and message.chat_type == ChatType.DM:
             onboard_reply, stage = await self.memory_service.check_onboarding(
                 contact_id, message.message_text
@@ -74,33 +132,17 @@ class ReplyPlanner:
                     reason=f"onboarding: {stage}" if stage else "onboarding complete",
                     should_reply=True,
                     reply_text=onboard_reply,
+                    kb_confidence=search_result.confidence,
+                    matched_chunks=retrieval_context,
+                    source_diagnostics={
+                        "faq": {"matched": False, "score": faq_score},
+                        "cache": {"hit": False},
+                        "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
+                        "memory": {"onboarding_stage": stage},
+                    },
                 )
 
-        # 4. Cached answer lookup
-        cache_hit = await self.retrieval.lookup_cache(message.message_text)
-        if cache_hit:
-            return PlannedReply(
-                decision_type=DecisionType.KB_REPLY,
-                reason="cached faq/knowledge match",
-                should_reply=True,
-                reply_text=cache_hit.answer_text,
-                kb_confidence=float(cache_hit.confidence),
-                matched_chunks=[],
-            )
-
-        # 5. Knowledge search
-        search_result = await self.retrieval.search(message.message_text)
-        if search_result.chunks and search_result.confidence >= settings.kb_min_score:
-            return PlannedReply(
-                decision_type=DecisionType.KB_REPLY,
-                reason="knowledge match above threshold",
-                should_reply=True,
-                reply_text=self.retrieval.build_kb_reply(search_result),
-                kb_confidence=search_result.confidence,
-                matched_chunks=self.retrieval.prompt_context(search_result),
-            )
-
-        # 6. AI fallback (if enabled)
+        # 5. AI fallback (if enabled).
         ai_enabled_config = await self.bot_config.get_bool("ai_enabled", False)
         ai_enabled = settings.ai_enabled or ai_enabled_config
         if ai_enabled:
@@ -111,15 +153,21 @@ class ReplyPlanner:
                 if ai_plan:
                     return ai_plan
 
-        # 7. Fallback
-        no_match_text = self._no_match_reply(message.chat_type)
+        # 6. Escalating fallback.
+        no_match_text = await self._no_match_reply(message.chat_type)
         return PlannedReply(
             decision_type=DecisionType.NO_MATCH,
-            reason="no rule, cache, knowledge, or ai match",
+            reason="no rule, faq, cache, knowledge, memory, or ai match",
             should_reply=no_match_text is not None,
             reply_text=no_match_text,
             kb_confidence=search_result.confidence,
-            matched_chunks=self.retrieval.prompt_context(search_result),
+            matched_chunks=retrieval_context,
+            source_diagnostics={
+                "faq": {"matched": False, "score": faq_score},
+                "cache": {"hit": False},
+                "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
+                "ai": {"used": False, "enabled": ai_enabled},
+            },
         )
 
     async def _try_ai(
@@ -135,68 +183,34 @@ class ReplyPlanner:
         model_override_light = await self.bot_config.get("ai_model_light")
         model_override_deep = await self.bot_config.get("ai_model_deep")
         
-        # Load identity settings
-        identity_bio = await self.bot_config.get("identity_bio")
-        identity_projects = await self.bot_config.get("identity_projects")
-        identity_services = await self.bot_config.get("identity_services")
-        identity_skills = await self.bot_config.get("identity_skills")
-        identity_interests = await self.bot_config.get("identity_interests")
-        identity_focus = await self.bot_config.get("identity_focus")
-        identity_style = await self.bot_config.get("identity_style")
-        identity_faq = await self.bot_config.get("identity_faq")
-
-        # Load personality settings
-        tone = await self.bot_config.get("personality_tone", "professional")
-        humor = await self.bot_config.get("personality_humor", "low")
-        reply_length = await self.bot_config.get("personality_reply_length", "short")
-        tech_depth = await self.bot_config.get("personality_tech_depth", "medium")
-        emoji = await self.bot_config.get("personality_emoji", "light")
-        
         # Load AI behavior settings
         strictness = await self.bot_config.get("ai_strictness", "medium")
-        escalation_threshold = float(await self.bot_config.get("ai_escalation_threshold", "0.3"))
+        try:
+            escalation_threshold = float(await self.bot_config.get("ai_escalation_threshold", "0.3"))
+        except ValueError:
+            escalation_threshold = 0.3
         hallucination_protection = await self.bot_config.get("ai_hallucination_protection", "high")
         
         # Check escalation based on KB confidence vs threshold
         force_escalation = False
         if search_result.confidence < escalation_threshold and strictness == "high":
-             force_escalation = True
+            force_escalation = True
         
-        # Inject personality dynamically into the instructions
-        dynamic_system_instructions = (
-            f"You are the personal WhatsApp assistant for Fabian and his projects.\n"
-            f"Your role is to answer questions about Fabian, explain his projects clearly, guide users, and keep responses {identity_style}.\n"
-            f"You are NOT a generic AI chatbot. Present yourself as Fabian's assistant.\n\n"
-            f"--- IDENTITY LAYER ---\n"
-            f"Bio: {identity_bio}\n"
-            f"Projects: {identity_projects}\n"
-            f"Services: {identity_services}\n"
-            f"Skills: {identity_skills}\n"
-            f"Interests: {identity_interests}\n"
-            f"Focus: {identity_focus}\n\n"
-            f"--- FAQS ---\n{identity_faq}\n\n"
-            f"--- PERSONALITY SETTINGS ---\n"
-            f"Tone: {tone}\n"
-            f"Humor level: {humor}\n"
-            f"Reply length: {reply_length}\n"
-            f"Technical depth: {tech_depth}\n"
-            f"Emoji usage: {emoji}\n\n"
-            f"--- BEHAVIOR RULES ---\n"
-            f"Strictness: {strictness}\n"
-            f"Hallucination Protection: {hallucination_protection}\n"
-            f"If asked about something not in your knowledge base or identity layer, do NOT guess. "
-            f"If hallucination protection is 'high' or you are unsure, you MUST reply exactly with: 'Fabian may need to answer this personally.'\n"
-        )
+        dynamic_system_instructions = await self.bot_config.build_system_prompt()
         
         if force_escalation:
-             return PlannedReply(
+            return PlannedReply(
                 decision_type=DecisionType.ESCALATED,
                 reason="kb confidence below escalation threshold",
                 should_reply=True,
-                reply_text="Fabian may need to answer this personally.",
+                reply_text=await self.bot_config.escalation_reply(),
                 kb_confidence=search_result.confidence,
                 matched_chunks=self.retrieval.prompt_context(search_result),
                 ai_used=False,
+                source_diagnostics={
+                    "kb": {"matched": False, "confidence": search_result.confidence},
+                    "ai": {"used": False, "escalated": True, "strictness": strictness},
+                },
             )
 
         # Load user memory context
@@ -235,6 +249,23 @@ class ReplyPlanner:
                 reply_text=result.text,
                 kb_confidence=search_result.confidence,
                 matched_chunks=self.retrieval.prompt_context(search_result),
+                source_diagnostics={
+                    "kb": {
+                        "matched": bool(search_result.chunks),
+                        "confidence": search_result.confidence,
+                        "chunks": self.retrieval.prompt_context(search_result),
+                    },
+                    "ai": {
+                        "used": True,
+                        "mode": mode.value,
+                        "model": result.model,
+                        "prompt_hash": result.prompt_hash,
+                        "prompt_tokens": result.prompt_tokens,
+                        "completion_tokens": result.completion_tokens,
+                        "latency_ms": result.latency_ms,
+                    },
+                    "hallucination_protection": hallucination_protection,
+                },
                 ai_used=True,
                 ai_call=ai_call,
             )
@@ -249,12 +280,13 @@ class ReplyPlanner:
         return summary or ""
 
     async def upsert_conversation_summary(self, *, chat_id: str, chat_type: str, user_text: str, bot_text: str, decision: str) -> None:
-        compact = f"user:{user_text[:100]} | bot:{bot_text[:180]}"
+        compact = f"decision:{decision} | user:{user_text[:140]} | assistant:{bot_text[:220]}"
         stmt = select(ConversationSession).where(ConversationSession.chat_id == chat_id).limit(1)
         model = (await self.session.execute(stmt)).scalar_one_or_none()
         if model:
             model.chat_type = chat_type
-            model.summary = compact
+            previous = model.summary or ""
+            model.summary = self._merge_summary(previous, compact)
             model.last_intent = decision
             model.last_message_at = utcnow()
             model.updated_at = utcnow()
@@ -273,7 +305,7 @@ class ReplyPlanner:
         await self.session.flush()
 
     async def cache_answer_if_reusable(self, question: str, reply: PlannedReply) -> None:
-        if reply.decision_type not in {DecisionType.KB_REPLY, DecisionType.AI_REPLY_LIGHT, DecisionType.AI_REPLY_DEEP}:
+        if reply.decision_type not in {DecisionType.FAQ_REPLY, DecisionType.KB_REPLY, DecisionType.AI_REPLY_LIGHT, DecisionType.AI_REPLY_DEEP}:
             return
         if not reply.reply_text:
             return
@@ -282,11 +314,23 @@ class ReplyPlanner:
             answer_text=reply.reply_text,
             answer_mode=reply.decision_type.value,
             confidence=reply.kb_confidence or (0.6 if reply.ai_used else 0.5),
-            source_json={"matched_chunks": reply.matched_chunks, "hash": sha256_text(question)},
+            source_json={
+                "matched_chunks": reply.matched_chunks,
+                "source_diagnostics": reply.source_diagnostics,
+                "hash": sha256_text(question),
+            },
         )
 
-    @staticmethod
-    def _no_match_reply(chat_type: ChatType) -> str | None:
+    async def _no_match_reply(self, chat_type: ChatType) -> str | None:
         if chat_type == ChatType.DM:
-            return "I don't have an answer for that yet. Try rephrasing or type /help. 💡"
-        return "I don't have an answer for that yet."
+            return await self.bot_config.escalation_reply()
+        return await self.bot_config.escalation_reply()
+
+    @staticmethod
+    def _merge_summary(previous: str, latest: str) -> str:
+        if not previous:
+            return latest
+        merged = f"{previous}\n{latest}"
+        if len(merged) <= 2200:
+            return merged
+        return merged[-2200:].lstrip()

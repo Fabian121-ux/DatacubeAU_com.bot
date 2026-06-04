@@ -10,10 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.message_normalizer import MessageNormalizer, NormalizedMessage
 from app.core.reply_planner import PlannedReply, ReplyPlanner
 from app.models.enums import Direction
-from app.models.schema import AuditLog, Contact, Message, RouterDecision
+from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
 from app.services.logging_service import log_event
-from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
+from app.utils.time import utcnow
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ class RouteResult:
     kb_confidence: float
     inbound_message_id: int
     outbound_message_id: int | None
+    outbound_queue_id: int | None = None
     delivery_error: str | None = None
 
 
@@ -37,7 +38,6 @@ class InboundRouter:
         self.session = session
         self.normalizer = MessageNormalizer()
         self.reply_planner = ReplyPlanner(session)
-        self.waha = WAHAClient()
 
     async def process_event(self, event: dict[str, Any]) -> dict[str, Any]:
         normalized = self.normalizer.normalize(event)
@@ -62,6 +62,18 @@ class InboundRouter:
             chat_id=normalized.chat_id,
             chat_type=normalized.chat_type.value,
         )
+
+        profile_facts = await self.reply_planner.memory_service.extract_profile_from_message(
+            contact.id,
+            normalized.message_text,
+        )
+        if profile_facts:
+            await self._save_audit_log(
+                action="memory_profile_extracted",
+                entity_type="contact",
+                entity_id=str(contact.id),
+                details_json={"facts": profile_facts},
+            )
 
         planned = await self.reply_planner.plan(normalized, contact.id)
         decision = await self._save_router_decision(
@@ -92,9 +104,8 @@ class InboundRouter:
             should_reply=planned.should_reply,
             kb_confidence=planned.kb_confidence,
         )
-        await self.session.commit()
-
         if not planned.should_reply or not planned.reply_text:
+            await self.session.commit()
             return RouteResult(
                 status="ok",
                 chat_type=normalized.chat_type.value,
@@ -106,30 +117,8 @@ class InboundRouter:
                 outbound_message_id=None,
             ).__dict__
 
-        try:
-            waha_response = await self.waha.send_text(chat_id=normalized.chat_id, text=planned.reply_text)
-        except WahaClientError as exc:
-            await self._save_audit_log(
-                action="outbound_failed",
-                entity_type="message",
-                entity_id=str(inbound.id),
-                details_json={"decision_type": planned.decision_type.value, "error": str(exc)},
-            )
-            log_event(logger, logging.ERROR, "outbound_failed", message_id=inbound.id, error=str(exc))
-            await self.session.commit()
-            return RouteResult(
-                status="delivery_failed",
-                chat_type=normalized.chat_type.value,
-                action="delivery_failed",
-                decision_type=planned.decision_type.value,
-                reason=planned.reason,
-                kb_confidence=planned.kb_confidence,
-                inbound_message_id=inbound.id,
-                outbound_message_id=None,
-                delivery_error=str(exc),
-            ).__dict__
-
-        outbound = await self._save_outbound_message(normalized, contact.id, planned.reply_text, waha_response)
+        queued = await self._queue_outbound_message(normalized.chat_id, planned.reply_text)
+        outbound = await self._save_outbound_message(normalized, contact.id, planned.reply_text, queued.id)
         decision.reply_sent = True
         if planned.ai_call:
             planned.ai_call.message_id = inbound.id
@@ -143,40 +132,44 @@ class InboundRouter:
             decision=planned.decision_type.value,
         )
         await self._save_audit_log(
-            action="outbound_sent",
+            action="outbound_queued",
             entity_type="message",
             entity_id=str(outbound.id),
             details_json={
                 "inbound_message_id": inbound.id,
+                "outbound_queue_id": queued.id,
                 "decision_type": planned.decision_type.value,
                 "chat_id": normalized.chat_id,
+                "source_diagnostics": planned.source_diagnostics,
             },
         )
         log_event(
             logger,
             logging.INFO,
-            "outbound_sent",
+            "outbound_queued",
             inbound_message_id=inbound.id,
             outbound_message_id=outbound.id,
+            outbound_queue_id=queued.id,
             decision_type=planned.decision_type.value,
         )
         await self.session.commit()
         return RouteResult(
             status="ok",
             chat_type=normalized.chat_type.value,
-            action="replied",
+            action="queued",
             decision_type=planned.decision_type.value,
             reason=planned.reason,
             kb_confidence=planned.kb_confidence,
             inbound_message_id=inbound.id,
             outbound_message_id=outbound.id,
+            outbound_queue_id=queued.id,
         ).__dict__
 
     async def preview(self, normalized: NormalizedMessage, contact_id: int | None = None) -> PlannedReply:
         return await self.reply_planner.plan(normalized, contact_id)
 
     async def close(self) -> None:
-        await self.waha.close()
+        return None
 
     async def _get_or_create_contact(self, whatsapp_id: str, display_name: str | None) -> Contact:
         stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1)
@@ -212,7 +205,7 @@ class InboundRouter:
         msg: NormalizedMessage,
         contact_id: int,
         text: str,
-        waha_response: dict[str, Any],
+        outbound_queue_id: int,
     ) -> Message:
         model = Message(
             bot_number_id=None,
@@ -223,7 +216,21 @@ class InboundRouter:
             message_text=text,
             normalized_text=normalize_text(text),
             message_type="text",
-            raw_payload_json={"source": "router", "waha_response": waha_response},
+            raw_payload_json={"source": "router_queue", "outbound_queue_id": outbound_queue_id},
+        )
+        self.session.add(model)
+        await self.session.flush()
+        return model
+
+    async def _queue_outbound_message(self, chat_id: str, text: str) -> OutboundMessage:
+        model = OutboundMessage(
+            chat_id=chat_id or "unknown-chat",
+            message_text=text,
+            status="pending",
+            retry_count=0,
+            max_retries=3,
+            next_attempt_at=utcnow(),
+            updated_at=utcnow(),
         )
         self.session.add(model)
         await self.session.flush()

@@ -50,6 +50,19 @@ class WAHAClient:
         except (httpx.HTTPError, RuntimeError) as exc:
             raise WahaClientError(f"WAHA session status failed for {name}: {exc}") from exc
 
+    async def start_session(self, session_name: str | None = None) -> dict[str, Any]:
+        name = session_name or settings.waha_session_name
+        url = f"{settings.waha_service_url}/api/sessions/start"
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            body = await self._request("POST", url, headers=headers, json={"name": name})
+            log_event(logger, logging.INFO, "waha_session_start_requested", session=name)
+            return body
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA session start failed for {name}: {exc}") from exc
+
     async def close(self) -> None:
         await self._client.aclose()
 
