@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     openrouter_model_deep: str = Field(default="openai/gpt-4o", alias="OPENROUTER_MODEL_DEEP")
     openrouter_timeout_seconds: int = Field(default=25, alias="OPENROUTER_TIMEOUT_SECONDS")
     openrouter_retry_count: int = Field(default=2, alias="OPENROUTER_RETRY_COUNT")
+    openrouter_max_tokens: int = Field(default=600, alias="OPENROUTER_MAX_TOKENS")
 
     local_test_dm_whatsapp_id: str = Field(default="234000000000@c.us", alias="LOCAL_TEST_DM_WHATSAPP_ID")
     local_test_group_chat_id: str = Field(default="120363000000000000@g.us", alias="LOCAL_TEST_GROUP_CHAT_ID")
@@ -77,6 +78,8 @@ class Settings(BaseSettings):
                 errors.append("OPENROUTER_MODEL_LIGHT is required when AI_ENABLED=true.")
             if not self.openrouter_model_deep:
                 errors.append("OPENROUTER_MODEL_DEEP is required when AI_ENABLED=true.")
+            if self.openrouter_max_tokens <= 0:
+                errors.append("OPENROUTER_MAX_TOKENS must be greater than 0 when AI_ENABLED=true.")
         if errors:
             raise RuntimeError("Invalid runtime settings: " + " ".join(errors))
 
@@ -104,6 +107,7 @@ class Settings(BaseSettings):
             "openrouter_base_url": self.openrouter_base_url if self.ai_enabled else "",
             "openrouter_model_light": self.openrouter_model_light if self.ai_enabled else "",
             "openrouter_model_deep": self.openrouter_model_deep if self.ai_enabled else "",
+            "openrouter_max_tokens": self.openrouter_max_tokens if self.ai_enabled else 0,
             "admin_api_token_configured": bool(self.admin_api_token),
         }
 

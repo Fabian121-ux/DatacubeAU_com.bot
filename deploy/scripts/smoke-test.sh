@@ -35,19 +35,18 @@ response=$(curl -fsS -X POST "${base_url}/webhooks/waha" \
   --data "$payload")
 printf '%s\n' "$response"
 
-echo "$response" | grep -q '"status":"ok"' || {
-  echo "Webhook route did not return status=ok." >&2
-  exit 1
-}
-
-echo "$response" | grep -q '"action":"replied"' || {
-  echo "WAHA outbound reply did not complete. Check the WAHA session, hook URL, and LOCAL_TEST_DM_WHATSAPP_ID." >&2
+echo "$response" | grep -q '"status":"accepted"' || {
+  echo "Webhook route did not return status=accepted." >&2
   exit 1
 }
 echo
 
 if [ -n "${ADMIN_API_TOKEN:-}" ]; then
+  sleep 3
   echo "Checking recent messages"
   curl -fsS -H "X-Admin-Token: ${ADMIN_API_TOKEN}" "${base_url}/admin/messages/recent"
+  echo
+  echo "Checking outbound queue"
+  curl -fsS -H "X-Admin-Token: ${ADMIN_API_TOKEN}" "${base_url}/admin/queue"
   echo
 fi

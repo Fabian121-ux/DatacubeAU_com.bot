@@ -253,6 +253,7 @@ async def test_reply(
         ).scalar_one()
         return {
             "decision_type": planned.decision_type.value,
+            "source": planned.source_diagnostics.get("source"),
             "reason": planned.reason,
             "should_reply": planned.should_reply,
             "reply_text": planned.reply_text,

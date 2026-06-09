@@ -85,17 +85,15 @@ uv sync
 createdb datacube_bot
 ```
 
-4. Run the schema migrations:
+4. Run the schema migrations and default seed data:
 
 ```bash
-psql "$DATABASE_URL" -f bot_core/migrations/001_init.sql
-psql "$DATABASE_URL" -f bot_core/migrations/002_expand_v1.sql
-```
-
-5. Load local seed data:
-
-```bash
-psql "$DATABASE_URL" -f bot_core/seeds/001_local_seed.sql
+psql "$DATABASE_URL_SYNC" -f bot_core/migrations/001_init.sql
+psql "$DATABASE_URL_SYNC" -f bot_core/migrations/002_expand_v1.sql
+psql "$DATABASE_URL_SYNC" -f bot_core/migrations/003_assistant_layer.sql
+psql "$DATABASE_URL_SYNC" -f bot_core/migrations/004_nextgen_intelligence.sql
+psql "$DATABASE_URL_SYNC" -f bot_core/seeds/001_local_seed.sql
+psql "$DATABASE_URL_SYNC" -f bot_core/seeds/002_default_config.sql
 ```
 
 ## Environment Setup
@@ -103,6 +101,7 @@ psql "$DATABASE_URL" -f bot_core/seeds/001_local_seed.sql
 Important env vars:
 
 - `DATABASE_URL`
+- `DATABASE_URL_SYNC`
 - `WAHA_SERVICE_URL`
 - `WAHA_SESSION_NAME`
 - `ADMIN_API_TOKEN`
@@ -169,37 +168,25 @@ PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
 ```
 
 7. Set `LOCAL_TEST_DM_WHATSAPP_ID` to a real WhatsApp ID you can use for an end-to-end reply test.
-8. Build the API image:
+8. Build the images:
 
 ```bash
-docker compose --env-file .env.production build api migrate
+docker compose --env-file .env.production build
 ```
 
-9. Start Postgres and the backend API first:
+9. Start the stack. The `migrate` service runs migrations and seed SQL automatically before the API starts:
 
 ```bash
-docker compose --env-file .env.production up -d postgres api
+docker compose --env-file .env.production up -d
 ```
 
-10. Apply migrations:
-
-```bash
-docker compose --env-file .env.production --profile ops run --rm migrate
-```
-
-11. Start WAHA and the reverse proxy:
-
-```bash
-docker compose --env-file .env.production up -d waha nginx
-```
-
-12. Run the end-to-end smoke check:
+10. Run the end-to-end smoke check:
 
 ```bash
 sh deploy/scripts/smoke-test.sh
 ```
 
-13. Create a database backup when needed:
+11. Create a database backup when needed:
 
 ```bash
 sh deploy/scripts/backup-postgres.sh
@@ -266,10 +253,8 @@ Exact commands to run on the DigitalOcean server:
 ```bash
 cp .env.production.example .env.production
 nano .env.production
-docker compose --env-file .env.production build api migrate
-docker compose --env-file .env.production up -d postgres api
-docker compose --env-file .env.production --profile ops run --rm migrate
-docker compose --env-file .env.production up -d waha nginx
+docker compose --env-file .env.production build
+docker compose --env-file .env.production up -d
 docker compose --env-file .env.production ps
 sh deploy/scripts/smoke-test.sh
 ```
@@ -277,10 +262,11 @@ sh deploy/scripts/smoke-test.sh
 Exact verification steps:
 
 1. `docker compose --env-file .env.production ps` should show `postgres`, `api`, `waha`, and `nginx` as running.
-2. `curl http://YOUR_DROPLET_IP/health` should return `"database":"ok"` and a WAHA status payload instead of a WAHA connection error.
-3. `sh deploy/scripts/smoke-test.sh` should return a webhook result containing `"status":"ok"` and `"action":"replied"`.
-4. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/messages/recent` should show one inbound and one outbound message for the smoke test chat.
-5. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/router-decisions/recent` should show a recent decision with `reply_sent=true`.
+2. `curl http://YOUR_DROPLET_IP/health` should return `"database":"ok"` and must not check WAHA.
+3. `curl http://YOUR_DROPLET_IP/health/dependencies` should show WAHA/OpenRouter dependency status separately.
+4. `sh deploy/scripts/smoke-test.sh` should return a webhook result containing an accepted webhook status; outbound delivery happens through the queue worker.
+5. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/messages/recent` should show one inbound and one outbound message for the smoke test chat.
+6. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/router-decisions/recent` should show a recent decision with `reply_sent=true`.
 
 ## Local Test Flow
 

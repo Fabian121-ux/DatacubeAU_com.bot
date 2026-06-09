@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import UserMemory, UserMemoryTimeline
@@ -140,6 +140,7 @@ class MemoryService:
     async def delete_memory(self, contact_id: int) -> bool:
         memory = await self.get_memory(contact_id)
         if memory:
+            await self.session.execute(delete(UserMemoryTimeline).where(UserMemoryTimeline.contact_id == contact_id))
             await self.session.delete(memory)
             await self.session.flush()
             return True

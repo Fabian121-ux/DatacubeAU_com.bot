@@ -48,30 +48,30 @@ class ReplyPlanner:
         # 1. Rules check (includes DB-driven reply rules)
         rules_result = await self.rules.evaluate(message, contact_id)
         if not rules_result.should_continue:
-            return PlannedReply(
+            return await self._apply_identity_guard(PlannedReply(
                 decision_type=rules_result.decision_type or DecisionType.IGNORE,
                 reason=rules_result.reason,
                 should_reply=rules_result.reply_text is not None,
                 reply_text=rules_result.reply_text,
                 source_diagnostics={"rules": {"matched": bool(rules_result.reply_text), "reason": rules_result.reason}},
-            )
+            ))
 
         # Guardrail: rate limit before spending retrieval/AI work.
         if contact_id:
             rate_check = await self.rate_limiter.check_user_daily_limit(contact_id)
             if not rate_check.allowed:
-                return PlannedReply(
+                return await self._apply_identity_guard(PlannedReply(
                     decision_type=DecisionType.RATE_LIMITED,
                     reason=rate_check.reason,
                     should_reply=True,
                     reply_text="You've reached the daily message limit. Please try again tomorrow. 🕐",
                     source_diagnostics={"rate_limit": {"allowed": False, "reason": rate_check.reason}},
-                )
+                ))
 
         # 2. Core FAQ layer.
         faq_entry, faq_score = await self.faq.search_faq(message.message_text)
         if faq_entry:
-            return PlannedReply(
+            return await self._apply_identity_guard(PlannedReply(
                 decision_type=DecisionType.FAQ_REPLY,
                 reason="core FAQ match above threshold",
                 should_reply=True,
@@ -85,12 +85,12 @@ class ReplyPlanner:
                         "question": faq_entry.question,
                     }
                 },
-            )
+            ))
 
         # Cached answer lookup sits below FAQ so edited core FAQ answers win immediately.
         cache_hit = await self.retrieval.lookup_cache(message.message_text)
         if cache_hit:
-            return PlannedReply(
+            return await self._apply_identity_guard(PlannedReply(
                 decision_type=DecisionType.KB_REPLY,
                 reason="cached faq/knowledge match",
                 should_reply=True,
@@ -101,13 +101,13 @@ class ReplyPlanner:
                     "faq": {"matched": False, "score": faq_score},
                     "cache": {"hit": True, "cache_id": cache_hit.id, "answer_mode": cache_hit.answer_mode},
                 },
-            )
+            ))
 
         # 3. Knowledge search.
         search_result = await self.retrieval.search(message.message_text)
         retrieval_context = self.retrieval.prompt_context(search_result)
         if search_result.chunks and search_result.confidence >= settings.kb_min_score:
-            return PlannedReply(
+            return await self._apply_identity_guard(PlannedReply(
                 decision_type=DecisionType.KB_REPLY,
                 reason="knowledge match above threshold",
                 should_reply=True,
@@ -119,7 +119,7 @@ class ReplyPlanner:
                     "cache": {"hit": False},
                     "kb": {"matched": True, "confidence": search_result.confidence, "chunks": retrieval_context},
                 },
-            )
+            ))
 
         # 4. Memory onboarding check (DM only), after FAQ/KB so useful answers are not blocked.
         if contact_id and message.chat_type == ChatType.DM:
@@ -127,7 +127,7 @@ class ReplyPlanner:
                 contact_id, message.message_text
             )
             if onboard_reply:
-                return PlannedReply(
+                return await self._apply_identity_guard(PlannedReply(
                     decision_type=DecisionType.MEMORY_ONBOARD,
                     reason=f"onboarding: {stage}" if stage else "onboarding complete",
                     should_reply=True,
@@ -140,7 +140,7 @@ class ReplyPlanner:
                         "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
                         "memory": {"onboarding_stage": stage},
                     },
-                )
+                ))
 
         # 5. AI fallback (if enabled).
         ai_enabled_config = await self.bot_config.get_bool("ai_enabled", False)
@@ -155,7 +155,7 @@ class ReplyPlanner:
 
         # 6. Escalating fallback.
         no_match_text = await self._no_match_reply(message.chat_type)
-        return PlannedReply(
+        return await self._apply_identity_guard(PlannedReply(
             decision_type=DecisionType.NO_MATCH,
             reason="no rule, faq, cache, knowledge, memory, or ai match",
             should_reply=no_match_text is not None,
@@ -168,7 +168,7 @@ class ReplyPlanner:
                 "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
                 "ai": {"used": False, "enabled": ai_enabled},
             },
-        )
+        ))
 
     async def _try_ai(
         self,
@@ -199,7 +199,7 @@ class ReplyPlanner:
         dynamic_system_instructions = await self.bot_config.build_system_prompt()
         
         if force_escalation:
-            return PlannedReply(
+            return await self._apply_identity_guard(PlannedReply(
                 decision_type=DecisionType.ESCALATED,
                 reason="kb confidence below escalation threshold",
                 should_reply=True,
@@ -211,7 +211,7 @@ class ReplyPlanner:
                     "kb": {"matched": False, "confidence": search_result.confidence},
                     "ai": {"used": False, "escalated": True, "strictness": strictness},
                 },
-            )
+            ))
 
         # Load user memory context
         user_context = ""
@@ -242,7 +242,7 @@ class ReplyPlanner:
                 request_json=result.request_json,
                 response_json=result.response_json,
             )
-            return PlannedReply(
+            return await self._apply_identity_guard(PlannedReply(
                 decision_type=ai_decision,
                 reason="ai fallback used",
                 should_reply=True,
@@ -268,7 +268,7 @@ class ReplyPlanner:
                 },
                 ai_used=True,
                 ai_call=ai_call,
-            )
+            ))
         except OpenRouterClientError:
             return None
         finally:
@@ -320,6 +320,44 @@ class ReplyPlanner:
                 "hash": sha256_text(question),
             },
         )
+
+    async def _apply_identity_guard(self, reply: PlannedReply) -> PlannedReply:
+        reply.source_diagnostics.setdefault("source", self._diagnostic_source(reply))
+        if not reply.reply_text:
+            return reply
+        if not await self.bot_config.violates_identity_boundary(reply.reply_text):
+            return reply
+
+        reply.decision_type = DecisionType.ESCALATED
+        reply.reason = f"{reply.reason}; identity boundary guard"
+        reply.reply_text = await self.bot_config.escalation_reply()
+        reply.source_diagnostics["identity_guard"] = {"triggered": True}
+        reply.ai_used = False
+        reply.ai_call = None
+        return reply
+
+    @staticmethod
+    def _diagnostic_source(reply: PlannedReply) -> str:
+        if reply.decision_type in {
+            DecisionType.REPLY_RULE,
+            DecisionType.STATIC_REPLY,
+            DecisionType.IGNORE,
+            DecisionType.COOLDOWN_BLOCK,
+            DecisionType.RATE_LIMITED,
+        }:
+            return "Rule"
+        if reply.decision_type == DecisionType.FAQ_REPLY:
+            return "FAQ"
+        if reply.decision_type == DecisionType.KB_REPLY:
+            cache_info = reply.source_diagnostics.get("cache")
+            if isinstance(cache_info, dict) and cache_info.get("hit"):
+                return "Cache"
+            return "KB"
+        if reply.decision_type == DecisionType.MEMORY_ONBOARD:
+            return "Memory"
+        if reply.decision_type in {DecisionType.AI_REPLY_LIGHT, DecisionType.AI_REPLY_DEEP, DecisionType.ESCALATED}:
+            return "AI"
+        return "Fallback"
 
     async def _no_match_reply(self, chat_type: ChatType) -> str | None:
         if chat_type == ChatType.DM:

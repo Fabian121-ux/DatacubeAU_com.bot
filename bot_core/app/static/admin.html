@@ -327,6 +327,13 @@ tr:hover td{background:var(--surface2)}
           <div><button class="btn btn-ghost" onclick="window.open(window.location.origin + ':3000/dashboard', '_blank')">Open WAHA Dashboard</button></div>
         </div>
       </div>
+      <div class="card">
+        <h3>WAHA Outages</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadWahaOutages()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="wahaOutagesTable">Loading…</div>
+      </div>
     </div>
 
     <!-- QUEUE -->
@@ -468,7 +475,7 @@ function loadTab(tab) {
     status: loadStatus, rules: loadRules, memory: loadMemory,
     cache: loadCache, logs: loadLogsCombined, config: loadConfig,
     knowledge: loadKnowledge, groups: loadGroups, decisions: loadDecisions,
-    identity: loadIdentity, faq: loadFaq, queue: loadQueue, profiles: loadProfiles, waha: null
+    identity: loadIdentity, faq: loadFaq, queue: loadQueue, profiles: loadProfiles, waha: loadWaha
   };
   if (loaders[tab]) loaders[tab]();
 }
@@ -703,11 +710,31 @@ async function loadDecisions() {
 }
 
 // ---- WAHA ----
+function loadWaha() {
+  loadWahaOutages();
+}
 async function wahaAction(action) {
   try {
     await api(`/admin/waha/${action}`, { method: 'POST' });
     toast(`WAHA session ${action} requested.`);
     loadStatus();
+    loadWahaOutages();
+  } catch (_) {}
+}
+async function loadWahaOutages() {
+  try {
+    const d = await api('/admin/waha/outages');
+    const table = document.getElementById('wahaOutagesTable');
+    if (!d.items.length) { table.innerHTML = '<em>No WAHA outages logged.</em>'; return; }
+    table.innerHTML = `<table>
+      <thead><tr><th>Time</th><th>Previous</th><th>Current</th><th>Reconnect</th><th>Details</th></tr></thead>
+      <tbody>${d.items.map(o => `<tr>
+        <td style="white-space:nowrap">${new Date(o.created_at).toLocaleString()}</td>
+        <td>${esc(o.previous_status || '—')}</td>
+        <td><span class="badge ${o.current_status === 'WORKING' ? 'badge-green' : 'badge-red'}">${esc(o.current_status || 'unknown')}</span></td>
+        <td><span class="badge ${o.reconnect_success ? 'badge-green' : 'badge-orange'}">${o.reconnect_attempted ? (o.reconnect_success ? 'success' : 'attempted') : 'no'}</span></td>
+        <td title="${esc(JSON.stringify(o.details_json || {}))}">${esc(JSON.stringify(o.details_json || {}).substring(0,80))}</td>
+      </tr>`).join('')}</tbody></table>`;
   } catch (_) {}
 }
 
@@ -765,7 +792,7 @@ async function testReply() {
     });
     div.innerHTML = `
       <div class="card" style="background:var(--surface2)">
-        <div style="margin-bottom:.5rem"><span class="badge badge-purple">${r.decision_type}</span> <span class="badge badge-blue">${r.ai_used ? 'AI' : 'No AI'}</span></div>
+        <div style="margin-bottom:.5rem"><span class="badge badge-purple">${r.decision_type}</span> <span class="badge badge-blue">Source: ${esc(r.source || 'unknown')}</span> <span class="badge badge-blue">${r.ai_used ? 'AI' : 'No AI'}</span></div>
         <div style="font-size:.9rem;line-height:1.5;color:var(--text)">${r.reply_text || '<em>No reply</em>'}</div>
         <div style="margin-top:.4rem;font-size:.72rem;color:var(--text-dim)">Reason: ${r.reason} | KB confidence: ${(r.kb_confidence||0).toFixed(2)}</div>
         <div class="debug-json" style="margin-top:.7rem">${esc(JSON.stringify(r.debugger || {}, null, 2))}</div>
