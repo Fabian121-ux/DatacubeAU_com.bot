@@ -255,7 +255,8 @@ class MemoryService:
                 candidate = match.group(1).strip()
                 lowered = candidate.lower()
                 invalid_prefixes = ("a ", "an ", "the ", "into ", "interested ", "working ", "building ", "trying ")
-                if lowered.startswith(invalid_prefixes):
+                invalid_names = {"hello", "hi", "hey", "yo"}
+                if lowered.startswith(invalid_prefixes) or lowered in invalid_names:
                     continue
                 name = candidate.title()
                 if 1 < len(name) <= 40:
@@ -263,11 +264,13 @@ class MemoryService:
         # Fallback: if it's short enough, treat entire input as name
         words = cleaned.split()
         stop_words = {"i", "am", "im", "i'm", "my", "name", "is", "a", "an", "the"}
+        greeting_words = {"hello", "hi", "hey", "yo"}
         if (
             1 < len(cleaned) <= 30
             and 1 <= len(words) <= 2
             and cleaned.replace(" ", "").isalpha()
             and not any(word.lower() in stop_words for word in words)
+            and not any(word.lower() in greeting_words for word in words)
         ):
             return cleaned.strip().title()
         return None
@@ -307,6 +310,10 @@ class MemoryService:
                 if not match:
                     continue
                 value = MemoryService._clean_profile_value(match.group(1))
+                if field == "profession" and value.lower().startswith(
+                    ("building ", "working ", "interested ", "trying ", "into ")
+                ):
+                    continue
                 if value:
                     values[field] = value
                     break

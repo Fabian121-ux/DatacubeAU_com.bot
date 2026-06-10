@@ -176,10 +176,10 @@ class BotConfigService:
         if not owner_name:
             return False
         patterns = [
-            rf"\b(?:i\s+am|i'm|im)\s+{owner_name}\b",
+            rf"\b(?:i\s+am|i['’]m|im)\s+{owner_name}\b",
             rf"\bmy\s+name\s+is\s+{owner_name}\b",
             rf"\bthis\s+is\s+{owner_name}\b",
             rf"\bspeaking\s+as\s+{owner_name}\b",
-            rf"\bas\s+{owner_name},\s+i\b",
+            rf"\bas\s+{owner_name}\b",
         ]
         return any(re.search(pattern, text_value, flags=re.IGNORECASE) for pattern in patterns)

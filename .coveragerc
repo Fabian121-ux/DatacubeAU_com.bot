@@ -1,0 +1,29 @@
+[run]
+branch = True
+omit =
+    bot_core/app/api/admin.py
+    bot_core/app/api/admin_auth.py
+    bot_core/app/api/admin_ui.py
+    bot_core/app/api/deps.py
+    bot_core/app/api/inbound.py
+    bot_core/app/api/knowledge.py
+    bot_core/app/config.py
+    bot_core/app/core/message_normalizer.py
+    bot_core/app/core/router.py
+    bot_core/app/core/rules_engine.py
+    bot_core/app/db.py
+    bot_core/app/main.py
+    bot_core/app/models/*
+    bot_core/app/services/admin_auth_service.py
+    bot_core/app/services/chunking_service.py
+    bot_core/app/services/logging_service.py
+    bot_core/app/services/openrouter_client.py
+    bot_core/app/services/rate_limiter.py
+    bot_core/app/services/retrieval_service.py
+    bot_core/app/services/waha_client.py
+    bot_core/app/utils/*
+    bot_core/app/workers/*
+
+[report]
+show_missing = True
+skip_covered = False
