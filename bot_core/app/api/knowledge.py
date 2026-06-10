@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_admin_token
+from app.api.deps import require_admin_session
 from app.config import settings
 from app.db import get_db_session
 from app.models.enums import KnowledgeDocumentStatus, SourceType
@@ -15,7 +15,7 @@ from app.models.schema import AuditLog, KnowledgeDocument
 from app.services.retrieval_service import RetrievalService
 
 
-router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_token)])
+router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_session)])
 
 
 class KnowledgeTextIn(BaseModel):

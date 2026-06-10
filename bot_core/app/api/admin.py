@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_admin_token
+from app.api.deps import require_admin_session
 from app.config import settings
 from app.core.message_normalizer import NormalizedMessage
 from app.core.router import InboundRouter
@@ -39,7 +39,7 @@ from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_token)])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
 CORE_FAQ_PATH = Path(__file__).resolve().parents[2] / "core_faq.md"
 
 

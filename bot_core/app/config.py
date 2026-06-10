@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8080, alias="API_PORT")
     admin_api_token: str = Field(default="", alias="ADMIN_API_TOKEN")
+    admin_username: str = Field(default="zina", alias="ADMIN_USERNAME")
+    admin_password: str = Field(default="", alias="ADMIN_PASSWORD")
+    admin_session_secret: str = Field(default="", alias="ADMIN_SESSION_SECRET")
+    admin_session_ttl_seconds: int = Field(default=86400, alias="ADMIN_SESSION_TTL_SECONDS")
+    admin_login_max_failures: int = Field(default=5, alias="ADMIN_LOGIN_MAX_FAILURES")
+    admin_login_lockout_seconds: int = Field(default=900, alias="ADMIN_LOGIN_LOCKOUT_SECONDS")
+    admin_cookie_secure: bool = Field(default=False, alias="ADMIN_COOKIE_SECURE")
     startup_validate_db: bool = Field(default=True, alias="STARTUP_VALIDATE_DB")
 
     database_url: str = Field(
@@ -63,6 +70,23 @@ class Settings(BaseSettings):
             errors.append("WAHA_SERVICE_URL is required.")
         if not self.waha_session_name:
             errors.append("WAHA_SESSION_NAME is required.")
+        if not self.admin_username:
+            errors.append("ADMIN_USERNAME is required.")
+        if not self.admin_password:
+            errors.append("ADMIN_PASSWORD is required.")
+        elif len(self.admin_password) < 12 or self.admin_password.startswith("replace-with-"):
+            errors.append("ADMIN_PASSWORD must be at least 12 characters and must not be the example placeholder.")
+        if self.admin_session_secret:
+            if len(self.admin_session_secret) < 32 or self.admin_session_secret.startswith("replace-with-"):
+                errors.append("ADMIN_SESSION_SECRET must be at least 32 characters and must not be the example placeholder.")
+        elif self.environment == "production":
+            errors.append("ADMIN_SESSION_SECRET is required in production.")
+        if self.admin_session_ttl_seconds <= 0:
+            errors.append("ADMIN_SESSION_TTL_SECONDS must be greater than 0.")
+        if self.admin_login_max_failures <= 0:
+            errors.append("ADMIN_LOGIN_MAX_FAILURES must be greater than 0.")
+        if self.admin_login_lockout_seconds <= 0:
+            errors.append("ADMIN_LOGIN_LOCKOUT_SECONDS must be greater than 0.")
         if self.waha_request_retry_count < 0:
             errors.append("WAHA_REQUEST_RETRY_COUNT must be 0 or greater.")
         if self.waha_request_retry_backoff_seconds < 0:
@@ -109,6 +133,11 @@ class Settings(BaseSettings):
             "openrouter_model_deep": self.openrouter_model_deep if self.ai_enabled else "",
             "openrouter_max_tokens": self.openrouter_max_tokens if self.ai_enabled else 0,
             "admin_api_token_configured": bool(self.admin_api_token),
+            "admin_username": self.admin_username,
+            "admin_session_ttl_seconds": self.admin_session_ttl_seconds,
+            "admin_login_max_failures": self.admin_login_max_failures,
+            "admin_login_lockout_seconds": self.admin_login_lockout_seconds,
+            "admin_cookie_secure": self.admin_cookie_secure,
         }
 
 

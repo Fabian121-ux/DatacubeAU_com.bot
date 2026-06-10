@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
-router = APIRouter(tags=["admin-ui"])
+from app.api.deps import require_admin_session
+
+router = APIRouter(tags=["admin-ui"], dependencies=[Depends(require_admin_session)])
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 

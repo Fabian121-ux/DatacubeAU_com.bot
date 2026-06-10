@@ -104,7 +104,10 @@ Important env vars:
 - `DATABASE_URL_SYNC`
 - `WAHA_SERVICE_URL`
 - `WAHA_SESSION_NAME`
-- `ADMIN_API_TOKEN`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `ADMIN_SESSION_SECRET`
+- `ADMIN_API_TOKEN` for scripted admin API access
 - `ENABLE_AUTO_REPLY`
 - `GROUP_DEFAULT_REPLY_MODE`
 - `GROUP_DEFAULT_COOLDOWN_SECONDS`
@@ -151,7 +154,7 @@ Files added for VPS deployment:
 1. Copy `.env.production.example` to `.env.production`.
 2. Set `WAHA_IMAGE` to the WAHA Core image/tag you actually run.
 3. Reuse the current WAHA credentials from your existing WAHA host config for `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD`, and `WHATSAPP_SWAGGER_PASSWORD`.
-4. Set strong values for `POSTGRES_PASSWORD` and `ADMIN_API_TOKEN`.
+4. Set strong values for `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, and `ADMIN_API_TOKEN`.
 5. Keep the internal Docker URLs exactly as follows:
 
 ```text
@@ -244,7 +247,14 @@ WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
 WHATSAPP_HOOK_EVENTS=message
 WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
 PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
-ADMIN_API_TOKEN=<strong-admin-token>
+ADMIN_USERNAME=zina
+ADMIN_PASSWORD=<strong-admin-password>
+ADMIN_SESSION_SECRET=<strong-random-session-secret>
+ADMIN_SESSION_TTL_SECONDS=86400
+ADMIN_LOGIN_MAX_FAILURES=5
+ADMIN_LOGIN_LOCKOUT_SECONDS=900
+ADMIN_COOKIE_SECURE=false
+ADMIN_API_TOKEN=<strong-admin-token-for-scripts>
 LOCAL_TEST_DM_WHATSAPP_ID=<your-test-number>@c.us
 ```
 
@@ -267,6 +277,7 @@ Exact verification steps:
 4. `sh deploy/scripts/smoke-test.sh` should return a webhook result containing an accepted webhook status; outbound delivery happens through the queue worker.
 5. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/messages/recent` should show one inbound and one outbound message for the smoke test chat.
 6. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/router-decisions/recent` should show a recent decision with `reply_sent=true`.
+7. `http://YOUR_DROPLET_IP/admin/ui` should redirect to `/admin/login` until you sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 
 ## Local Test Flow
 
@@ -343,7 +354,9 @@ curl -X POST http://localhost:8080/webhooks/waha \
 - `GET /admin/knowledge/search`
 - `GET /admin/knowledge/documents`
 
-All admin endpoints accept `X-Admin-Token` when `ADMIN_API_TOKEN` is configured.
+Browser admin access uses `/admin/login` and a signed `HttpOnly` session cookie. Set `ADMIN_COOKIE_SECURE=true` when the public admin URL is HTTPS and the app cannot infer HTTPS from `X-Forwarded-Proto`.
+
+Scripted admin API calls can still use `X-Admin-Token` when `ADMIN_API_TOKEN` is configured. Do not expose this token in browser storage.
 
 ## Verifying Behavior
 

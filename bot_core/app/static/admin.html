@@ -36,8 +36,9 @@ textarea{resize:vertical;min-height:60px}
 .sidebar nav button.active{background:var(--accent-dim);color:#fff}
 .sidebar nav button .icon{font-size:1.05rem;width:20px;text-align:center}
 .sidebar .auth{padding:.8rem 1rem;border-top:1px solid var(--border);margin-top:auto}
-.sidebar .auth input{width:100%;font-size:.75rem}
 .sidebar .auth label{font-size:.7rem;color:var(--text-dim);margin-bottom:.3rem;display:block}
+.sidebar .auth .user{font-size:.8rem;color:var(--text);word-break:break-word}
+.sidebar .auth .last{font-size:.68rem;color:var(--text-dim);line-height:1.35;margin:.35rem 0 .65rem}
 
 .main{margin-left:220px;flex:1;padding:1.5rem 2rem;max-width:1100px}
 .main h2{font-size:1.3rem;margin-bottom:1rem;font-weight:600;display:flex;align-items:center;gap:.5rem}
@@ -135,8 +136,10 @@ tr:hover td{background:var(--surface2)}
       <button data-tab="config"><span class="icon">⚙️</span><span>AI Behavior</span></button>
     </nav>
     <div class="auth">
-      <label>Admin Token</label>
-      <input type="password" id="tokenInput" placeholder="Enter token…" autocomplete="off">
+      <label>Logged in as</label>
+      <div class="user" id="sessionUser">Loading…</div>
+      <div class="last" id="sessionLastLogin"></div>
+      <a class="btn btn-ghost btn-sm" href="/admin/logout" style="display:inline-block;width:100%;text-align:center">Logout</a>
     </div>
   </aside>
 
@@ -428,12 +431,6 @@ tr:hover td{background:var(--surface2)}
    ======================================================================== */
 const BASE = window.location.origin;
 
-// Token management
-const tokenEl = document.getElementById('tokenInput');
-tokenEl.value = localStorage.getItem('dcau_token') || '';
-tokenEl.addEventListener('input', () => localStorage.setItem('dcau_token', tokenEl.value));
-function token() { return tokenEl.value; }
-
 // Toast
 function toast(msg, isError) {
   const t = document.getElementById('toast');
@@ -445,9 +442,22 @@ function toast(msg, isError) {
 // API helper
 async function api(path, opts = {}) {
   const isForm = opts.body instanceof FormData;
-  const headers = { 'x-admin-token': token(), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...opts.headers };
+  const headers = { ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...opts.headers };
   try {
-    const res = await fetch(BASE + path, { ...opts, headers });
+    const res = await fetch(BASE + path, { ...opts, headers, credentials: 'same-origin' });
+    if (res.redirected && res.url.includes('/admin/login')) {
+      window.location.href = '/admin/login';
+      throw new Error('Admin session expired.');
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await res.text();
+      if (text.includes('Zina Admin') || text.includes('/admin/login')) {
+        window.location.href = '/admin/login';
+        throw new Error('Admin session expired.');
+      }
+      throw new Error('Unexpected non-JSON response.');
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || res.statusText);
@@ -457,6 +467,13 @@ async function api(path, opts = {}) {
     toast('Error: ' + e.message, true);
     throw e;
   }
+}
+
+async function loadSession() {
+  const session = await api('/admin/session');
+  document.getElementById('sessionUser').textContent = session.username || 'unknown';
+  const login = session.last_login ? new Date(session.last_login).toLocaleString() : 'Token session';
+  document.getElementById('sessionLastLogin').textContent = `Last login: ${login}`;
 }
 
 // Tab switching
@@ -1170,6 +1187,7 @@ async function saveConfig(key, value) {
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 // Initial load
+loadSession().catch(() => {});
 loadStatus();
 </script>
 </body>

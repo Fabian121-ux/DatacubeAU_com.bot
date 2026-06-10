@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import admin, admin_ui, health, inbound, knowledge
+from app.api import admin, admin_auth, admin_ui, health, inbound, knowledge
 from app.config import settings
 from app.db import SessionLocal, engine, ping_database
 from app.services.faq_service import FAQService
@@ -53,6 +53,7 @@ async def _sync_core_faq() -> None:
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.include_router(health.router)
 app.include_router(inbound.router)
+app.include_router(admin_auth.router)
 app.include_router(admin.router)
 app.include_router(knowledge.router)
 app.include_router(admin_ui.router)
