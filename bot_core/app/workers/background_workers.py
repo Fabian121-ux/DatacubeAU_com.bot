@@ -111,7 +111,14 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         for message in due_messages:
             processed += 1
             try:
-                response = await client.send_text(chat_id=message.chat_id, text=message.message_text)
+                if message.media_url:
+                    response = await client.send_media(
+                        chat_id=message.chat_id,
+                        media_url=message.media_url,
+                        caption=message.media_caption or message.message_text,
+                    )
+                else:
+                    response = await client.send_text(chat_id=message.chat_id, text=message.message_text)
             except WahaClientError as exc:
                 await _mark_delivery_failed(session, message, str(exc))
             else:

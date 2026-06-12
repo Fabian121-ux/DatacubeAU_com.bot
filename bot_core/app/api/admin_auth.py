@@ -3,7 +3,7 @@ from __future__ import annotations
 from html import escape
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,13 +16,13 @@ from app.services.admin_auth_service import ADMIN_SESSION_COOKIE, AdminAuthServi
 router = APIRouter(tags=["admin-auth"])
 
 
-@router.get("/admin", include_in_schema=False)
-async def admin_root(principal: AdminPrincipal = Depends(require_admin_session)) -> RedirectResponse:
+@router.get("/admin", include_in_schema=False, response_model=None)
+async def admin_root(principal: AdminPrincipal = Depends(require_admin_session)) -> Response:
     return RedirectResponse("/admin/ui", status_code=303)
 
 
-@router.get("/admin/login", response_class=HTMLResponse)
-async def login_page(request: Request) -> HTMLResponse | RedirectResponse:
+@router.get("/admin/login", response_class=HTMLResponse, response_model=None)
+async def login_page(request: Request) -> Response:
     auth = AdminAuthService()
     principal = auth.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
     if principal:
@@ -30,13 +30,13 @@ async def login_page(request: Request) -> HTMLResponse | RedirectResponse:
     return _render_login_page()
 
 
-@router.post("/admin/login", response_class=HTMLResponse)
+@router.post("/admin/login", response_class=HTMLResponse, response_model=None)
 async def login(
     request: Request,
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     db: AsyncSession = Depends(get_db_session),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     auth = AdminAuthService()
     submitted_username = username.strip()
     ip_address = auth.client_ip(request)
@@ -84,8 +84,8 @@ async def login(
     return response
 
 
-@router.get("/admin/logout", include_in_schema=False)
-async def logout(request: Request, db: AsyncSession = Depends(get_db_session)) -> RedirectResponse:
+@router.get("/admin/logout", include_in_schema=False, response_model=None)
+async def logout(request: Request, db: AsyncSession = Depends(get_db_session)) -> Response:
     auth = AdminAuthService()
     principal = auth.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
     if principal:

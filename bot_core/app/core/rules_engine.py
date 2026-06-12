@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType, DecisionType, Direction, GroupReplyMode
-from app.models.schema import DMConfig, GroupConfig, Message, ReplyRule
+from app.models.schema import DMConfig, ForcedReplyTarget, GroupConfig, Message, ReplyRule, UserTrigger
 from app.services.bot_config_service import BotConfigService
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
@@ -33,20 +33,30 @@ class RulesEngine:
             return RulesResult(False, DecisionType.IGNORE, "non-text or empty message", None)
         if not settings.enable_auto_reply:
             return RulesResult(False, DecisionType.IGNORE, "auto reply disabled", None)
+        if not await self.bot_config.get_bool("bot_enabled", True):
+            return RulesResult(False, DecisionType.IGNORE, "bot stopped by owner command", None)
+        if await self.bot_config.get_bool("maintenance_mode", False):
+            return RulesResult(False, DecisionType.IGNORE, "maintenance mode active", None)
 
         if message.chat_type == ChatType.GROUP:
-            return await self._evaluate_group(message)
+            return await self._evaluate_group(message, contact_id)
         return await self._evaluate_dm(message, contact_id)
 
-    async def _evaluate_group(self, message: NormalizedMessage) -> RulesResult:
+    async def _evaluate_group(self, message: NormalizedMessage, contact_id: int | None) -> RulesResult:
         cfg = await self._get_group_config(message.chat_id)
         if not cfg["is_enabled"]:
             return RulesResult(False, DecisionType.IGNORE, "group disabled by config", None)
         if cfg["reply_mode"] == GroupReplyMode.OFF.value:
             return RulesResult(False, DecisionType.IGNORE, "group mode off", None)
-        if cfg["reply_mode"] == GroupReplyMode.MENTION_ONLY.value and not message.is_bot_mentioned:
+
+        trigger_reply = await self._resolve_user_trigger(message, contact_id)
+        if trigger_reply:
+            return RulesResult(False, DecisionType.REPLY_RULE, "matched user trigger", trigger_reply)
+
+        forced_reply = await self._is_forced_reply_target(message.sender_id, contact_id)
+        if cfg["reply_mode"] == GroupReplyMode.MENTION_ONLY.value and not message.is_bot_mentioned and not forced_reply:
             return RulesResult(False, DecisionType.IGNORE, "mention required", None)
-        if await self._cooldown_active(message.chat_id, int(cfg["cooldown_seconds"])):
+        if not forced_reply and await self._cooldown_active(message.chat_id, int(cfg["cooldown_seconds"])):
             return RulesResult(False, DecisionType.COOLDOWN_BLOCK, "group cooldown active", None)
 
         rule_reply = await self._resolve_reply_rule(message.message_text, ChatType.GROUP)
@@ -59,6 +69,9 @@ class RulesEngine:
         cfg = await self._get_dm_config(contact_id)
         if not cfg["is_enabled"]:
             return RulesResult(False, DecisionType.IGNORE, "dm disabled by config", None)
+        trigger_reply = await self._resolve_user_trigger(message, contact_id)
+        if trigger_reply:
+            return RulesResult(False, DecisionType.REPLY_RULE, "matched user trigger", trigger_reply)
         if await self._cooldown_active(message.chat_id, int(cfg["cooldown_seconds"])):
             return RulesResult(False, DecisionType.COOLDOWN_BLOCK, "dm cooldown active", None)
 
@@ -85,8 +98,9 @@ class RulesEngine:
         stmt = select(GroupConfig).where(GroupConfig.chat_id == chat_id).limit(1)
         model = (await self.session.execute(stmt)).scalar_one_or_none()
         if not model:
+            default_mode = await self.bot_config.get("group_default_reply_mode", settings.group_default_reply_mode)
             return {
-                "reply_mode": settings.group_default_reply_mode,
+                "reply_mode": default_mode,
                 "is_enabled": True,
                 "cooldown_seconds": settings.group_default_cooldown_seconds,
             }
@@ -130,6 +144,35 @@ class RulesEngine:
             if rule.match_mode == "startswith" and normalized.startswith(rule_keyword):
                 return rule.response_text
 
+        return None
+
+    async def _is_forced_reply_target(self, sender_id: str, contact_id: int | None) -> bool:
+        conditions = [ForcedReplyTarget.target_whatsapp_id == sender_id]
+        if contact_id:
+            conditions.append(ForcedReplyTarget.target_contact_id == contact_id)
+        stmt = (
+            select(ForcedReplyTarget.id)
+            .where(ForcedReplyTarget.is_enabled.is_(True))
+            .where(or_(*conditions))
+            .limit(1)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def _resolve_user_trigger(self, message: NormalizedMessage, contact_id: int | None) -> str | None:
+        conditions = [UserTrigger.target_whatsapp_id == message.sender_id]
+        if contact_id:
+            conditions.append(UserTrigger.target_contact_id == contact_id)
+        stmt = (
+            select(UserTrigger)
+            .where(UserTrigger.is_enabled.is_(True))
+            .where(or_(*conditions))
+            .order_by(UserTrigger.created_at.desc())
+        )
+        triggers = (await self.session.execute(stmt)).scalars().all()
+        normalized_message = normalize_text(message.message_text)
+        for trigger in triggers:
+            if trigger.normalized_trigger_text and trigger.normalized_trigger_text in normalized_message:
+                return trigger.response_text
         return None
 
     @staticmethod

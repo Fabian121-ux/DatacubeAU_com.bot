@@ -16,12 +16,18 @@ from app.db import get_db_session
 from app.models.enums import ChatType, GroupReplyMode
 from app.models.schema import (
     AICall,
+    AIUsageEvent,
+    AIUsageQuota,
     AuditLog,
     BotConfig,
     Contact,
     ConversationSession,
+    ConversationSummary,
+    ConversationTimeline,
     FAQEntry,
     GroupConfig,
+    InternetCache,
+    InternetUsageEvent,
     KnowledgeDocument,
     Message,
     OutboundMessage,
@@ -104,6 +110,7 @@ class FAQSaveIn(BaseModel):
 
 
 class MemoryUpdate(BaseModel):
+    display_name: str | None = None
     user_name: str | None = None
     preferences: str | None = None
     context_notes: str | None = None
@@ -113,9 +120,12 @@ class MemoryUpdate(BaseModel):
     goals: str | None = None
     communication_style: str | None = None
     relationship: str | None = None
+    relationship_type: str | None = None
+    personality_notes: str | None = None
 
 
 class ProfileUpdate(BaseModel):
+    display_name: str | None = None
     user_name: str | None = None
     preferences: str | None = None
     context_notes: str | None = None
@@ -125,6 +135,8 @@ class ProfileUpdate(BaseModel):
     goals: str | None = None
     communication_style: str | None = None
     relationship: str | None = None
+    relationship_type: str | None = None
+    personality_notes: str | None = None
     onboarding_complete: bool | None = None
 
 
@@ -266,6 +278,7 @@ async def test_reply(
                 "core_faq_entries": faq_count,
                 "active_knowledge_documents": knowledge_count,
                 "token_usage": planned.source_diagnostics.get("ai", {}) if planned.source_diagnostics else {},
+                "memory": planned.source_diagnostics.get("memory", {}) if planned.source_diagnostics else {},
             },
             "ai_used": planned.ai_used,
         }
@@ -453,7 +466,7 @@ async def list_memory(
                 "id": mem.id,
                 "contact_id": mem.contact_id,
                 "whatsapp_id": contact.whatsapp_id,
-                "display_name": contact.display_name,
+                "display_name": mem.display_name or contact.display_name,
                 "user_name": mem.user_name,
                 "preferences": mem.preferences,
                 "context_notes": mem.context_notes,
@@ -464,6 +477,10 @@ async def list_memory(
                 "goals": mem.goals,
                 "communication_style": mem.communication_style,
                 "relationship": mem.relationship,
+                "relationship_type": mem.relationship_type,
+                "personality_notes": mem.personality_notes,
+                "first_seen_at": mem.first_seen_at,
+                "last_interaction_at": mem.last_interaction_at,
                 "created_at": mem.created_at,
                 "updated_at": mem.updated_at,
             }
@@ -484,6 +501,7 @@ async def get_memory(
     return {
         "id": mem.id,
         "contact_id": mem.contact_id,
+        "display_name": mem.display_name,
         "user_name": mem.user_name,
         "preferences": mem.preferences,
         "context_notes": mem.context_notes,
@@ -494,6 +512,10 @@ async def get_memory(
         "goals": mem.goals,
         "communication_style": mem.communication_style,
         "relationship": mem.relationship,
+        "relationship_type": mem.relationship_type,
+        "personality_notes": mem.personality_notes,
+        "first_seen_at": mem.first_seen_at,
+        "last_interaction_at": mem.last_interaction_at,
         "created_at": mem.created_at,
         "updated_at": mem.updated_at,
     }
@@ -509,19 +531,35 @@ async def update_memory(
     mem = (await db.execute(stmt)).scalar_one_or_none()
     if not mem:
         raise HTTPException(status_code=404, detail="memory not found for this contact")
+    if payload.display_name is not None:
+        mem.display_name = payload.display_name
+        contact = await db.get(Contact, contact_id)
+        if contact:
+            contact.display_name = payload.display_name
     if payload.user_name is not None:
         mem.user_name = payload.user_name
     if payload.preferences is not None:
         mem.preferences = payload.preferences
     if payload.context_notes is not None:
         mem.context_notes = payload.context_notes
-    profile_fields = ("profession", "interests", "projects", "goals", "communication_style", "relationship")
+    profile_fields = (
+        "profession",
+        "interests",
+        "projects",
+        "goals",
+        "communication_style",
+        "relationship",
+        "personality_notes",
+    )
     timeline_updates: list[str] = []
     for field in profile_fields:
         value = getattr(payload, field)
         if value is not None:
             setattr(mem, field, value)
             timeline_updates.append(f"{field}: {value}")
+    if payload.relationship_type is not None:
+        mem.relationship_type = MemoryService.normalize_relationship_type(payload.relationship_type)
+        timeline_updates.append(f"relationship_type: {mem.relationship_type}")
     mem.updated_at = utcnow()
     for fact in timeline_updates:
         db.add(
@@ -567,19 +605,23 @@ async def delete_memory(
         if mem:
             await db.delete(mem)
             await db.execute(delete(UserMemoryTimeline).where(UserMemoryTimeline.contact_id == contact_id))
-            action_details["cleared"] = "full_user_memory, memory_timeline"
+            await db.execute(delete(ConversationTimeline).where(ConversationTimeline.contact_id == contact_id))
+            await db.execute(delete(ConversationSummary).where(ConversationSummary.contact_id == contact_id))
+            action_details["cleared"] = "full_user_memory, memory_timeline, conversation_timeline, conversation_summaries"
             
     elif level == "critical":
         if mem:
             await db.delete(mem)
         await db.execute(delete(UserMemoryTimeline).where(UserMemoryTimeline.contact_id == contact_id))
+        await db.execute(delete(ConversationTimeline).where(ConversationTimeline.contact_id == contact_id))
+        await db.execute(delete(ConversationSummary).where(ConversationSummary.contact_id == contact_id))
         # Also clear conversation summaries for this contact
         contact_stmt = select(Contact.whatsapp_id).where(Contact.id == contact_id).limit(1)
         whatsapp_id = (await db.execute(contact_stmt)).scalar_one_or_none()
         if whatsapp_id:
             summary_stmt = delete(ConversationSession).where(ConversationSession.chat_id == whatsapp_id)
             await db.execute(summary_stmt)
-            action_details["cleared"] = "full_user_memory, memory_timeline, conversation_sessions"
+            action_details["cleared"] = "full_user_memory, memory_timeline, conversation_timeline, conversation_summaries, conversation_sessions"
 
     db.add(AuditLog(action="memory_cleared", entity_type="user_memory", entity_id=str(contact_id), details_json=action_details))
     await db.commit()
@@ -591,10 +633,19 @@ async def clear_all_memory_critical(
 ) -> dict[str, Any]:
     mem_res = await db.execute(delete(UserMemory))
     timeline_res = await db.execute(delete(UserMemoryTimeline))
+    conversation_timeline_res = await db.execute(delete(ConversationTimeline))
+    conversation_summary_res = await db.execute(delete(ConversationSummary))
     sess_res = await db.execute(delete(ConversationSession))
-    db.add(AuditLog(action="all_memory_cleared_critical", entity_type="system", entity_id=None, details_json={"mem_deleted": mem_res.rowcount, "timeline_deleted": timeline_res.rowcount, "sess_deleted": sess_res.rowcount}))
+    db.add(AuditLog(action="all_memory_cleared_critical", entity_type="system", entity_id=None, details_json={"mem_deleted": mem_res.rowcount, "timeline_deleted": timeline_res.rowcount, "conversation_timeline_deleted": conversation_timeline_res.rowcount, "conversation_summaries_deleted": conversation_summary_res.rowcount, "sess_deleted": sess_res.rowcount}))
     await db.commit()
-    return {"ok": True, "mem_deleted": mem_res.rowcount, "timeline_deleted": timeline_res.rowcount, "sess_deleted": sess_res.rowcount}
+    return {
+        "ok": True,
+        "mem_deleted": mem_res.rowcount,
+        "timeline_deleted": timeline_res.rowcount,
+        "conversation_timeline_deleted": conversation_timeline_res.rowcount,
+        "conversation_summaries_deleted": conversation_summary_res.rowcount,
+        "sess_deleted": sess_res.rowcount,
+    }
 
 
 @router.get("/memory/{contact_id}/timeline")
@@ -603,10 +654,92 @@ async def get_memory_timeline(
     limit: int = Query(default=100, ge=1, le=300),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    stmt = (
+    conversation_stmt = (
+        select(ConversationTimeline)
+        .where(ConversationTimeline.contact_id == contact_id)
+        .order_by(ConversationTimeline.timestamp.desc())
+        .limit(limit)
+    )
+    conversation_rows = (await db.execute(conversation_stmt)).scalars().all()
+    legacy_stmt = (
         select(UserMemoryTimeline)
         .where(UserMemoryTimeline.contact_id == contact_id)
         .order_by(UserMemoryTimeline.created_at.desc())
+        .limit(limit)
+    )
+    legacy_rows = (await db.execute(legacy_stmt)).scalars().all()
+    items = [
+        {
+            "id": row.id,
+            "type": "conversation",
+            "topic": row.topic,
+            "summary": row.summary,
+            "memory_text": row.summary,
+            "source": row.source,
+            "importance_score": row.importance_score,
+            "confidence": row.importance_score,
+            "timestamp": row.timestamp,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in conversation_rows
+    ]
+    items.extend(
+        {
+            "id": row.id,
+            "type": "profile_fact",
+            "topic": "Profile fact",
+            "summary": row.memory_text,
+            "memory_text": row.memory_text,
+            "source": row.source,
+            "importance_score": row.confidence,
+            "confidence": row.confidence,
+            "timestamp": row.created_at,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in legacy_rows
+    )
+    items.sort(key=lambda item: item["timestamp"], reverse=True)
+    return {
+        "contact_id": contact_id,
+        "count": len(items[:limit]),
+        "items": items[:limit],
+    }
+
+
+@router.delete("/memory/{contact_id}/timeline/{timeline_id}")
+async def delete_conversation_timeline_entry(
+    contact_id: int,
+    timeline_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    svc = MemoryService(db)
+    deleted = await svc.delete_timeline_entry(contact_id, timeline_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="timeline entry not found for this contact")
+    db.add(
+        AuditLog(
+            action="conversation_timeline_deleted",
+            entity_type="conversation_timeline",
+            entity_id=str(timeline_id),
+            details_json={"contact_id": contact_id},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "contact_id": contact_id, "id": timeline_id}
+
+
+@router.get("/memory/{contact_id}/summaries")
+async def get_memory_summaries(
+    contact_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = (
+        select(ConversationSummary)
+        .where(ConversationSummary.contact_id == contact_id)
+        .order_by(ConversationSummary.created_at.desc())
         .limit(limit)
     )
     rows = (await db.execute(stmt)).scalars().all()
@@ -616,15 +749,39 @@ async def get_memory_timeline(
         "items": [
             {
                 "id": row.id,
-                "memory_text": row.memory_text,
+                "summary": row.summary,
+                "topics": row.topics or [],
+                "message_count": row.message_count,
+                "threshold": row.threshold,
                 "source": row.source,
-                "confidence": row.confidence,
                 "created_at": row.created_at,
                 "updated_at": row.updated_at,
             }
             for row in rows
         ],
     }
+
+
+@router.delete("/memory/{contact_id}/summaries/{summary_id}")
+async def delete_memory_summary(
+    contact_id: int,
+    summary_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    svc = MemoryService(db)
+    deleted = await svc.delete_summary(contact_id, summary_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="summary not found for this contact")
+    db.add(
+        AuditLog(
+            action="conversation_summary_deleted",
+            entity_type="conversation_summary",
+            entity_id=str(summary_id),
+            details_json={"contact_id": contact_id},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "contact_id": contact_id, "id": summary_id}
 
 
 @router.get("/profiles")
@@ -646,11 +803,14 @@ async def list_profiles(
             or_(
                 Contact.whatsapp_id.ilike(display_like),
                 Contact.display_name.ilike(display_like),
+                UserMemory.display_name.ilike(display_like),
                 UserMemory.user_name.ilike(display_like),
                 UserMemory.profession.ilike(display_like),
                 UserMemory.interests.ilike(like),
                 UserMemory.projects.ilike(like),
                 UserMemory.goals.ilike(like),
+                UserMemory.relationship_type.ilike(like),
+                UserMemory.personality_notes.ilike(like),
             )
         )
     rows = (await db.execute(stmt)).all()
@@ -677,8 +837,21 @@ async def update_profile(
 
     updates = payload.model_dump(exclude_none=True)
     for field, value in updates.items():
+        if field == "display_name":
+            contact.display_name = value
+        if field == "relationship_type":
+            value = MemoryService.normalize_relationship_type(value)
         setattr(mem, field, value)
-        if field in {"profession", "interests", "projects", "goals", "communication_style", "relationship"}:
+        if field in {
+            "profession",
+            "interests",
+            "projects",
+            "goals",
+            "communication_style",
+            "relationship",
+            "relationship_type",
+            "personality_notes",
+        }:
             await svc.log_memory_fact(
                 contact_id,
                 memory_text=f"{field}: {value}",
@@ -698,12 +871,19 @@ async def delete_profile(
 ) -> dict[str, Any]:
     mem_result = await db.execute(delete(UserMemory).where(UserMemory.contact_id == contact_id))
     timeline_result = await db.execute(delete(UserMemoryTimeline).where(UserMemoryTimeline.contact_id == contact_id))
+    conversation_timeline_result = await db.execute(delete(ConversationTimeline).where(ConversationTimeline.contact_id == contact_id))
+    summary_result = await db.execute(delete(ConversationSummary).where(ConversationSummary.contact_id == contact_id))
     db.add(
         AuditLog(
             action="profile_deleted",
             entity_type="user_memory",
             entity_id=str(contact_id),
-            details_json={"memory_deleted": mem_result.rowcount, "timeline_deleted": timeline_result.rowcount},
+            details_json={
+                "memory_deleted": mem_result.rowcount,
+                "timeline_deleted": timeline_result.rowcount,
+                "conversation_timeline_deleted": conversation_timeline_result.rowcount,
+                "summaries_deleted": summary_result.rowcount,
+            },
         )
     )
     await db.commit()
@@ -712,6 +892,8 @@ async def delete_profile(
         "contact_id": contact_id,
         "memory_deleted": mem_result.rowcount,
         "timeline_deleted": timeline_result.rowcount,
+        "conversation_timeline_deleted": conversation_timeline_result.rowcount,
+        "summaries_deleted": summary_result.rowcount,
     }
 
 
@@ -788,6 +970,8 @@ async def identity_status(
 
     faq_count = (await db.execute(select(func.count(FAQEntry.id)).where(FAQEntry.is_enabled.is_(True)))).scalar_one()
     memory_count = (await db.execute(select(func.count(UserMemory.id)))).scalar_one()
+    timeline_count = (await db.execute(select(func.count(ConversationTimeline.id)))).scalar_one()
+    summary_count = (await db.execute(select(func.count(ConversationSummary.id)))).scalar_one()
     cache_count = (await db.execute(select(func.count(QACache.id)))).scalar_one()
     source_rows = (
         await db.execute(
@@ -806,6 +990,8 @@ async def identity_status(
             "core_faq_entries": faq_count,
             "knowledge_documents": {source: count for source, count in source_rows},
             "memory_profiles": memory_count,
+            "conversation_timeline_entries": timeline_count,
+            "conversation_summaries": summary_count,
             "qa_cache_entries": cache_count,
         },
     }
@@ -976,6 +1162,9 @@ async def usage_stats(
     msg_today_stmt = select(func.count(Message.id)).where(Message.created_at >= today_start)
     messages_today = (await db.execute(msg_today_stmt)).scalar_one()
 
+    internet_today_stmt = select(func.count(InternetUsageEvent.id)).where(InternetUsageEvent.created_at >= today_start)
+    internet_requests_today = (await db.execute(internet_today_stmt)).scalar_one()
+
     # Total AI calls (all time)
     ai_total_stmt = select(func.count(AICall.id))
     ai_calls_total = (await db.execute(ai_total_stmt)).scalar_one()
@@ -987,10 +1176,13 @@ async def usage_stats(
     # Cache size
     cache_stmt = select(func.count(QACache.id))
     cache_size = (await db.execute(cache_stmt)).scalar_one()
+    internet_cache_size = (await db.execute(select(func.count(InternetCache.id)))).scalar_one()
 
     # Memory count
     memory_stmt = select(func.count(UserMemory.id))
     memory_count = (await db.execute(memory_stmt)).scalar_one()
+    timeline_count = (await db.execute(select(func.count(ConversationTimeline.id)))).scalar_one()
+    summary_count = (await db.execute(select(func.count(ConversationSummary.id)))).scalar_one()
 
     return {
         "today": {
@@ -999,13 +1191,185 @@ async def usage_stats(
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
             "messages": messages_today,
+            "internet_requests": internet_requests_today,
         },
         "totals": {
             "ai_calls": ai_calls_total,
             "contacts": total_contacts,
             "cache_entries": cache_size,
+            "internet_cache_entries": internet_cache_size,
             "memory_entries": memory_count,
+            "conversation_timeline_entries": timeline_count,
+            "conversation_summaries": summary_count,
         },
+    }
+
+
+@router.get("/ai-usage")
+async def ai_usage_dashboard(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today_start.replace(day=1)
+
+    today_stats = await _ai_usage_totals(db, today_start)
+    month_stats = await _ai_usage_totals(db, month_start)
+
+    top_rows = (
+        await db.execute(
+            select(
+                Contact.id,
+                Contact.whatsapp_id,
+                Contact.display_name,
+                func.count(AIUsageEvent.id).label("ai_calls"),
+                func.coalesce(func.sum(AIUsageEvent.total_tokens), 0).label("total_tokens"),
+            )
+            .join(Contact, Contact.id == AIUsageEvent.contact_id)
+            .where(AIUsageEvent.created_at >= month_start)
+            .group_by(Contact.id, Contact.whatsapp_id, Contact.display_name)
+            .order_by(func.coalesce(func.sum(AIUsageEvent.total_tokens), 0).desc())
+            .limit(10)
+        )
+    ).all()
+
+    recent_rows = (
+        await db.execute(
+            select(AIUsageEvent, Contact)
+            .join(Contact, Contact.id == AIUsageEvent.contact_id)
+            .order_by(AIUsageEvent.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    quota_rows = (
+        await db.execute(
+            select(AIUsageQuota, Contact)
+            .join(Contact, Contact.id == AIUsageQuota.contact_id)
+            .order_by(AIUsageQuota.usage_count.desc(), AIUsageQuota.updated_at.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    return {
+        "today": today_stats,
+        "month": month_stats,
+        "top_users": [
+            {
+                "contact_id": contact_id,
+                "whatsapp_id": whatsapp_id,
+                "display_name": display_name,
+                "ai_calls": int(ai_calls or 0),
+                "total_tokens": int(total_tokens or 0),
+            }
+            for contact_id, whatsapp_id, display_name, ai_calls, total_tokens in top_rows
+        ],
+        "recent": [
+            {
+                "id": event.id,
+                "contact_id": event.contact_id,
+                "whatsapp_id": contact.whatsapp_id,
+                "display_name": contact.display_name,
+                "model": event.model,
+                "mode": event.mode,
+                "prompt_tokens": event.prompt_tokens,
+                "completion_tokens": event.completion_tokens,
+                "total_tokens": event.total_tokens,
+                "response_source": event.response_source,
+                "created_at": event.created_at,
+            }
+            for event, contact in recent_rows
+        ],
+        "quotas": [
+            {
+                "contact_id": quota.contact_id,
+                "whatsapp_id": contact.whatsapp_id,
+                "display_name": contact.display_name,
+                "usage_count": quota.usage_count,
+                "reset_time": quota.reset_time,
+                "updated_at": quota.updated_at,
+            }
+            for quota, contact in quota_rows
+        ],
+    }
+
+
+@router.get("/internet-usage")
+async def internet_usage_dashboard(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today_start.replace(day=1)
+
+    today_stats = await _internet_usage_totals(db, today_start)
+    month_stats = await _internet_usage_totals(db, month_start)
+    cache_count = (await db.execute(select(func.count(InternetCache.id)))).scalar_one()
+
+    top_rows = (
+        await db.execute(
+            select(
+                Contact.id,
+                Contact.whatsapp_id,
+                Contact.display_name,
+                func.count(InternetUsageEvent.id).label("requests"),
+            )
+            .join(Contact, Contact.id == InternetUsageEvent.contact_id)
+            .where(InternetUsageEvent.created_at >= month_start)
+            .group_by(Contact.id, Contact.whatsapp_id, Contact.display_name)
+            .order_by(func.count(InternetUsageEvent.id).desc())
+            .limit(10)
+        )
+    ).all()
+
+    service_rows = (
+        await db.execute(
+            select(InternetUsageEvent.service, func.count(InternetUsageEvent.id))
+            .where(InternetUsageEvent.created_at >= month_start)
+            .group_by(InternetUsageEvent.service)
+            .order_by(func.count(InternetUsageEvent.id).desc())
+        )
+    ).all()
+
+    recent_rows = (
+        await db.execute(
+            select(InternetUsageEvent, Contact)
+            .outerjoin(Contact, Contact.id == InternetUsageEvent.contact_id)
+            .order_by(InternetUsageEvent.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    return {
+        "today": today_stats,
+        "month": month_stats,
+        "cache_entries": cache_count,
+        "top_users": [
+            {
+                "contact_id": contact_id,
+                "whatsapp_id": whatsapp_id,
+                "display_name": display_name,
+                "requests": int(requests or 0),
+            }
+            for contact_id, whatsapp_id, display_name, requests in top_rows
+        ],
+        "services": [{"service": service, "requests": int(count or 0)} for service, count in service_rows],
+        "recent": [
+            {
+                "id": event.id,
+                "contact_id": event.contact_id,
+                "whatsapp_id": contact.whatsapp_id if contact else "",
+                "display_name": contact.display_name if contact else None,
+                "service": event.service,
+                "query_text": event.query_text,
+                "provider": event.provider,
+                "cache_hit": event.cache_hit,
+                "success": event.success,
+                "error_message": event.error_message,
+                "created_at": event.created_at,
+            }
+            for event, contact in recent_rows
+        ],
     }
 
 
@@ -1164,6 +1528,47 @@ async def _save_and_sync_faq(
     return {"ok": True, "entries": count, "path": str(CORE_FAQ_PATH)}
 
 
+async def _ai_usage_totals(db: AsyncSession, since) -> dict[str, int]:
+    row = (
+        await db.execute(
+            select(
+                func.count(AIUsageEvent.id),
+                func.coalesce(func.sum(AIUsageEvent.prompt_tokens), 0),
+                func.coalesce(func.sum(AIUsageEvent.completion_tokens), 0),
+                func.coalesce(func.sum(AIUsageEvent.total_tokens), 0),
+            ).where(AIUsageEvent.created_at >= since)
+        )
+    ).one()
+    ai_calls, prompt_tokens, completion_tokens, total_tokens = row
+    return {
+        "ai_calls": int(ai_calls or 0),
+        "prompt_tokens": int(prompt_tokens or 0),
+        "completion_tokens": int(completion_tokens or 0),
+        "total_tokens": int(total_tokens or 0),
+    }
+
+
+async def _internet_usage_totals(db: AsyncSession, since) -> dict[str, int]:
+    requests = (
+        await db.execute(select(func.count(InternetUsageEvent.id)).where(InternetUsageEvent.created_at >= since))
+    ).scalar_one()
+    cache_hits = (
+        await db.execute(
+            select(func.count(InternetUsageEvent.id))
+            .where(InternetUsageEvent.created_at >= since)
+            .where(InternetUsageEvent.cache_hit.is_(True))
+        )
+    ).scalar_one()
+    failures = (
+        await db.execute(
+            select(func.count(InternetUsageEvent.id))
+            .where(InternetUsageEvent.created_at >= since)
+            .where(InternetUsageEvent.success.is_(False))
+        )
+    ).scalar_one()
+    return {"requests": int(requests or 0), "cache_hits": int(cache_hits or 0), "failures": int(failures or 0)}
+
+
 def _queue_payload(row: OutboundMessage) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -1184,7 +1589,7 @@ def _profile_payload(mem: UserMemory, contact: Contact) -> dict[str, Any]:
         "id": mem.id,
         "contact_id": mem.contact_id,
         "whatsapp_id": contact.whatsapp_id,
-        "display_name": contact.display_name,
+        "display_name": mem.display_name or contact.display_name,
         "user_name": mem.user_name,
         "preferences": mem.preferences,
         "context_notes": mem.context_notes,
@@ -1195,6 +1600,10 @@ def _profile_payload(mem: UserMemory, contact: Contact) -> dict[str, Any]:
         "goals": mem.goals,
         "communication_style": mem.communication_style,
         "relationship": mem.relationship,
+        "relationship_type": mem.relationship_type,
+        "personality_notes": mem.personality_notes,
+        "first_seen_at": mem.first_seen_at,
+        "last_interaction_at": mem.last_interaction_at,
         "created_at": mem.created_at,
         "updated_at": mem.updated_at,
     }

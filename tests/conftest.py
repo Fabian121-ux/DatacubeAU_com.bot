@@ -11,7 +11,25 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType
-from app.models.schema import Contact, FAQEntry, UserMemory, UserMemoryTimeline
+from app.models.schema import (
+    AICall,
+    AIUsageEvent,
+    AIUsageQuota,
+    Contact,
+    ConversationSummary,
+    ConversationTimeline,
+    FeedbackReview,
+    ForcedReplyTarget,
+    FAQEntry,
+    GroupMetadata,
+    InternetCache,
+    InternetUsageEvent,
+    Message,
+    UserTrigger,
+    UserMemory,
+    UserMemoryTimeline,
+)
+from app.services.memory_service import MemoryContextPackage
 from app.utils.text import normalize_text
 
 
@@ -31,12 +49,46 @@ async def db_session():
 
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with Session() as session:
-        for model in (UserMemoryTimeline, UserMemory, FAQEntry, Contact):
+        for model in (
+            AIUsageEvent,
+            InternetUsageEvent,
+            InternetCache,
+            AIUsageQuota,
+            AICall,
+            Message,
+            GroupMetadata,
+            ConversationSummary,
+            ConversationTimeline,
+            FeedbackReview,
+            ForcedReplyTarget,
+            UserTrigger,
+            UserMemoryTimeline,
+            UserMemory,
+            FAQEntry,
+            Contact,
+        ):
             await session.execute(delete(model))
         await session.commit()
         yield session
         await session.rollback()
-        for model in (UserMemoryTimeline, UserMemory, FAQEntry, Contact):
+        for model in (
+            AIUsageEvent,
+            InternetUsageEvent,
+            InternetCache,
+            AIUsageQuota,
+            AICall,
+            Message,
+            GroupMetadata,
+            ConversationSummary,
+            ConversationTimeline,
+            FeedbackReview,
+            ForcedReplyTarget,
+            UserTrigger,
+            UserMemoryTimeline,
+            UserMemory,
+            FAQEntry,
+            Contact,
+        ):
             await session.execute(delete(model))
         await session.commit()
     await engine.dispose()
@@ -136,6 +188,21 @@ class MockMemoryService:
 
     def get_memory_context(self, *_: Any) -> str:
         return ""
+
+    async def set_global_chat(self, *_: Any) -> None:
+        return None
+
+    async def get_context_package(self, contact_id: int, **_: Any) -> MemoryContextPackage:
+        return MemoryContextPackage(contact_id=contact_id)
+
+    def build_continuation_reply(self, *_: Any) -> None:
+        return None
+
+    @staticmethod
+    def diagnostics_for_package(package: MemoryContextPackage | None) -> dict[str, Any]:
+        if not package:
+            return {"retrieved_items": 0, "used": []}
+        return {"retrieved_items": package.retrieved_item_count, "used": package.used_sections}
 
 
 @pytest.fixture

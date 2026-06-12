@@ -74,7 +74,7 @@ services:
     ports:
       - "${WAHA_HTTP_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "const options = { headers: {} }; if (process.env.WHATSAPP_API_KEY) options.headers['X-Api-Key'] = process.env.WHATSAPP_API_KEY; require('http').get('http://127.0.0.1:3000/api/server/status', options, (res) => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 20s
       timeout: 5s
       retries: 5

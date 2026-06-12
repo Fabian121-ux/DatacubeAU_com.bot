@@ -13,7 +13,7 @@ router = APIRouter(tags=["admin-ui"], dependencies=[Depends(require_admin_sessio
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
-@router.get("/admin/ui", response_class=HTMLResponse)
+@router.get("/admin/ui", response_class=HTMLResponse, response_model=None)
 async def admin_ui() -> HTMLResponse:
     html_path = _STATIC_DIR / "admin.html"
     if not html_path.exists():

@@ -46,6 +46,28 @@ class FakeFAQSession:
     async def execute(self, statement):
         if statement.__class__.__name__ == "Delete":
             self.entries.clear()
+        if statement.__class__.__name__ == "Insert":
+            params = statement.compile().params
+            existing = next(
+                (entry for entry in self.entries if entry.normalized_question == params["normalized_question"]),
+                None,
+            )
+            if existing:
+                existing.question = params["question"]
+                existing.answer = params["answer"]
+                existing.is_enabled = params["is_enabled"]
+                existing.updated_at = params["updated_at"]
+            else:
+                self.entries.append(
+                    FAQEntry(
+                        question=params["question"],
+                        normalized_question=params["normalized_question"],
+                        answer=params["answer"],
+                        is_enabled=params["is_enabled"],
+                        created_at=params["created_at"],
+                        updated_at=params["updated_at"],
+                    )
+                )
         return FakeExecuteResult(self.entries)
 
     def add(self, entry):

@@ -53,6 +53,7 @@ class DecisionType(StrEnum):
     AI_REPLY_DEEP = "ai_reply_deep"
     REPLY_RULE = "reply_rule"
     MEMORY_ONBOARD = "memory_onboard"
+    MEMORY_REPLY = "memory_reply"
     RATE_LIMITED = "rate_limited"
     ESCALATED = "escalated"
 
@@ -60,6 +61,15 @@ class DecisionType(StrEnum):
 class AIMode(StrEnum):
     LIGHT = "light"
     DEEP = "deep"
+
+
+class RelationshipType(StrEnum):
+    FRIEND = "friend"
+    FAMILY = "family"
+    COLLEAGUE = "colleague"
+    CUSTOMER = "customer"
+    COMMUNITY_MEMBER = "community_member"
+    UNKNOWN = "unknown"
 
 
 class SessionStatus(StrEnum):

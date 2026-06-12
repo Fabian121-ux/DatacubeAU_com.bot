@@ -2,7 +2,8 @@ import logging
 import re
 import difflib
 from pathlib import Path
-from sqlalchemy import select, delete
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import FAQEntry
@@ -32,9 +33,6 @@ class FAQService:
         return pairs
 
     async def sync_faq_in_db(self, pairs: list[tuple[str, str]]) -> int:
-        # Clear existing
-        await self.session.execute(delete(FAQEntry))
-        
         count = 0
         seen: set[str] = set()
         for question, answer in pairs:
@@ -42,17 +40,26 @@ class FAQService:
             if normalized in seen:
                 continue
             seen.add(normalized)
-            entry = FAQEntry(
+            now = utcnow()
+            stmt = pg_insert(FAQEntry).values(
                 question=question,
                 normalized_question=normalized,
                 answer=answer,
                 is_enabled=True,
-                created_at=utcnow(),
-                updated_at=utcnow()
+                created_at=now,
+                updated_at=now,
+            ).on_conflict_do_update(
+                index_elements=[FAQEntry.normalized_question],
+                set_={
+                    "question": question,
+                    "answer": answer,
+                    "is_enabled": True,
+                    "updated_at": now,
+                },
             )
-            self.session.add(entry)
+            await self.session.execute(stmt)
             count += 1
-        
+
         await self.session.flush()
         logger.info(f"Synchronized {count} FAQ entries in database.")
         return count

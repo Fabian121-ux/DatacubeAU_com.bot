@@ -39,6 +39,32 @@ class WAHAClient:
             log_event(logger, logging.ERROR, "waha_send_failure", chat_id=chat_id, error=str(exc))
             raise WahaClientError(f"WAHA send failed for {chat_id}: {exc}") from exc
 
+    async def send_media(
+        self,
+        chat_id: str,
+        *,
+        media_url: str,
+        caption: str | None = None,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        url = f"{settings.waha_service_url}{settings.waha_send_image_path}"
+        payload = {
+            "session": session_name or settings.waha_session_name,
+            "chatId": chat_id,
+            "file": {"url": media_url},
+            "caption": caption or "",
+        }
+        headers = {"Content-Type": "application/json"}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            body = await self._request("POST", url, headers=headers, json=payload)
+            log_event(logger, logging.INFO, "waha_media_send_success", chat_id=chat_id, session=payload["session"])
+            return body
+        except (httpx.HTTPError, RuntimeError) as exc:
+            log_event(logger, logging.ERROR, "waha_media_send_failure", chat_id=chat_id, error=str(exc))
+            raise WahaClientError(f"WAHA media send failed for {chat_id}: {exc}") from exc
+
     async def get_session_status(self, session_name: str | None = None) -> dict[str, Any]:
         name = session_name or settings.waha_session_name
         url = f"{settings.waha_service_url}{settings.waha_session_status_path}/{name}"
@@ -49,6 +75,26 @@ class WAHAClient:
             return await self._request("GET", url, headers=headers)
         except (httpx.HTTPError, RuntimeError) as exc:
             raise WahaClientError(f"WAHA session status failed for {name}: {exc}") from exc
+
+    async def get_chats(self, session_name: str | None = None) -> list[dict[str, Any]]:
+        name = session_name or settings.waha_session_name
+        path = settings.waha_chats_path.format(session=name)
+        url = f"{settings.waha_service_url}{path}"
+        headers: dict[str, str] = {}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            payload = await self._request("GET", url, headers=headers)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA chat metadata failed for {name}: {exc}") from exc
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("data", "chats", "items"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
 
     async def start_session(self, session_name: str | None = None) -> dict[str, Any]:
         name = session_name or settings.waha_session_name
@@ -63,6 +109,12 @@ class WAHAClient:
         except (httpx.HTTPError, RuntimeError) as exc:
             raise WahaClientError(f"WAHA session start failed for {name}: {exc}") from exc
 
+    async def start_typing(self, chat_id: str, session_name: str | None = None) -> dict[str, Any]:
+        return await self._typing_request("/api/startTyping", chat_id, session_name=session_name)
+
+    async def stop_typing(self, chat_id: str, session_name: str | None = None) -> dict[str, Any]:
+        return await self._typing_request("/api/stopTyping", chat_id, session_name=session_name)
+
     async def close(self) -> None:
         await self._client.aclose()
 
@@ -73,7 +125,7 @@ class WAHAClient:
         *,
         headers: dict[str, str],
         json: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         attempts = max(1, settings.waha_request_retry_count + 1)
         last_error: Exception | None = None
 
@@ -104,6 +156,26 @@ class WAHAClient:
             await asyncio.sleep(settings.waha_request_retry_backoff_seconds * attempt)
 
         raise RuntimeError(f"WAHA request exhausted retries for {method} {url}: {last_error}")
+
+    async def _typing_request(
+        self,
+        path: str,
+        chat_id: str,
+        *,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        url = f"{settings.waha_service_url}{path}"
+        payload = {
+            "session": session_name or settings.waha_session_name,
+            "chatId": chat_id,
+        }
+        headers = {"Content-Type": "application/json"}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            return await self._request("POST", url, headers=headers, json=payload)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA typing presence failed for {chat_id}: {exc}") from exc
 
     @staticmethod
     def _should_retry_status(status_code: int) -> bool:

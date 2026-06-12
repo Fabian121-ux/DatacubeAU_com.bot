@@ -14,12 +14,40 @@ _DEFAULTS: dict[str, str] = {
     "system_instructions": (
         "Generated automatically from the assistant identity/profile settings."
     ),
+    "bot_enabled": "true",
+    "maintenance_mode": "false",
+    "owner_whatsapp_ids": "",
+    "group_default_reply_mode": "mention_only",
     "ai_enabled": "false",
     "ai_model_light": "openai/gpt-4o-mini",
     "ai_model_deep": "openai/gpt-4o",
+    "internet_enabled": "false",
+    "web_search_enabled": "false",
+    "news_enabled": "false",
+    "weather_enabled": "false",
+    "currency_enabled": "false",
+    "youtube_enabled": "false",
+    "image_search_enabled": "false",
+    "sticker_search_enabled": "false",
+    "internet_provider": "searxng",
+    "internet_daily_limit_per_user": "25",
+    "internet_cache_ttl_seconds": "900",
+    "internet_smart_detection_enabled": "true",
     "rate_limit_per_user_daily": "50",
     "rate_limit_cooldown_seconds": "6",
     "rate_limit_global_daily": "500",
+    "ai_quota_per_user_daily": "5",
+    "global_chat_enabled": "true",
+    "typing_delay_enabled": "true",
+    "min_typing_delay_seconds": "1",
+    "max_typing_delay_seconds": "6",
+    "show_source_badges": "true",
+    "show_context_badges": "true",
+    "enable_signature_style": "true",
+    "experience_source_badges_enabled": "true",
+    "experience_context_indicators_enabled": "true",
+    "experience_typing_presence_enabled": "false",
+    "experience_send_thinking_messages": "false",
     "personality_tone": "professional",
     "personality_humor": "low",
     "personality_reply_length": "short",
@@ -65,6 +93,13 @@ class BotConfigService:
         raw = await self.get(key, str(default))
         try:
             return int(raw)
+        except (ValueError, TypeError):
+            return default
+
+    async def get_float(self, key: str, default: float = 0.0) -> float:
+        raw = await self.get(key, str(default))
+        try:
+            return float(raw)
         except (ValueError, TypeError):
             return default
 

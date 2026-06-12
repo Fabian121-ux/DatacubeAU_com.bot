@@ -128,6 +128,8 @@ tr:hover td{background:var(--surface2)}
       <button data-tab="decisions"><span class="icon">🐞</span><span>Debugger</span></button>
       <button data-tab="waha"><span class="icon">📱</span><span>WAHA</span></button>
       <button data-tab="queue"><span class="icon">📬</span><span>Queue</span></button>
+      <button data-tab="aiusage"><span class="icon">🤖</span><span>AI Usage</span></button>
+      <button data-tab="internet"><span class="icon">🌐</span><span>Internet</span></button>
       <button data-tab="memory"><span class="icon">🧠</span><span>Memory</span></button>
       <button data-tab="profiles"><span class="icon">🪪</span><span>Profiles</span></button>
       <button data-tab="cache"><span class="icon">💾</span><span>Cache</span></button>
@@ -361,6 +363,47 @@ tr:hover td{background:var(--surface2)}
     </div>
 
     <!-- MEMORY -->
+    <div id="tab-aiusage" class="panel">
+      <h2>🤖 AI Usage</h2>
+      <div class="stats" id="aiUsageStats"></div>
+      <div class="card">
+        <h3>Top Users This Month</h3>
+        <div class="tbl-wrap" id="aiTopUsersTable">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Active Quotas</h3>
+        <div class="tbl-wrap" id="aiQuotasTable">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Recent AI Calls</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadAIUsage()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="aiUsageTable">Loading…</div>
+      </div>
+    </div>
+
+    <div id="tab-internet" class="panel">
+      <h2>🌐 Internet Services</h2>
+      <div class="stats" id="internetUsageStats"></div>
+      <div class="card">
+        <h3>Services This Month</h3>
+        <div class="tbl-wrap" id="internetServicesTable">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Top Users This Month</h3>
+        <div class="tbl-wrap" id="internetTopUsersTable">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Recent Internet Requests</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadInternetUsage()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="internetUsageTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- MEMORY -->
     <div id="tab-memory" class="panel">
       <h2>🧠 User Memory</h2>
       <div class="card"><h3>All Users</h3><div class="tbl-wrap" id="memoryTable">Loading…</div></div>
@@ -380,6 +423,10 @@ tr:hover td{background:var(--surface2)}
       <div class="card">
         <h3>Memory Timeline</h3>
         <div id="timelinePanel">Select a profile.</div>
+      </div>
+      <div class="card">
+        <h3>Conversation Summaries</h3>
+        <div id="summaryPanel">Select a profile.</div>
       </div>
     </div>
 
@@ -492,7 +539,7 @@ function loadTab(tab) {
     status: loadStatus, rules: loadRules, memory: loadMemory,
     cache: loadCache, logs: loadLogsCombined, config: loadConfig,
     knowledge: loadKnowledge, groups: loadGroups, decisions: loadDecisions,
-    identity: loadIdentity, faq: loadFaq, queue: loadQueue, profiles: loadProfiles, waha: loadWaha
+    identity: loadIdentity, faq: loadFaq, queue: loadQueue, aiusage: loadAIUsage, internet: loadInternetUsage, profiles: loadProfiles, waha: loadWaha
   };
   if (loaders[tab]) loaders[tab]();
 }
@@ -516,6 +563,8 @@ async function loadStatus() {
       <div class="stat"><div class="val">${usage.today.total_tokens}</div><div class="lbl">Tokens Today</div></div>
       <div class="stat"><div class="val">${usage.totals.contacts}</div><div class="lbl">Contacts</div></div>
       <div class="stat"><div class="val">${usage.totals.memory_entries}</div><div class="lbl">Memories</div></div>
+      <div class="stat"><div class="val">${usage.totals.conversation_timeline_entries || 0}</div><div class="lbl">Timeline</div></div>
+      <div class="stat"><div class="val">${usage.totals.conversation_summaries || 0}</div><div class="lbl">Summaries</div></div>
     `;
     const hi = document.getElementById('healthInfo');
     hi.innerHTML = `
@@ -542,7 +591,7 @@ async function loadIdentityStatus() {
         <div class="detail"><div class="k">Assistant</div><div class="v">${esc(d.assistant_name)}<br>${esc(d.assistant_role)}</div></div>
         <div class="detail"><div class="k">Owner</div><div class="v">${esc(d.owner_name)}</div></div>
         <div class="detail"><div class="k">Personality</div><div class="v">${esc(d.active_personality_settings.tone)} · ${esc(d.active_personality_settings.reply_length)} · ${esc(d.active_personality_settings.technical_depth)}</div></div>
-        <div class="detail"><div class="k">Sources</div><div class="v">FAQ: ${sources.core_faq_entries || 0}<br>Docs: ${docText}<br>Profiles: ${sources.memory_profiles || 0}<br>Cache: ${sources.qa_cache_entries || 0}</div></div>
+        <div class="detail"><div class="k">Sources</div><div class="v">FAQ: ${sources.core_faq_entries || 0}<br>Docs: ${docText}<br>Profiles: ${sources.memory_profiles || 0}<br>Timeline: ${sources.conversation_timeline_entries || 0}<br>Summaries: ${sources.conversation_summaries || 0}<br>Cache: ${sources.qa_cache_entries || 0}</div></div>
       </div>
     `;
   } catch (_) {
@@ -795,6 +844,91 @@ async function deleteQueue(id) {
   loadQueue();
 }
 
+// ---- AI USAGE ----
+async function loadAIUsage() {
+  try {
+    const d = await api('/admin/ai-usage');
+    document.getElementById('aiUsageStats').innerHTML = `
+      <div class="stat"><div class="val">${d.today.ai_calls}</div><div class="lbl">AI Calls Today</div></div>
+      <div class="stat"><div class="val">${d.today.total_tokens}</div><div class="lbl">Tokens Today</div></div>
+      <div class="stat"><div class="val">${d.month.ai_calls}</div><div class="lbl">AI Calls Month</div></div>
+      <div class="stat"><div class="val">${d.month.total_tokens}</div><div class="lbl">Tokens Month</div></div>
+    `;
+    const top = document.getElementById('aiTopUsersTable');
+    top.innerHTML = d.top_users.length ? `<table>
+      <thead><tr><th>User</th><th>WhatsApp</th><th>Calls</th><th>Tokens</th></tr></thead>
+      <tbody>${d.top_users.map(u => `<tr>
+        <td>${esc(u.display_name || '—')}</td>
+        <td title="${esc(u.whatsapp_id)}">${esc(u.whatsapp_id.substring(0,26))}</td>
+        <td>${u.ai_calls}</td>
+        <td>${u.total_tokens}</td>
+      </tr>`).join('')}</tbody></table>` : '<em>No AI usage this month.</em>';
+    const quotas = document.getElementById('aiQuotasTable');
+    quotas.innerHTML = d.quotas.length ? `<table>
+      <thead><tr><th>User</th><th>WhatsApp</th><th>Used</th><th>Reset</th><th>Updated</th></tr></thead>
+      <tbody>${d.quotas.map(q => `<tr>
+        <td>${esc(q.display_name || '—')}</td>
+        <td title="${esc(q.whatsapp_id)}">${esc(q.whatsapp_id.substring(0,26))}</td>
+        <td><span class="badge badge-purple">${q.usage_count}</span></td>
+        <td style="white-space:nowrap">${q.reset_time ? new Date(q.reset_time).toLocaleString() : '—'}</td>
+        <td style="white-space:nowrap">${q.updated_at ? new Date(q.updated_at).toLocaleString() : '—'}</td>
+      </tr>`).join('')}</tbody></table>` : '<em>No quota counters yet.</em>';
+    const recent = document.getElementById('aiUsageTable');
+    recent.innerHTML = d.recent.length ? `<table>
+      <thead><tr><th>Time</th><th>User</th><th>Model</th><th>Mode</th><th>Source</th><th>Prompt</th><th>Completion</th><th>Total</th></tr></thead>
+      <tbody>${d.recent.map(e => `<tr>
+        <td style="white-space:nowrap">${new Date(e.created_at).toLocaleString()}</td>
+        <td title="${esc(e.whatsapp_id)}">${esc(e.display_name || e.whatsapp_id)}</td>
+        <td title="${esc(e.model)}">${esc(e.model.substring(0,32))}</td>
+        <td><span class="badge badge-blue">${esc(e.mode)}</span></td>
+        <td><span class="badge badge-purple">${esc(e.response_source)}</span></td>
+        <td>${e.prompt_tokens}</td>
+        <td>${e.completion_tokens}</td>
+        <td>${e.total_tokens}</td>
+      </tr>`).join('')}</tbody></table>` : '<em>No AI calls logged yet.</em>';
+  } catch (_) {}
+}
+
+// ---- INTERNET USAGE ----
+async function loadInternetUsage() {
+  try {
+    const d = await api('/admin/internet-usage');
+    document.getElementById('internetUsageStats').innerHTML = `
+      <div class="stat"><div class="val">${d.today.requests}</div><div class="lbl">Requests Today</div></div>
+      <div class="stat"><div class="val">${d.today.cache_hits}</div><div class="lbl">Cache Hits Today</div></div>
+      <div class="stat"><div class="val">${d.month.requests}</div><div class="lbl">Requests Month</div></div>
+      <div class="stat"><div class="val">${d.cache_entries}</div><div class="lbl">Cache Entries</div></div>
+    `;
+    const services = document.getElementById('internetServicesTable');
+    services.innerHTML = d.services.length ? `<table>
+      <thead><tr><th>Service</th><th>Requests</th></tr></thead>
+      <tbody>${d.services.map(s => `<tr>
+        <td><span class="badge badge-blue">${esc(s.service)}</span></td>
+        <td>${s.requests}</td>
+      </tr>`).join('')}</tbody></table>` : '<em>No internet service usage this month.</em>';
+    const top = document.getElementById('internetTopUsersTable');
+    top.innerHTML = d.top_users.length ? `<table>
+      <thead><tr><th>User</th><th>WhatsApp</th><th>Requests</th></tr></thead>
+      <tbody>${d.top_users.map(u => `<tr>
+        <td>${esc(u.display_name || '—')}</td>
+        <td title="${esc(u.whatsapp_id)}">${esc(u.whatsapp_id.substring(0,26))}</td>
+        <td>${u.requests}</td>
+      </tr>`).join('')}</tbody></table>` : '<em>No internet users this month.</em>';
+    const recent = document.getElementById('internetUsageTable');
+    recent.innerHTML = d.recent.length ? `<table>
+      <thead><tr><th>Time</th><th>User</th><th>Service</th><th>Provider</th><th>Cache</th><th>Status</th><th>Query</th></tr></thead>
+      <tbody>${d.recent.map(e => `<tr>
+        <td style="white-space:nowrap">${new Date(e.created_at).toLocaleString()}</td>
+        <td title="${esc(e.whatsapp_id || '')}">${esc(e.display_name || e.whatsapp_id || '—')}</td>
+        <td><span class="badge badge-blue">${esc(e.service)}</span></td>
+        <td>${esc(e.provider)}</td>
+        <td>${e.cache_hit ? 'Yes' : 'No'}</td>
+        <td>${e.success ? 'OK' : 'Failed'}</td>
+        <td title="${esc(e.query_text)}">${esc(e.query_text.substring(0,80))}</td>
+      </tr>`).join('')}</tbody></table>` : '<em>No internet requests logged yet.</em>';
+  } catch (_) {}
+}
+
 // ---- TEST BOT ----
 async function testReply() {
   const msg = document.getElementById('testMsg').value.trim();
@@ -873,13 +1007,14 @@ async function loadMemory() {
     const d = await api('/admin/memory');
     if (!d.items.length) { document.getElementById('memoryTable').innerHTML = '<em>No user memories yet.</em>'; return; }
     document.getElementById('memoryTable').innerHTML = `<table>
-      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Profession</th><th>Interests</th><th>Projects</th><th>Onboarded</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Relationship</th><th>Interests</th><th>Projects</th><th>Last Seen</th><th>Onboarded</th><th>Actions</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td>${m.display_name||'—'}</td><td>${esc(m.whatsapp_id)}</td>
         <td>${esc(m.user_name||'—')}</td>
-        <td title="${esc(m.profession||'')}">${esc((m.profession||'—').substring(0,34))}</td>
+        <td><span class="badge badge-blue">${esc(m.relationship_type||'unknown')}</span></td>
         <td title="${esc(m.interests||'')}">${esc((m.interests||'—').substring(0,34))}</td>
         <td title="${esc(m.projects||'')}">${esc((m.projects||'—').substring(0,34))}</td>
+        <td style="white-space:nowrap">${m.last_interaction_at ? new Date(m.last_interaction_at).toLocaleString() : '—'}</td>
         <td><span class="badge ${m.onboarding_complete?'badge-green':'badge-orange'}">${m.onboarding_complete?'yes':'no'}</span></td>
         <td>
           <select onchange="if(this.value){deleteMemory(${m.contact_id}, this.value); this.value='';}">
@@ -922,16 +1057,19 @@ async function loadProfiles() {
           </div>
           <span class="badge ${p.onboarding_complete?'badge-green':'badge-orange'}">${p.onboarding_complete?'onboarded':'open'}</span>
         </div>
+        ${profileInput(p.contact_id,'display_name','Display Name',p.display_name)}
         ${profileInput(p.contact_id,'user_name','Name',p.user_name)}
+        ${profileSelect(p.contact_id,'relationship_type','Relationship Type',p.relationship_type)}
         ${profileInput(p.contact_id,'profession','Profession',p.profession)}
         ${profileText(p.contact_id,'interests','Interests',p.interests)}
         ${profileText(p.contact_id,'projects','Projects',p.projects)}
         ${profileText(p.contact_id,'goals','Goals',p.goals)}
         ${profileInput(p.contact_id,'communication_style','Style',p.communication_style)}
-        ${profileInput(p.contact_id,'relationship','Relationship',p.relationship)}
+        ${profileInput(p.contact_id,'relationship','Relationship Note',p.relationship)}
+        ${profileText(p.contact_id,'personality_notes','Personality Notes',p.personality_notes)}
         <div class="btn-group" style="margin-top:.7rem">
           <button class="btn btn-primary btn-sm" onclick="saveProfile(${p.contact_id})">Save</button>
-          <button class="btn btn-ghost btn-sm" onclick="loadTimeline(${p.contact_id})">Timeline</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadMemoryDetails(${p.contact_id})">Timeline</button>
           <button class="btn btn-danger btn-sm" onclick="deleteProfile(${p.contact_id})">Delete</button>
         </div>
       </div>
@@ -943,6 +1081,12 @@ function profileInput(cid, field, label, value) {
 }
 function profileText(cid, field, label, value) {
   return `<label>${label}<textarea data-profile="${cid}" data-field="${field}" rows="2">${esc(value||'')}</textarea></label>`;
+}
+function profileSelect(cid, field, label, value) {
+  const options = ['friend','family','colleague','customer','community_member','unknown'];
+  return `<label>${label}<select data-profile="${cid}" data-field="${field}">
+    ${options.map(o => `<option value="${o}" ${o === (value || 'unknown') ? 'selected' : ''}>${o}</option>`).join('')}
+  </select></label>`;
 }
 async function saveProfile(cid) {
   const fields = {};
@@ -958,6 +1102,11 @@ async function deleteProfile(cid) {
   toast('Profile deleted');
   loadProfiles();
   document.getElementById('timelinePanel').innerHTML = 'Select a profile.';
+  document.getElementById('summaryPanel').innerHTML = 'Select a profile.';
+}
+function loadMemoryDetails(cid) {
+  loadTimeline(cid);
+  loadSummaries(cid);
 }
 async function loadTimeline(cid) {
   const d = await api(`/admin/memory/${cid}/timeline`);
@@ -965,10 +1114,35 @@ async function loadTimeline(cid) {
   if (!d.items.length) { panel.innerHTML = '<em>No timeline facts yet.</em>'; return; }
   panel.innerHTML = d.items.map(t => `
     <div class="detail" style="margin-bottom:.5rem">
-      <div class="k">${new Date(t.created_at).toLocaleString()} · ${esc(t.source)} · ${(t.confidence||0).toFixed(2)}</div>
-      <div class="v">${esc(t.memory_text)}</div>
+      <div class="k">${new Date(t.timestamp || t.created_at).toLocaleString()} · ${esc(t.type || 'timeline')} · ${esc(t.source)} · ${(t.importance_score||t.confidence||0).toFixed(2)}</div>
+      <div class="v"><strong>${esc(t.topic || '')}</strong>${t.topic ? '<br>' : ''}${esc(t.summary || t.memory_text)}</div>
+      ${t.type === 'conversation' ? `<div style="margin-top:.5rem"><button class="btn btn-danger btn-sm" onclick="deleteTimeline(${cid}, ${t.id})">Delete</button></div>` : ''}
     </div>
   `).join('');
+}
+async function deleteTimeline(cid, id) {
+  if (!confirm('Delete this conversation timeline entry?')) return;
+  await api(`/admin/memory/${cid}/timeline/${id}`, { method: 'DELETE' });
+  toast('Timeline entry deleted');
+  loadTimeline(cid);
+}
+async function loadSummaries(cid) {
+  const d = await api(`/admin/memory/${cid}/summaries`);
+  const panel = document.getElementById('summaryPanel');
+  if (!d.items.length) { panel.innerHTML = '<em>No summaries yet.</em>'; return; }
+  panel.innerHTML = d.items.map(s => `
+    <div class="detail" style="margin-bottom:.5rem">
+      <div class="k">${new Date(s.created_at).toLocaleString()} · ${esc(s.source)} · ${s.message_count} msgs · threshold ${s.threshold || 'manual'}</div>
+      <div class="v">${esc(s.summary)}${s.topics && s.topics.length ? `<br><br>Topics: ${esc(s.topics.join(', '))}` : ''}</div>
+      <div style="margin-top:.5rem"><button class="btn btn-danger btn-sm" onclick="deleteSummary(${cid}, ${s.id})">Delete</button></div>
+    </div>
+  `).join('');
+}
+async function deleteSummary(cid, id) {
+  if (!confirm('Delete this conversation summary?')) return;
+  await api(`/admin/memory/${cid}/summaries/${id}`, { method: 'DELETE' });
+  toast('Summary deleted');
+  loadSummaries(cid);
 }
 
 // ---- CACHE ----
@@ -1133,6 +1307,91 @@ async function loadConfig() {
         <div><label>User Daily Limit</label><input type="number" value="${esc(cfg.rate_limit_per_user_daily)}" onchange="saveConfig('rate_limit_per_user_daily',this.value)" style="width:80px"></div>
         <div><label>Cooldown (sec)</label><input type="number" value="${esc(cfg.rate_limit_cooldown_seconds)}" onchange="saveConfig('rate_limit_cooldown_seconds',this.value)" style="width:80px"></div>
         <div><label>Global AI Daily Limit</label><input type="number" value="${esc(cfg.rate_limit_global_daily)}" onchange="saveConfig('rate_limit_global_daily',this.value)" style="width:80px"></div>
+        <div><label>User AI Daily Quota</label><input type="number" value="${esc(cfg.ai_quota_per_user_daily)}" onchange="saveConfig('ai_quota_per_user_daily',this.value)" style="width:80px"></div>
+        <div><label>Global Chat</label>
+          <select onchange="saveConfig('global_chat_enabled',this.value)">
+            <option value="true" ${cfg.global_chat_enabled!=='false'?'selected':''}>Enabled</option>
+            <option value="false" ${cfg.global_chat_enabled==='false'?'selected':''}>Disabled</option>
+          </select>
+        </div>
+      </div>
+      <h3 style="margin-top:1.5rem;margin-bottom:0.8rem">Internet Services</h3>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>Internet</label>
+          <select onchange="saveConfig('internet_enabled',this.value)">
+            <option value="true" ${cfg.internet_enabled==='true'?'selected':''}>Enabled</option>
+            <option value="false" ${cfg.internet_enabled!=='true'?'selected':''}>Disabled</option>
+          </select>
+        </div>
+        <div><label>Provider</label>
+          <select onchange="saveConfig('internet_provider',this.value)">
+            <option value="searxng" ${!cfg.internet_provider || cfg.internet_provider==='searxng'?'selected':''}>SearXNG</option>
+            <option value="brave" ${cfg.internet_provider==='brave'?'selected':''}>Brave (optional key)</option>
+            <option value="tavily" ${cfg.internet_provider==='tavily'?'selected':''}>Tavily</option>
+          </select>
+        </div>
+        <div><label>User Daily Internet Limit</label><input type="number" value="${esc(cfg.internet_daily_limit_per_user)}" onchange="saveConfig('internet_daily_limit_per_user',this.value)" style="width:90px"></div>
+        <div><label>Cache TTL (sec)</label><input type="number" value="${esc(cfg.internet_cache_ttl_seconds)}" onchange="saveConfig('internet_cache_ttl_seconds',this.value)" style="width:90px"></div>
+      </div>
+      <div class="form-row" style="margin-bottom:1rem">
+        ${[
+          ['web_search_enabled','Web'],
+          ['news_enabled','News'],
+          ['weather_enabled','Weather'],
+          ['currency_enabled','Currency'],
+          ['youtube_enabled','YouTube'],
+          ['image_search_enabled','Image'],
+          ['sticker_search_enabled','Sticker']
+        ].map(([key,label]) => `<div><label>${label}</label>
+          <select onchange="saveConfig('${key}',this.value)">
+            <option value="true" ${cfg[key]==='true'?'selected':''}>On</option>
+            <option value="false" ${cfg[key]!=='true'?'selected':''}>Off</option>
+          </select>
+        </div>`).join('')}
+        <div><label>Smart Detection</label>
+          <select onchange="saveConfig('internet_smart_detection_enabled',this.value)">
+            <option value="true" ${cfg.internet_smart_detection_enabled!=='false'?'selected':''}>On</option>
+            <option value="false" ${cfg.internet_smart_detection_enabled==='false'?'selected':''}>Off</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted">SearXNG is the default backend. Configure <code>SEARXNG_URL</code> in the environment; Brave, Tavily, YouTube, and Giphy keys are optional.</p>
+      <h3 style="margin-top:1.5rem;margin-bottom:0.8rem">WhatsApp Experience</h3>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>Signature Style</label>
+          <select onchange="saveConfig('enable_signature_style',this.value)">
+            <option value="true" ${cfg.enable_signature_style!=='false'?'selected':''}>On</option>
+            <option value="false" ${cfg.enable_signature_style==='false'?'selected':''}>Off</option>
+          </select>
+        </div>
+        <div><label>Source Badges</label>
+          <select onchange="saveConfig('show_source_badges',this.value)">
+            <option value="true" ${cfg.show_source_badges!=='false'?'selected':''}>On</option>
+            <option value="false" ${cfg.show_source_badges==='false'?'selected':''}>Off</option>
+          </select>
+        </div>
+        <div><label>Context Indicators</label>
+          <select onchange="saveConfig('show_context_badges',this.value)">
+            <option value="true" ${cfg.show_context_badges!=='false'?'selected':''}>On</option>
+            <option value="false" ${cfg.show_context_badges==='false'?'selected':''}>Off</option>
+          </select>
+        </div>
+        <div><label>Typing Delay</label>
+          <select onchange="saveConfig('typing_delay_enabled',this.value)">
+            <option value="true" ${cfg.typing_delay_enabled!=='false'?'selected':''}>On</option>
+            <option value="false" ${cfg.typing_delay_enabled==='false'?'selected':''}>Off</option>
+          </select>
+        </div>
+        <div><label>Typing Presence</label>
+          <select onchange="saveConfig('experience_typing_presence_enabled',this.value)">
+            <option value="false" ${cfg.experience_typing_presence_enabled!=='true'?'selected':''}>Off</option>
+            <option value="true" ${cfg.experience_typing_presence_enabled==='true'?'selected':''}>On</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" style="margin-bottom:1rem">
+        <div><label>Min Typing Delay (sec)</label><input type="number" min="0" step="0.5" value="${esc(cfg.min_typing_delay_seconds)}" onchange="saveConfig('min_typing_delay_seconds',this.value)" style="width:100px"></div>
+        <div><label>Max Typing Delay (sec)</label><input type="number" min="0" step="0.5" value="${esc(cfg.max_typing_delay_seconds)}" onchange="saveConfig('max_typing_delay_seconds',this.value)" style="width:100px"></div>
       </div>
       <h3 style="margin-top:1.5rem;margin-bottom:0.8rem">Personality Layer</h3>
       <div class="form-row" style="margin-bottom:1rem">

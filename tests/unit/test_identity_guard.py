@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.experience_formatter import WhatsAppExperienceFormatter
 from app.core.reply_planner import PlannedReply, ReplyPlanner
 from app.models.enums import DecisionType
 from app.models.schema import BotConfig
@@ -16,6 +17,11 @@ class FakeBotConfig:
 
     async def escalation_reply(self) -> str:
         return "Fabian may need to answer this personally."
+
+    async def get_bool(self, key: str, default: bool = False) -> bool:
+        if key.startswith("experience_") or key in {"show_source_badges", "show_context_badges", "enable_signature_style"}:
+            return False
+        return default
 
     async def get_identity_profile(self) -> dict[str, str]:
         return {
@@ -35,6 +41,7 @@ class FakeBotConfig:
 def planner_with_identity_guard() -> ReplyPlanner:
     planner = ReplyPlanner.__new__(ReplyPlanner)
     planner.bot_config = FakeBotConfig()
+    planner.formatter = WhatsAppExperienceFormatter()
     return planner
 
 

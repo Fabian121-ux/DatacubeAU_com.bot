@@ -68,6 +68,29 @@ class GroupConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
+class GroupMetadata(Base):
+    __tablename__ = "group_metadata"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    group_name: Mapped[str | None] = mapped_column(String(220))
+    community_name: Mapped[str | None] = mapped_column(String(220))
+    owner_name: Mapped[str | None] = mapped_column(String(180))
+    purpose: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[list[str] | None] = mapped_column(JSON)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    member_count: Mapped[int | None] = mapped_column(Integer)
+    participants_count: Mapped[int | None] = mapped_column(Integer)
+    description: Mapped[str | None] = mapped_column(Text)
+    bot_present: Mapped[bool | None] = mapped_column(Boolean)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'local'"))
+    live_metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
 class DMConfig(Base):
     __tablename__ = "dm_configs"
 
@@ -149,6 +172,60 @@ class AICall(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
+class AIUsageQuota(Base):
+    __tablename__ = "ai_usage_quotas"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, unique=True)
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    reset_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class AIUsageEvent(Base):
+    __tablename__ = "ai_usage_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    ai_call_id: Mapped[int | None] = mapped_column(ForeignKey("ai_calls.id", ondelete="SET NULL"))
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    response_source: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class InternetCache(Base):
+    __tablename__ = "internet_cache"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    service: Mapped[str] = mapped_column(String(40), nullable=False)
+    normalized_query: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)
+    response_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class InternetUsageEvent(Base):
+    __tablename__ = "internet_usage_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    service: Mapped[str] = mapped_column(String(40), nullable=False)
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
 class ConversationSession(Base):
     __tablename__ = "conversation_sessions"
 
@@ -186,11 +263,50 @@ class ReplyRule(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
+class ForcedReplyTarget(Base):
+    __tablename__ = "forced_reply_targets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    target_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"))
+    target_whatsapp_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    created_by_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class UserTrigger(Base):
+    __tablename__ = "user_triggers"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    target_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"))
+    target_whatsapp_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    trigger_text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_trigger_text: Mapped[str] = mapped_column(Text, nullable=False)
+    response_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class FeedbackReview(Base):
+    __tablename__ = "feedback_reviews"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    sender_whatsapp_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
 class UserMemory(Base):
     __tablename__ = "user_memory"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, unique=True)
+    display_name: Mapped[str | None] = mapped_column(String(180))
     user_name: Mapped[str | None] = mapped_column(String(180))
     preferences: Mapped[str | None] = mapped_column(Text)
     context_notes: Mapped[str | None] = mapped_column(Text)
@@ -201,6 +317,11 @@ class UserMemory(Base):
     goals: Mapped[str | None] = mapped_column(Text)
     communication_style: Mapped[str | None] = mapped_column(String(180))
     relationship: Mapped[str | None] = mapped_column(String(180))
+    relationship_type: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'unknown'"))
+    personality_notes: Mapped[str | None] = mapped_column(Text)
+    global_chat_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -213,6 +334,34 @@ class UserMemoryTimeline(Base):
     memory_text: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class ConversationTimeline(Base):
+    __tablename__ = "conversation_timeline"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    topic: Mapped[str] = mapped_column(String(220), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    importance_score: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.5"))
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    topics: Mapped[list[str] | None] = mapped_column(JSON)
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    threshold: Mapped[int | None] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'threshold_summary'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -235,6 +384,9 @@ class OutboundMessage(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String(120), nullable=False)
     message_text: Mapped[str] = mapped_column(Text, nullable=False)
+    media_url: Mapped[str | None] = mapped_column(Text)
+    media_type: Mapped[str | None] = mapped_column(String(40))
+    media_caption: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
