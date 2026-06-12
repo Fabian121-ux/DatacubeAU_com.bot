@@ -6,15 +6,15 @@ from app.core.experience_formatter import WhatsAppExperienceFormatter, memory_co
 def test_source_indicator_badges() -> None:
     formatter = WhatsAppExperienceFormatter()
 
-    assert formatter.source_badge("Rule") == "⚙️ Rule"
-    assert formatter.source_badge("FAQ") == "📚 FAQ"
-    assert formatter.source_badge("KB") == "📖 Knowledge Base"
-    assert formatter.source_badge("Memory") == "🧠 Memory"
-    assert formatter.source_badge("Cache") == "💾 Cache"
-    assert formatter.source_badge("AI") == "🤖 Global Chat"
-    assert formatter.source_badge("Internet") == "🌐 Internet"
-    assert formatter.source_badge("Giphy") == "🎬 Giphy"
-    assert formatter.source_badge("Memory + Timeline") == "🧠 Memory + 📅 Timeline"
+    assert formatter.source_badge("Rule") == "Rule"
+    assert formatter.source_badge("FAQ") == "FAQ"
+    assert formatter.source_badge("KB") == "Knowledge"
+    assert formatter.source_badge("Memory") == "Memory"
+    assert formatter.source_badge("Cache") == "Cache"
+    assert formatter.source_badge("AI") == "Global Chat"
+    assert formatter.source_badge("Internet") == "Internet"
+    assert formatter.source_badge("Giphy") == "Giphy"
+    assert formatter.source_badge("Memory + Timeline") == "Memory + Timeline"
 
 
 def test_context_indicators_prefix_reply_when_memory_exists() -> None:
@@ -25,10 +25,10 @@ def test_context_indicators_prefix_reply_when_memory_exists() -> None:
         context_indicators=["Welcome back Kingsley.", "Last time we discussed cybersecurity internships."],
     )
 
-    assert reply.startswith("🧠 Zina")
-    assert "📌 Context\n\n📌 Welcome back Kingsley.\n📌 Last time we discussed cybersecurity internships." in reply
-    assert "💡 Answer" in reply
-    assert "🧠 Memory" in reply
+    assert reply.startswith("*Zina*")
+    assert "Welcome back Kingsley.\nLast time we discussed cybersecurity internships." in reply
+    assert "Source: Memory" in reply
+    assert "How is that going?" in reply
 
 
 def test_signature_style_can_be_disabled_for_legacy_shape() -> None:
@@ -40,11 +40,12 @@ def test_signature_style_can_be_disabled_for_legacy_shape() -> None:
         enable_signature_style=False,
     )
 
-    assert reply == "⚙️ Rule\n\nDatacube AU is active."
+    assert reply == "Source: Rule\n\nDatacube AU is active."
 
 
-def test_memory_context_indicators_only_from_memory_diagnostics() -> None:
-    assert memory_context_indicators({"context_indicators": ["Welcome back Kingsley."]}) == ["Welcome back Kingsley."]
+def test_memory_context_indicators_only_from_used_memory_diagnostics() -> None:
+    assert memory_context_indicators({"context_used": True, "context_indicators": ["Welcome back Kingsley."]}) == ["Welcome back Kingsley."]
+    assert memory_context_indicators({"context_indicators": ["Welcome back Kingsley."]}) == []
     assert memory_context_indicators({"retrieved_items": 0}) == []
     assert memory_context_indicators(None) == []
 
@@ -55,9 +56,8 @@ def test_formatter_splits_large_text_walls() -> None:
 
     formatted = formatter.format_reply(long_text, source="AI", context_indicators=[])
 
-    assert formatted.startswith("🧠 Zina")
-    assert "🤖 Global Chat" in formatted
-    assert "💡 Answer" in formatted
+    assert formatted.startswith("*Zina*")
+    assert "Source: Global Chat" in formatted
     assert "\n\n" in formatted
 
 
@@ -69,8 +69,8 @@ def test_reply_template_supports_next_step() -> None:
         next_step="Check the Docker container logs.",
     )
 
-    assert "💡 Answer" in formatted
-    assert "🚀 Next Step\n\nCheck the Docker container logs." in formatted
+    assert "Your deployment issue is likely related to container logs." in formatted
+    assert "*Next Step*\n\nCheck the Docker container logs." in formatted
 
 
 def test_formatter_sections_bullets_and_numbering() -> None:
@@ -91,7 +91,7 @@ def test_project_card_template() -> None:
     )
 
     assert card == (
-        "🚀 Project: Zina\n\n"
+        "*Zina*\n\n"
         "Status:\nActive Development\n\n"
         "Focus:\nMemory Engine\n\n"
         "Next Priority:\nOwner Commands"
@@ -108,7 +108,7 @@ def test_status_card_template() -> None:
     )
 
     assert card == (
-        "📊 System Status\n\n"
+        "*System Status*\n\n"
         "API:\nOnline ✅\n\n"
         "Database:\nConnected ✅\n\n"
         "WAHA:\nConnected ✅\n\n"

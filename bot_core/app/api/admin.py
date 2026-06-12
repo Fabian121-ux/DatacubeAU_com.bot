@@ -186,12 +186,29 @@ async def recent_router_decisions(
         .limit(limit)
     )
     rows = (await db.execute(stmt)).all()
+    decision_ids = [str(row[0].id) for row in rows]
+    audit_map: dict[str, dict[str, Any]] = {}
+    if decision_ids:
+        audit_rows = (
+            await db.execute(
+                select(AuditLog.entity_id, AuditLog.details_json)
+                .where(AuditLog.action == "router_decision")
+                .where(AuditLog.entity_id.in_(decision_ids))
+            )
+        ).all()
+        audit_map = {
+            str(entity_id): details_json or {}
+            for entity_id, details_json in audit_rows
+            if entity_id is not None
+        }
     return {
         "count": len(rows),
         "items": [
             {
                 "id": row[0].id,
                 "message_id": row[0].message_id,
+                "question": audit_map.get(str(row[0].id), {}).get("question"),
+                "intent": audit_map.get(str(row[0].id), {}).get("intent"),
                 "decision_type": row[0].decision_type,
                 "reason": row[0].reason,
                 "confidence": row[0].confidence,
@@ -201,6 +218,8 @@ async def recent_router_decisions(
                 "ai_model": row[3],
                 "prompt_hash": row[4],
                 "latency_ms": row[5] or 0,
+                "router_analytics": audit_map.get(str(row[0].id), {}).get("router_analytics") or {},
+                "source_diagnostics": audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {},
             }
             for row in rows
         ],

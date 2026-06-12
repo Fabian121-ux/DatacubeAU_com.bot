@@ -78,9 +78,11 @@ class FAQService:
             logger.error(f"Failed to load FAQ from file {file_path}: {exc}", exc_info=True)
             return 0
 
-    async def search_faq(self, query: str, threshold: float = 0.55) -> tuple[FAQEntry | None, float]:
+    async def search_faq(self, query: str, threshold: float = 0.72) -> tuple[FAQEntry | None, float]:
         query_norm = normalize_text(query)
         if not query_norm.strip():
+            return None, 0.0
+        if self._is_greeting_or_too_short(query_norm):
             return None, 0.0
 
         stmt = select(FAQEntry).where(FAQEntry.is_enabled.is_(True))
@@ -90,11 +92,7 @@ class FAQService:
         best_score = 0.0
 
         for entry in entries:
-            # SequenceMatcher similarity ratio
-            score = difflib.SequenceMatcher(None, query_norm, entry.normalized_question).ratio()
-            # Also boost if the query contains the normalized question or vice-versa
-            if query_norm in entry.normalized_question or entry.normalized_question in query_norm:
-                score = max(score, 0.7)
+            score = self.score_match(query_norm, entry.normalized_question)
 
             if score > best_score:
                 best_score = score
@@ -104,3 +102,69 @@ class FAQService:
             return best_entry, best_score
 
         return None, best_score
+
+    @classmethod
+    def score_match(cls, query_norm: str, question_norm: str) -> float:
+        if query_norm == question_norm:
+            return 1.0
+        if query_norm in question_norm or question_norm in query_norm:
+            sequence_score = difflib.SequenceMatcher(None, query_norm, question_norm).ratio()
+            if sequence_score >= 0.82:
+                return min(1.0, sequence_score + 0.12)
+        query_tokens = cls._keywords(query_norm)
+        question_tokens = cls._keywords(question_norm)
+        if not query_tokens or not question_tokens:
+            return 0.0
+
+        sequence_score = difflib.SequenceMatcher(None, query_norm, question_norm).ratio()
+        overlap = query_tokens & question_tokens
+        union = query_tokens | question_tokens
+        jaccard_score = len(overlap) / len(union) if union else 0.0
+        coverage_score = len(overlap) / min(len(query_tokens), len(question_tokens))
+        order_bonus = 0.0
+        if query_norm in question_norm or question_norm in query_norm:
+            order_bonus = 0.12
+        entity_bonus = 0.08 if overlap & {"fabian", "zina", "datacube", "zinax", "moxiz"} else 0.0
+
+        score = (sequence_score * 0.35) + (jaccard_score * 0.25) + (coverage_score * 0.4)
+        return min(1.0, score + order_bonus + entity_bonus)
+
+    @staticmethod
+    def _keywords(text_value: str) -> set[str]:
+        stop_words = {
+            "a",
+            "an",
+            "and",
+            "are",
+            "can",
+            "do",
+            "does",
+            "for",
+            "have",
+            "how",
+            "i",
+            "is",
+            "it",
+            "me",
+            "my",
+            "of",
+            "the",
+            "to",
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "you",
+            "your",
+        }
+        return {word for word in re.findall(r"[a-z0-9]+", text_value) if word not in stop_words}
+
+    @staticmethod
+    def _is_greeting_or_too_short(query_norm: str) -> bool:
+        if query_norm in {"hi", "hello", "hey", "yo", "good morning", "good afternoon", "good evening"}:
+            return True
+        words = query_norm.split()
+        if len(words) <= 4 and words and words[0] in {"hi", "hello", "hey"}:
+            return True
+        return len([word for word in words if len(word) > 2]) == 0

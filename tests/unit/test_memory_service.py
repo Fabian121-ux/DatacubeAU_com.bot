@@ -475,7 +475,7 @@ async def test_onboarding_starts_with_name_and_logs_fact() -> None:
     reply, stage = await service.check_onboarding(10, "My name is Ada")
 
     assert stage == "ask_preferences"
-    assert "Nice to meet you, Ada!" in reply
+    assert "Nice to meet you, Ada." in reply
     assert calls["upsert"] == [(10, {"user_name": "Ada"})]
     assert calls["facts"][0][1]["memory_text"] == "user_name: Ada"
 
@@ -496,7 +496,7 @@ async def test_onboarding_asks_for_name_when_new_user_has_no_name() -> None:
 
     reply, stage = await service.check_onboarding(10, "hello")
 
-    assert reply == "Welcome! 👋 What's your name?"
+    assert reply == "Welcome. What's your name?"
     assert stage == "ask_name"
     assert created == [(10, {})]
 

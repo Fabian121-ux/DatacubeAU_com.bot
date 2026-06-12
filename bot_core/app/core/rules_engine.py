@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.intent_classifier import IntentClassifier, MessageIntent
 from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType, DecisionType, Direction, GroupReplyMode
 from app.models.schema import DMConfig, ForcedReplyTarget, GroupConfig, Message, ReplyRule, UserTrigger
@@ -122,6 +123,15 @@ class RulesEngine:
     async def _resolve_reply_rule(self, message_text: str, chat_type: ChatType) -> str | None:
         """Query reply_rules table for a matching rule, ordered by priority."""
         normalized = normalize_text(message_text)
+        intent = IntentClassifier.classify(message_text).intent
+        if intent in {
+            MessageIntent.GREETING,
+            MessageIntent.IDENTITY_QUESTION,
+            MessageIntent.MEMORY_RECALL,
+            MessageIntent.FOLLOW_UP,
+            MessageIntent.GENERAL_KNOWLEDGE,
+        }:
+            return None
         if self._is_identity_question(normalized):
             return await self.bot_config.introduction_reply()
 

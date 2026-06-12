@@ -98,9 +98,10 @@ class OwnerCommandService:
         "/web",
         "/internet-status",
         "/internet-usage",
+        "/owner-help",
     }
 
-    USER_COMMANDS = {"/review"}
+    USER_COMMANDS = {"/review", "/whoami"}
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -142,7 +143,7 @@ class OwnerCommandService:
             reply = await self._dispatch(command, args, message, contact)
             result = "ok"
         except ValueError as exc:
-            reply = f"⚠️ {exc}"
+            reply = f"*Command Error*\n\n{exc}"
             result = "invalid"
 
         await self._audit(
@@ -192,7 +193,7 @@ class OwnerCommandService:
                 reply = await self._review(args, message.sender_id, contact.id)
                 result = "ok"
             except ValueError as exc:
-                reply = f"⚠️ {exc}"
+                reply = f"*Command Error*\n\n{exc}"
                 result = "invalid"
             await self._audit(
                 action="user_review_created",
@@ -201,6 +202,21 @@ class OwnerCommandService:
                 contact_id=contact.id,
                 result=result,
                 details={"args_preview": args[:160]},
+            )
+            return OwnerCommandResult(
+                command=command,
+                reply_text=reply,
+                source_diagnostics={"source": "Rule", "user_command": {"command": command}},
+            )
+        if command == "/whoami":
+            reply = await self._whoami(message.sender_id)
+            await self._audit(
+                action="owner_whoami_checked",
+                command=command,
+                sender_id=message.sender_id,
+                contact_id=contact.id,
+                result="ok",
+                details={},
             )
             return OwnerCommandResult(
                 command=command,
@@ -259,11 +275,42 @@ class OwnerCommandService:
             "/web": self._web_toggle,
             "/internet-status": self._internet_status,
             "/internet-usage": self._internet_usage,
+            "/owner-help": self._owner_help,
         }
         handler = handlers.get(command)
         if not handler:
             raise ValueError("Unknown owner command.")
         return await handler(args, message, contact)
+
+    async def _whoami(self, sender_id: str) -> str:
+        configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
+        is_owner = self.is_owner_id_static(sender_id, configured)
+        sender_keys = sorted(self._identity_keys(sender_id))
+        configured_count = len([item for item in re.split(r"[\s,;]+", configured or "") if item.strip()])
+        return (
+            "*Who Am I*\n\n"
+            f"Detected WhatsApp ID:\n{sender_id or 'unknown'}\n\n"
+            f"Owner status:\n{'Owner' if is_owner else 'Not owner'}\n\n"
+            f"Permissions:\n{'Owner commands allowed' if is_owner else 'Owner commands denied'}\n\n"
+            f"Configured owner entries:\n{configured_count}\n\n"
+            "Matching keys checked:\n"
+            + "\n".join(f"• {key}" for key in sender_keys[:4])
+        )
+
+    async def _owner_help(self, args: str, message, contact: Contact) -> str:
+        commands = [
+            "/system",
+            "/groups",
+            "/memory-stats",
+            "/internet-status",
+            "/whoami",
+            "/memory-search <keyword>",
+            "/recent-memory",
+            "/queue",
+            "/logs",
+            "/errors",
+        ]
+        return "*Owner Help*\n\nCommon owner commands:\n\n" + "\n".join(f"• {item}" for item in commands)
 
     async def _remember(self, args: str, message, contact: Contact) -> str:
         fact = args.strip()
@@ -281,7 +328,7 @@ class OwnerCommandService:
         self.session.add(document)
         await self.session.flush()
         chunks = await self.retrieval.index_document(document)
-        return f"✅ Remembered.\n\nMemory ID: {document.id}\nChunks: {chunks}"
+        return f"*Remembered*\n\nMemory ID:\n{document.id}\n\nChunks:\n{chunks}"
 
     async def _forget(self, args: str, message, contact: Contact) -> str:
         query = args.strip()
@@ -298,7 +345,7 @@ class OwnerCommandService:
             .where(UserMemoryTimeline.memory_text.ilike(f"%{query}%"))
         )
         deleted = (doc_result.rowcount or 0) + (timeline_result.rowcount or 0)
-        return f"🗑️ Forget complete.\n\nRemoved: {deleted} matching memory item(s)."
+        return f"*Forget Complete*\n\nRemoved:\n{deleted} matching memory item(s)"
 
     async def _memory_search(self, args: str, message, contact: Contact) -> str:
         query = args.strip()
@@ -321,12 +368,12 @@ class OwnerCommandService:
                 .limit(5)
             )
         ).scalars().all()
-        lines = [f"🔎 Memory Search: {query}"]
+        lines = ["*Memory Search*", "", f"Query:\n{query}"]
         for row in docs:
             lines.append(f"• Owner Memory #{row.id}: {self._clip(row.raw_text, 120)}")
         for row in facts:
             lines.append(f"• User Memory #{row.id}: {self._clip(row.memory_text, 120)}")
-        if len(lines) == 1:
+        if len(lines) == 3:
             lines.append("No matching memories found.")
         return "\n".join(lines)
 
@@ -344,7 +391,7 @@ class OwnerCommandService:
                 select(UserMemoryTimeline).order_by(UserMemoryTimeline.created_at.desc()).limit(5)
             )
         ).scalars().all()
-        lines = ["🧠 Recent Memory"]
+        lines = ["*Recent Memory*"]
         for row in docs:
             lines.append(f"• Owner Memory #{row.id}: {self._clip(row.raw_text, 120)}")
         for row in facts:
@@ -382,7 +429,7 @@ class OwnerCommandService:
             await self.session.flush()
             entry_id = entry.id
             action = "created"
-        return f"📚 FAQ {action}.\n\nFAQ ID: {entry_id}\nQuestion: {question}"
+        return f"*FAQ {action.title()}*\n\nFAQ ID:\n{entry_id}\n\nQuestion:\n{question}"
 
     async def _create_command(self, args: str, message, contact: Contact) -> str:
         blocks = self.parse_label_blocks(args)
@@ -401,7 +448,7 @@ class OwnerCommandService:
         )
         self.session.add(rule)
         await self.session.flush()
-        return f"⚙️ Custom command created.\n\nCommand: {keyword}\nRule ID: {rule.id}"
+        return f"*Custom Command Created*\n\nCommand:\n{keyword}\n\nRule ID:\n{rule.id}"
 
     async def _edit_command(self, args: str, message, contact: Contact) -> str:
         blocks = self.parse_label_blocks(args)
@@ -414,7 +461,7 @@ class OwnerCommandService:
             raise ValueError(f"Command not found: {keyword}")
         rule.response_text = reply
         rule.updated_at = utcnow()
-        return f"⚙️ Custom command updated.\n\nCommand: {keyword}\nRule ID: {rule.id}"
+        return f"*Custom Command Updated*\n\nCommand:\n{keyword}\n\nRule ID:\n{rule.id}"
 
     async def _delete_command(self, args: str, message, contact: Contact) -> str:
         keyword = args.strip()
@@ -428,13 +475,13 @@ class OwnerCommandService:
             raise ValueError(f"Command not found: {keyword}")
         rule.is_enabled = False
         rule.updated_at = utcnow()
-        return f"🗑️ Custom command disabled.\n\nCommand: {keyword}\nRule ID: {rule.id}"
+        return f"*Custom Command Disabled*\n\nCommand:\n{keyword}\n\nRule ID:\n{rule.id}"
 
     async def _groups(self, args: str, message, contact: Contact) -> str:
         groups = await self._known_groups()
         if not groups:
-            return "👥 Groups\n\nNo known groups yet."
-        return "👥 Groups\n\n" + "\n\n".join(
+            return "*Groups*\n\nNo known groups yet."
+        return "*Groups*\n\n" + "\n\n".join(
             f"{item['name']}\n{item['chat_id']}\nSource: {item.get('source_label', 'Local Owner Metadata')}"
             for item in groups[:20]
         )
@@ -449,16 +496,16 @@ class OwnerCommandService:
             )
         ).all()
         if not rows:
-            return "🏘️ Communities\n\nNo community metadata stored yet.\n\nSource: Local Owner Metadata"
-        return "🏘️ Communities\n\n" + "\n\n".join(
+            return "*Communities*\n\nNo community metadata stored yet.\n\nSource: Local Owner Metadata"
+        return "*Communities*\n\n" + "\n\n".join(
             f"{name}\nGroups: {count}\nSource: Local Owner Metadata" for name, count in rows
         )
 
     async def _my_groups(self, args: str, message, contact: Contact) -> str:
         groups = await self._known_groups()
         if not groups:
-            return "👥 My Groups\n\nNo known groups yet.\n\nOwner admin status requires WAHA group metadata sync."
-        return "👥 My Groups\n\n" + "\n\n".join(
+            return "*My Groups*\n\nNo known groups yet.\n\nOwner admin status requires WAHA group metadata sync."
+        return "*My Groups*\n\n" + "\n\n".join(
             f"{item['name']}\n{item['chat_id']}\nSource: {item.get('source_label', 'Hybrid')}" for item in groups[:20]
         )
 
@@ -484,13 +531,13 @@ class OwnerCommandService:
         )
         source = self._metadata_source_label(metadata)
         return (
-            "👥 Group Info\n\n"
+            "*Group Info*\n\n"
             f"Name:\n{group_name}\n\n"
             f"ID:\n{chat_id}\n\n"
             f"Members:\n{member_count if member_count is not None else 'Unavailable'}\n\n"
             f"Description:\n{metadata.description if metadata and metadata.description else 'Unavailable'}\n\n"
             f"Community:\n{metadata.community_name if metadata and metadata.community_name else 'Unavailable'}\n\n"
-            f"Bot Status:\n{'Enabled ✅' if not cfg or cfg.is_enabled else 'Disabled ⛔'}\n\n"
+            f"Bot Status:\n{'Enabled' if not cfg or cfg.is_enabled else 'Disabled'}\n\n"
             f"Reply Mode:\n{cfg.reply_mode if cfg else settings.group_default_reply_mode}\n\n"
             f"Known Messages:\n{message_count}\n\n"
             f"Source:\n{source}"
@@ -509,8 +556,8 @@ class OwnerCommandService:
             or query in normalize_text(str(item.get("purpose") or ""))
         ]
         if not groups:
-            return f"🔎 Find Group: {query}\n\nNo matching groups found."
-        return f"🔎 Find Group: {query}\n\n" + "\n\n".join(
+            return f"*Find Group*\n\nQuery:\n{query}\n\nNo matching groups found."
+        return f"*Find Group*\n\nQuery:\n{query}\n\n" + "\n\n".join(
             f"{item['name']}\n{item['chat_id']}\nSource: {item.get('source_label', 'Local Owner Metadata')}" for item in groups[:10]
         )
 
@@ -527,14 +574,14 @@ class OwnerCommandService:
         knowledge_entries = await self._count(KnowledgeDocument, KnowledgeDocument.is_enabled.is_(True))
         bot_enabled = await self.config.get_bool("bot_enabled", True)
         return (
-            "📦 Inventory\n\n"
+            "*Inventory*\n\n"
             f"Communities:\n{communities}\n\n"
             f"Groups:\n{groups}\n\n"
             f"Known Users:\n{users}\n\n"
             f"Memory Entries:\n{memory_entries}\n\n"
             f"FAQ Entries:\n{faq_entries}\n\n"
             f"Knowledge Entries:\n{knowledge_entries}\n\n"
-            f"Bot Status:\n{'Enabled ✅' if bot_enabled else 'Stopped ⛔'}\n\n"
+            f"Bot Status:\n{'Enabled' if bot_enabled else 'Stopped'}\n\n"
             "Source:\nHybrid"
         )
 
@@ -543,7 +590,7 @@ class OwnerCommandService:
         try:
             chats = await client.get_chats()
         except WahaClientError as exc:
-            return f"🔄 Group Sync\n\nWAHA metadata unavailable.\n{self._clip(str(exc), 180)}\n\nSource: Local Owner Metadata"
+            return f"*Group Sync*\n\nWAHA metadata unavailable.\n{self._clip(str(exc), 180)}\n\nSource: Local Owner Metadata"
         finally:
             await client.close()
 
@@ -554,7 +601,7 @@ class OwnerCommandService:
                 continue
             await self._upsert_group_metadata_from_live(payload)
             synced += 1
-        return f"🔄 Group Sync\n\nSynced Groups:\n{synced}\n\nSource:\nLive WAHA"
+        return f"*Group Sync*\n\nSynced Groups:\n{synced}\n\nSource:\nLive WAHA"
 
     async def _tag_group(self, args: str, message, contact: Contact) -> str:
         return await self._save_group_owner_metadata(args, create=True)
@@ -568,8 +615,8 @@ class OwnerCommandService:
             raise ValueError("Usage: /group-notes <group-id>")
         metadata = await self._get_group_metadata(chat_id)
         if not metadata:
-            return f"📝 Group Notes\n\nNo metadata stored for:\n{chat_id}"
-        return "📝 Group Notes\n\n" + "\n\n".join(self._group_metadata_payload_lines(metadata))
+            return f"*Group Notes*\n\nNo metadata stored for:\n{chat_id}"
+        return "*Group Notes*\n\n" + "\n\n".join(self._group_metadata_payload_lines(metadata))
 
     async def _user_profile(self, args: str, message, contact: Contact) -> str:
         target = await self._resolve_contact(args)
@@ -580,7 +627,7 @@ class OwnerCommandService:
         ).scalar_one_or_none()
         timeline_count = await self._count(ConversationTimeline, ConversationTimeline.contact_id == target.id)
         return (
-            f"👤 User: {target.display_name or target.whatsapp_id}\n\n"
+            f"*User*\n\nName:\n{target.display_name or target.whatsapp_id}\n\n"
             f"WhatsApp:\n{target.whatsapp_id}\n\n"
             f"Relationship:\n{getattr(memory, 'relationship_type', 'unknown') if memory else 'unknown'}\n\n"
             f"Interests:\n{getattr(memory, 'interests', None) or 'None stored'}\n\n"
@@ -602,8 +649,8 @@ class OwnerCommandService:
             )
         ).scalars().all()
         if not rows:
-            return f"🕒 Timeline: {target.display_name or target.whatsapp_id}\n\nNo timeline events stored."
-        return f"🕒 Timeline: {target.display_name or target.whatsapp_id}\n\n" + "\n\n".join(
+            return f"*Timeline*\n\nUser:\n{target.display_name or target.whatsapp_id}\n\nNo timeline events stored."
+        return f"*Timeline*\n\nUser:\n{target.display_name or target.whatsapp_id}\n\n" + "\n\n".join(
             f"• {row.topic}\n{self._clip(row.summary, 160)}" for row in rows
         )
 
@@ -620,8 +667,8 @@ class OwnerCommandService:
             )
         ).scalars().all()
         if not rows:
-            return f"🧾 Summary: {target.display_name or target.whatsapp_id}\n\nNo summaries stored."
-        return f"🧾 Summary: {target.display_name or target.whatsapp_id}\n\n" + "\n\n".join(
+            return f"*Summary*\n\nUser:\n{target.display_name or target.whatsapp_id}\n\nNo summaries stored."
+        return f"*Summary*\n\nUser:\n{target.display_name or target.whatsapp_id}\n\n" + "\n\n".join(
             f"• {self._clip(row.summary, 220)}" for row in rows
         )
 
@@ -648,7 +695,7 @@ class OwnerCommandService:
                     updated_at=utcnow(),
                 )
             )
-        return f"✅ Force reply enabled for {target.display_name or target.whatsapp_id}."
+        return f"*Force Reply*\n\nEnabled for {target.display_name or target.whatsapp_id}."
 
     async def _unforce(self, args: str, message, contact: Contact) -> str:
         target = await self._resolve_contact(args)
@@ -657,7 +704,7 @@ class OwnerCommandService:
         result = await self.session.execute(
             delete(ForcedReplyTarget).where(ForcedReplyTarget.target_whatsapp_id == target.whatsapp_id)
         )
-        return f"✅ Force reply removed.\n\nRemoved: {result.rowcount or 0}"
+        return f"*Force Reply*\n\nRemoved:\n{result.rowcount or 0}"
 
     async def _trigger(self, args: str, message, contact: Contact) -> str:
         target_token, _, body = args.partition("\n")
@@ -681,7 +728,7 @@ class OwnerCommandService:
         )
         self.session.add(trigger)
         await self.session.flush()
-        return f"✅ User trigger created.\n\nUser: {target.display_name or target.whatsapp_id}\nTrigger ID: {trigger.id}"
+        return f"*User Trigger*\n\nUser:\n{target.display_name or target.whatsapp_id}\n\nTrigger ID:\n{trigger.id}"
 
     async def _broadcast(self, args: str, message, contact: Contact) -> str:
         text_value = args.strip()
@@ -690,7 +737,7 @@ class OwnerCommandService:
         users = await self._broadcast_user_targets(exclude_whatsapp_id=message.sender_id)
         groups = [item["chat_id"] for item in await self._known_groups()]
         count = await self._queue_broadcast(users + groups, text_value)
-        return f"📣 Broadcast queued.\n\nTargets: {count}"
+        return f"*Broadcast Queued*\n\nTargets:\n{count}"
 
     async def _broadcast_groups(self, args: str, message, contact: Contact) -> str:
         text_value = args.strip()
@@ -698,7 +745,7 @@ class OwnerCommandService:
             raise ValueError("Usage: /broadcast-groups <message>")
         groups = [item["chat_id"] for item in await self._known_groups()]
         count = await self._queue_broadcast(groups, text_value)
-        return f"📣 Group broadcast queued.\n\nGroups: {count}"
+        return f"*Group Broadcast Queued*\n\nGroups:\n{count}"
 
     async def _broadcast_users(self, args: str, message, contact: Contact) -> str:
         text_value = args.strip()
@@ -706,7 +753,7 @@ class OwnerCommandService:
             raise ValueError("Usage: /broadcast-users <message>")
         users = await self._broadcast_user_targets(exclude_whatsapp_id=message.sender_id)
         count = await self._queue_broadcast(users, text_value)
-        return f"📣 User broadcast queued.\n\nUsers: {count}"
+        return f"*User Broadcast Queued*\n\nUsers:\n{count}"
 
     async def _system(self, args: str, message, contact: Contact) -> str:
         bot_enabled = await self.config.get_bool("bot_enabled", True)
@@ -716,14 +763,14 @@ class OwnerCommandService:
         memory_count = await self._count(UserMemory)
         waha_status = await self._waha_status()
         return (
-            "📊 System Status\n\n"
-            "API:\nOnline ✅\n\n"
-            "Database:\nConnected ✅\n\n"
+            "*System Status*\n\n"
+            "API:\nOnline\n\n"
+            "Database:\nConnected\n\n"
             f"WAHA:\n{waha_status}\n\n"
             f"Queue:\n{queue_pending} pending\n\n"
             f"Memory:\n{memory_count} profiles\n\n"
-            f"AI:\n{'Enabled ✅' if ai_enabled else 'Disabled ⚪'}\n\n"
-            f"Bot:\n{'Maintenance 🛠️' if maintenance else ('Enabled ✅' if bot_enabled else 'Stopped ⛔')}"
+            f"AI:\n{'Enabled' if ai_enabled else 'Disabled'}\n\n"
+            f"Bot:\n{'Maintenance' if maintenance else ('Enabled' if bot_enabled else 'Stopped')}"
         )
 
     async def _storage(self, args: str, message, contact: Contact) -> str:
@@ -733,7 +780,7 @@ class OwnerCommandService:
         faq_count = await self._count(FAQEntry)
         db_size = await self._database_size()
         return (
-            "💾 Storage\n\n"
+            "*Storage*\n\n"
             f"Memory Count:\n{memory_count}\n\n"
             f"Timeline Count:\n{timeline_count}\n\n"
             f"Knowledge Count:\n{knowledge_count}\n\n"
@@ -746,8 +793,8 @@ class OwnerCommandService:
             await self.session.execute(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(8))
         ).scalars().all()
         if not rows:
-            return "📜 Logs\n\nNo audit logs found."
-        return "📜 Logs\n\n" + "\n\n".join(f"• {row.action}\n{row.entity_type}:{row.entity_id or '-'}" for row in rows)
+            return "*Logs*\n\nNo audit logs found."
+        return "*Logs*\n\n" + "\n\n".join(f"• {row.action}\n{row.entity_type}:{row.entity_id or '-'}" for row in rows)
 
     async def _errors(self, args: str, message, contact: Contact) -> str:
         failed_queue = (
@@ -772,7 +819,7 @@ class OwnerCommandService:
                 .limit(5)
             )
         ).scalars().all()
-        lines = ["⚠️ Errors"]
+        lines = ["*Errors*"]
         for row in failed_queue:
             lines.append(f"• Queue #{row.id}: {self._clip(row.error_message or row.status, 120)}")
         for row in failed_logs:
@@ -784,7 +831,7 @@ class OwnerCommandService:
     async def _queue(self, args: str, message, contact: Contact) -> str:
         counts = await self._queue_counts()
         return (
-            "📬 Queue\n\n"
+            "*Queue*\n\n"
             f"Pending:\n{counts.get('pending', 0)}\n\n"
             f"Sending:\n{counts.get('sending', 0)}\n\n"
             f"Failed:\n{counts.get('failed', 0)}\n\n"
@@ -803,7 +850,7 @@ class OwnerCommandService:
         )
         self.session.add(review)
         await self.session.flush()
-        return "✅ Review saved.\n\nThank you for the feedback."
+        return "*Review Saved*\n\nThank you for the feedback."
 
     async def _reviews(self, args: str, message, contact: Contact) -> str:
         avg_rating = (
@@ -812,7 +859,7 @@ class OwnerCommandService:
         rows = (
             await self.session.execute(select(FeedbackReview).order_by(FeedbackReview.created_at.desc()).limit(5))
         ).scalars().all()
-        lines = ["⭐ Reviews", "", f"Average Rating:\n{round(float(avg_rating or 0), 2)}"]
+        lines = ["*Reviews*", "", f"Average Rating:\n{round(float(avg_rating or 0), 2)}"]
         if rows:
             lines.append("")
             lines.append("Recent Reviews:")
@@ -825,16 +872,16 @@ class OwnerCommandService:
     async def _stopbot(self, args: str, message, contact: Contact) -> str:
         await self.config.set("bot_enabled", "false")
         await self.config.set("maintenance_mode", "false")
-        return "⛔ Bot stopped.\n\nOwner commands remain available."
+        return "*Bot Control*\n\nBot stopped.\n\nOwner commands remain available."
 
     async def _startbot(self, args: str, message, contact: Contact) -> str:
         await self.config.set("bot_enabled", "true")
         await self.config.set("maintenance_mode", "false")
-        return "✅ Bot started."
+        return "*Bot Control*\n\nBot started."
 
     async def _maintenance(self, args: str, message, contact: Contact) -> str:
         await self.config.set("maintenance_mode", "true")
-        return "🛠️ Maintenance mode enabled.\n\nNormal replies are paused."
+        return "*Maintenance*\n\nMaintenance mode enabled.\n\nNormal replies are paused."
 
     async def _mentiononly(self, args: str, message, contact: Contact) -> str:
         await self.config.set("group_default_reply_mode", GroupReplyMode.MENTION_ONLY.value)
@@ -843,15 +890,15 @@ class OwnerCommandService:
         for row in rows:
             row.reply_mode = GroupReplyMode.MENTION_ONLY.value
             row.updated_at = utcnow()
-        return f"📌 Mention-only mode enabled.\n\nUpdated configured groups: {len(rows)}"
+        return f"*Mention Only*\n\nMention-only mode enabled.\n\nUpdated configured groups:\n{len(rows)}"
 
     async def _enable_ai(self, args: str, message, contact: Contact) -> str:
         await self.config.set("ai_enabled", "true")
-        return "🤖 AI enabled."
+        return "*AI Control*\n\nAI enabled."
 
     async def _disable_ai(self, args: str, message, contact: Contact) -> str:
         await self.config.set("ai_enabled", "false")
-        return "🤖 AI disabled."
+        return "*AI Control*\n\nAI disabled."
 
     async def _top_users(self, args: str, message, contact: Contact) -> str:
         rows = (
@@ -865,8 +912,8 @@ class OwnerCommandService:
             )
         ).all()
         if not rows:
-            return "📈 Top Users\n\nNo user activity yet."
-        return "📈 Top Users\n\n" + "\n".join(f"• {name or wa}: {count}" for name, wa, count in rows)
+            return "*Top Users*\n\nNo user activity yet."
+        return "*Top Users*\n\n" + "\n".join(f"• {name or wa}: {count}" for name, wa, count in rows)
 
     async def _top_questions(self, args: str, message, contact: Contact) -> str:
         rows = (
@@ -880,8 +927,8 @@ class OwnerCommandService:
             )
         ).all()
         if not rows:
-            return "❓ Top Questions\n\nNo questions recorded yet."
-        return "❓ Top Questions\n\n" + "\n".join(f"• {self._clip(text_value, 80)}: {count}" for text_value, count in rows)
+            return "*Top Questions*\n\nNo questions recorded yet."
+        return "*Top Questions*\n\n" + "\n".join(f"• {self._clip(text_value, 80)}: {count}" for text_value, count in rows)
 
     async def _ai_usage(self, args: str, message, contact: Contact) -> str:
         now = utcnow()
@@ -889,7 +936,7 @@ class OwnerCommandService:
         weekly = await self._token_usage_since(now - timedelta(days=7))
         monthly = await self._token_usage_since(now - timedelta(days=30))
         return (
-            "🤖 AI Usage\n\n"
+            "*AI Usage*\n\n"
             f"Daily:\n{daily['calls']} calls, {daily['tokens']} tokens\n\n"
             f"Weekly:\n{weekly['calls']} calls, {weekly['tokens']} tokens\n\n"
             f"Monthly:\n{monthly['calls']} calls, {monthly['tokens']} tokens"
@@ -901,7 +948,7 @@ class OwnerCommandService:
         summaries = await self._count(ConversationSummary)
         knowledge = await self._count(KnowledgeDocument)
         return (
-            "🧠 Memory Stats\n\n"
+            "*Memory Stats*\n\n"
             f"Profiles:\n{profiles}\n\n"
             f"Timeline Entries:\n{timeline}\n\n"
             f"Summaries:\n{summaries}\n\n"
@@ -924,7 +971,7 @@ class OwnerCommandService:
             "sticker_search_enabled",
         ):
             await self.config.set(key, str(enabled).lower())
-        return f"🌐 Internet services {'enabled ✅' if enabled else 'disabled ⛔'}."
+        return f"*Internet*\n\nServices are now {'enabled' if enabled else 'disabled'}."
 
     async def _web_toggle(self, args: str, message, contact: Contact) -> str:
         value = normalize_text(args)
@@ -934,7 +981,7 @@ class OwnerCommandService:
         if enabled:
             await self.config.set("internet_enabled", "true")
         await self.config.set("web_search_enabled", str(enabled).lower())
-        return f"🔎 Web search {'enabled ✅' if enabled else 'disabled ⛔'}."
+        return f"*Web Search*\n\nWeb search is now {'enabled' if enabled else 'disabled'}."
 
     async def _internet_status(self, args: str, message, contact: Contact) -> str:
         keys = [
@@ -949,20 +996,20 @@ class OwnerCommandService:
         ]
         provider = await self.config.get("internet_provider", settings.internet_provider)
         cache_count = await self._count(InternetCache)
-        lines = ["🌐 Internet Status", "", f"Provider:\n{provider}", "", f"Cache Entries:\n{cache_count}", "", "Services:"]
+        lines = ["*Internet Status*", "", f"Provider:\n{provider}", "", f"Cache Entries:\n{cache_count}", "", "Services:"]
         for label, key in keys:
-            lines.append(f"• {label}: {'On ✅' if await self.config.get_bool(key, False) else 'Off ⛔'}")
+            lines.append(f"• {label}: {'On' if await self.config.get_bool(key, False) else 'Off'}")
         lines.extend(
             [
                 "",
                 "Providers:",
                 f"• SearXNG: {settings.searxng_url or 'Missing SEARXNG_URL'}",
-                f"• Brave: {'Configured ✅' if bool(settings.brave_search_api_key) else 'Optional'}",
-                f"• Tavily: {'Configured ✅' if bool(settings.tavily_api_key) else 'Optional'}",
+                f"• Brave: {'Configured' if bool(settings.brave_search_api_key) else 'Optional'}",
+                f"• Tavily: {'Configured' if bool(settings.tavily_api_key) else 'Optional'}",
                 "• Weather: Open-Meteo + Nominatim",
                 "• Currency: Frankfurter + exchangerate.host",
-                f"• YouTube: {'Configured ✅' if bool(settings.youtube_api_key) else 'Optional/Missing'}",
-                f"• Giphy: {'Configured ✅' if bool(settings.giphy_api_key) else 'Optional/Missing'}",
+                f"• YouTube: {'Configured' if bool(settings.youtube_api_key) else 'Optional/Missing'}",
+                f"• Giphy: {'Configured' if bool(settings.giphy_api_key) else 'Optional/Missing'}",
             ]
         )
         return "\n".join(lines)
@@ -982,7 +1029,7 @@ class OwnerCommandService:
             )
         ).all()
         lines = [
-            "🌐 Internet Usage",
+            "*Internet Usage*",
             "",
             f"Today:\n{today['requests']} requests, {today['cache_hits']} cache hits",
             "",
@@ -1028,7 +1075,7 @@ class OwnerCommandService:
         metadata.updated_at = utcnow()
         await self.session.flush()
         action = "stored" if create else "updated"
-        return f"🏷️ Group metadata {action}.\n\nGroup:\n{group_id}\n\nSource:\n{self._metadata_source_label(metadata)}"
+        return f"*Group Metadata {action.title()}*\n\nGroup:\n{group_id}\n\nSource:\n{self._metadata_source_label(metadata)}"
 
     async def _get_group_metadata(self, chat_id: str) -> GroupMetadata | None:
         return (
@@ -1233,7 +1280,7 @@ class OwnerCommandService:
             status = await client.get_session_status()
             return str(status.get("status") or status.get("state") or "Unknown")
         except WahaClientError as exc:
-            return f"Unavailable ⚠️ {self._clip(str(exc), 80)}"
+            return f"Unavailable: {self._clip(str(exc), 80)}"
         finally:
             await client.close()
 

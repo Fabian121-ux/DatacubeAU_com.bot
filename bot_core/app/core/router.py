@@ -112,11 +112,15 @@ class InboundRouter:
             entity_type="router_decision",
             entity_id=str(decision.id),
             details_json={
+                "question": normalized.message_text,
+                "intent": planned.intent,
                 "message_id": inbound.id,
                 "decision_type": planned.decision_type.value,
                 "reason": planned.reason,
                 "kb_confidence": planned.kb_confidence,
                 "should_reply": planned.should_reply,
+                "source_diagnostics": planned.source_diagnostics,
+                "router_analytics": planned.source_diagnostics.get("router_analytics"),
             },
         )
         log_event(

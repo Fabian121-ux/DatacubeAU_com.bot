@@ -393,14 +393,14 @@ class MemoryService:
                     confidence=0.9,
                 )
                 return (
-                    f"Nice to meet you, {name}! 😊 "
+                    f"Nice to meet you, {name}. "
                     "Is there anything I should know about you? "
                     "(preferences, topics of interest, etc.) "
                     "Type 'skip' to skip.",
                     _STAGE_ASK_PREF,
                 )
             await self.upsert_memory(contact_id)
-            return "Welcome! 👋 What's your name?", _STAGE_ASK_NAME
+            return "Welcome. What's your name?", _STAGE_ASK_NAME
 
         # Already completed
         if memory.onboarding_complete:
@@ -412,7 +412,7 @@ class MemoryService:
             if name:
                 await self.upsert_memory(contact_id, user_name=name)
                 return (
-                    f"Nice to meet you, {name}! 😊 "
+                    f"Nice to meet you, {name}. "
                     "Is there anything I should know about you? "
                     "(preferences, topics of interest, etc.) "
                     "Type 'skip' to skip.",
@@ -420,7 +420,7 @@ class MemoryService:
                 )
             # Could not extract a name, ask again
             if self._is_greeting(message_text):
-                return "Welcome! 👋 What's your name?", _STAGE_ASK_NAME
+                return "Welcome. What's your name?", _STAGE_ASK_NAME
             return "I didn't catch that. What's your name?", _STAGE_ASK_NAME
 
         # Waiting for preferences
@@ -492,6 +492,8 @@ class MemoryService:
         profile = self._profile_dict(memory, contact_id)
         timeline_payload = [self._timeline_dict(row) for row in timeline]
         summary_payload = [self._summary_dict(row) for row in summaries]
+        if profile:
+            profile.update(await self.relationship_intelligence(contact_id, memory, timeline_payload, summary_payload))
         context_text = self._build_context_text(profile, timeline_payload, summary_payload)
         used_sections: list[str] = []
         if profile:
@@ -510,6 +512,51 @@ class MemoryService:
             retrieved_item_count=(1 if profile else 0) + len(timeline_payload) + len(summary_payload),
             used_sections=used_sections,
         )
+
+    async def relationship_intelligence(
+        self,
+        contact_id: int,
+        memory: UserMemory | None,
+        timeline_entries: list[dict[str, Any]] | None = None,
+        summaries: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        message_count = (
+            await self.session.execute(select(func.count(Message.id)).where(Message.contact_id == contact_id))
+        ).scalar_one()
+        timeline_payload = timeline_entries or [self._timeline_dict(row) for row in await self.search_timeline(contact_id, limit=8)]
+        summary_payload = summaries or [self._summary_dict(row) for row in await self.get_recent_summaries(contact_id, limit=3)]
+        topics = self._unique_strings(
+            [str(row.get("topic") or "") for row in timeline_payload]
+            + [topic for summary in summary_payload for topic in (summary.get("topics") or [])]
+        )
+        last_seen = getattr(memory, "last_interaction_at", None) or getattr(memory, "updated_at", None) if memory else None
+        topic_factor = min(len(topics) / 8, 1.0)
+        conversation_factor = min(int(message_count or 0) / 40, 1.0)
+        trust_score = round(min(1.0, 0.2 + (conversation_factor * 0.45) + (topic_factor * 0.25)), 2)
+        engagement_score = round(min(1.0, (conversation_factor * 0.65) + (topic_factor * 0.35)), 2)
+        if message_count >= 30:
+            frequency = "high"
+        elif message_count >= 10:
+            frequency = "medium"
+        elif message_count > 0:
+            frequency = "low"
+        else:
+            frequency = "none"
+        if trust_score >= 0.75:
+            importance = "high"
+        elif trust_score >= 0.45:
+            importance = "medium"
+        else:
+            importance = "normal"
+        return {
+            "conversation_count": int(message_count or 0),
+            "topics_discussed": topics[:12],
+            "last_seen": last_seen,
+            "interaction_frequency": frequency,
+            "trust_score": trust_score,
+            "importance_level": importance,
+            "engagement_score": engagement_score,
+        }
 
     def build_continuation_reply(self, message_text: str, package: MemoryContextPackage) -> str | None:
         if not package.context_text:
@@ -538,7 +585,7 @@ class MemoryService:
 
         normalized = normalize_text(message_text)
         if self._asks_for_profile_memory(normalized):
-            answer = self._profile_answer(package)
+            answer = self._profile_answer(package, normalized)
             if answer:
                 return answer, "Memory"
 
@@ -595,6 +642,10 @@ class MemoryService:
     @staticmethod
     def _asks_for_profile_memory(normalized: str) -> bool:
         phrases = (
+            "what is my name",
+            "whats my name",
+            "do you know my name",
+            "remember my name",
             "what do you remember about me",
             "what do you know about me",
             "my profile",
@@ -626,19 +677,25 @@ class MemoryService:
         return any(phrase in normalized for phrase in ("summary", "summaries", "summarize our"))
 
     @staticmethod
-    def _profile_answer(package: MemoryContextPackage) -> str:
+    def _profile_answer(package: MemoryContextPackage, normalized: str = "") -> str:
         profile = package.profile
         if not profile:
             return ""
+        name = profile.get("display_name") or profile.get("user_name")
+        if any(phrase in normalized for phrase in ("what is my name", "whats my name", "do you know my name", "remember my name")):
+            return f"Your name is {name}." if name else "I do not have your name saved yet."
         lines = ["Here is what I currently remember:"]
         fields = [
-            ("Name", profile.get("display_name") or profile.get("user_name")),
+            ("Name", name),
             ("Relationship", profile.get("relationship") or profile.get("relationship_type")),
             ("Interests", profile.get("interests")),
             ("Goals", profile.get("goals")),
             ("Projects", profile.get("projects")),
             ("Preferences", profile.get("preferences")),
             ("Personality notes", profile.get("personality_notes")),
+            ("Topics discussed", ", ".join(profile.get("topics_discussed") or [])),
+            ("Conversation count", str(profile.get("conversation_count") or "")),
+            ("Interaction frequency", profile.get("interaction_frequency")),
         ]
         for label, value in fields:
             if value:
@@ -894,6 +951,10 @@ class MemoryService:
             return "cybersecurity"
         words = re.findall(r"[A-Za-z0-9][A-Za-z0-9+'-]*", text)
         return " ".join(words[:6]).strip() or "general conversation"
+
+    @staticmethod
+    def infer_topic_label(text: str) -> str:
+        return MemoryService._infer_topic(text)
 
     @staticmethod
     def _is_greeting(text: str) -> bool:

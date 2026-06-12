@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from dataclasses import replace
+import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.experience_formatter import WhatsAppExperienceFormatter, memory_context_indicators
+from app.core.intent_classifier import IntentClassifier, IntentResult, MessageIntent
 from app.core.message_normalizer import NormalizedMessage
 from app.core.rules_engine import RulesEngine
 from app.models.enums import AIMode, ChatType, DecisionType
-from app.models.schema import AICall, ConversationSession
+from app.models.schema import AICall, ConversationSession, Message
 from app.services.bot_config_service import BotConfigService
 from app.services.faq_service import FAQService
 from app.services.internet_service import InternetService
@@ -40,6 +42,7 @@ class PlannedReply:
     media_url: str | None = None
     media_type: str | None = None
     media_caption: str | None = None
+    intent: str = MessageIntent.STATEMENT.value
 
 
 class ReplyPlanner:
@@ -53,8 +56,16 @@ class ReplyPlanner:
         self.rate_limiter = RateLimiter(session)
         self.bot_config = BotConfigService(session)
         self.formatter = WhatsAppExperienceFormatter()
+        self.intent_classifier = IntentClassifier()
+        self._active_intent: IntentResult | None = None
+        self._active_question: str = ""
 
     async def plan(self, message: NormalizedMessage, contact_id: int | None) -> PlannedReply:
+        original_text = message.message_text
+        intent_result = self.intent_classifier.classify(original_text)
+        self._active_intent = intent_result
+        self._active_question = original_text
+
         command_reply = await self._handle_global_chat_command(message, contact_id)
         if command_reply:
             return await self._apply_identity_guard(command_reply)
@@ -76,6 +87,7 @@ class ReplyPlanner:
                 message_text=ask_text.strip(),
                 normalized_text=normalize_text(ask_text),
             )
+            self._active_question = message.message_text
 
         internet_request: tuple[str, str, str] | None = None
         service, command, query = self.internet_service.parse_user_command(message.message_text)
@@ -94,8 +106,9 @@ class ReplyPlanner:
                 message_text=query,
                 normalized_text=normalize_text(query),
             )
+            self._active_question = message.message_text
 
-        # Operational and custom rules stay ahead of knowledge routing.
+        # Operational controls, mention gates, cooldowns, triggers, and safe custom rules.
         rules_result = await self.rules.evaluate(message, contact_id)
         if not rules_result.should_continue:
             return await self._apply_identity_guard(PlannedReply(
@@ -114,17 +127,50 @@ class ReplyPlanner:
                     decision_type=DecisionType.RATE_LIMITED,
                     reason=rate_check.reason,
                     should_reply=True,
-                    reply_text="You've reached the daily message limit. Please try again tomorrow. 🕐",
+                    reply_text="You've reached the daily message limit. Please try again tomorrow.",
                     source_diagnostics={"rate_limit": {"allowed": False, "reason": rate_check.reason}},
                 ))
 
+        if intent_result.intent == MessageIntent.GREETING and not internet_request and not global_chat_one_shot:
+            return await self._greeting_reply(message, contact_id)
+
+        if intent_result.intent == MessageIntent.IDENTITY_QUESTION and not internet_request and not global_chat_one_shot:
+            return await self._apply_identity_guard(PlannedReply(
+                decision_type=DecisionType.STATIC_REPLY,
+                reason="identity engine answered identity question",
+                should_reply=True,
+                reply_text=await self.bot_config.identity_reply(message.message_text),
+                source_diagnostics={"source": "Identity", "identity": {"authoritative": True}},
+            ))
+
         # 1-3. Contact-scoped relationship memory, timeline, and summaries.
         memory_package: MemoryContextPackage | None = None
+        context_diagnostics: dict[str, object] = {"used": False}
         if contact_id:
             memory_package = await self.memory_service.get_context_package(
                 contact_id,
                 query=message.message_text,
             )
+            expanded_message, context_diagnostics = await self._resolve_follow_up(message, memory_package)
+            if expanded_message:
+                message = expanded_message
+                if intent_result.intent == MessageIntent.FOLLOW_UP:
+                    identity_reply = await self._identity_reply_if_known_project(message.message_text)
+                    if identity_reply:
+                        return await self._apply_identity_guard(PlannedReply(
+                            decision_type=DecisionType.STATIC_REPLY,
+                            reason="follow-up resolved to identity/project context",
+                            should_reply=True,
+                            reply_text=identity_reply,
+                            source_diagnostics={
+                                "source": "Identity",
+                                "context": context_diagnostics,
+                                "memory": {
+                                    **self.memory_service.diagnostics_for_package(memory_package),
+                                    "context_used": True,
+                                },
+                            },
+                        ))
             memory_answer = self.memory_service.build_memory_answer(message.message_text, memory_package)
             if memory_answer:
                 answer_text, memory_source = memory_answer
@@ -135,10 +181,22 @@ class ReplyPlanner:
                     reply_text=answer_text,
                     source_diagnostics={
                         "source": memory_source,
-                        "memory": self.memory_service.diagnostics_for_package(memory_package),
+                        "context": context_diagnostics,
+                        "memory": {
+                            **self.memory_service.diagnostics_for_package(memory_package),
+                            "context_used": True,
+                        },
                         "global_chat": {"one_shot": global_chat_one_shot, "active": False},
                     },
                 ))
+        elif intent_result.intent == MessageIntent.MEMORY_RECALL:
+            return await self._apply_identity_guard(PlannedReply(
+                decision_type=DecisionType.MEMORY_REPLY,
+                reason="memory recall requested without contact profile",
+                should_reply=True,
+                reply_text="I do not have your profile saved yet.",
+                source_diagnostics={"source": "Memory", "memory": {"retrieved_items": 0, "context_used": True}},
+            ))
 
         # 4. Core FAQ layer.
         faq_entry, faq_score = await self.faq.search_faq(message.message_text)
@@ -155,7 +213,8 @@ class ReplyPlanner:
                         "score": faq_score,
                         "entry_id": faq_entry.id,
                         "question": faq_entry.question,
-                    }
+                    },
+                    "context": context_diagnostics,
                 },
             ))
 
@@ -174,6 +233,7 @@ class ReplyPlanner:
                     "faq": {"matched": False, "score": faq_score},
                     "cache": {"hit": False},
                     "kb": {"matched": True, "confidence": search_result.confidence, "chunks": retrieval_context},
+                    "context": context_diagnostics,
                 },
             ))
 
@@ -191,7 +251,11 @@ class ReplyPlanner:
                     "faq": {"matched": False, "score": faq_score},
                     "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
                     "cache": {"hit": True, "cache_id": cache_hit.id, "answer_mode": cache_hit.answer_mode},
-                    "memory": self.memory_service.diagnostics_for_package(memory_package),
+                    "memory": {
+                        **self.memory_service.diagnostics_for_package(memory_package),
+                        "context_used": bool(context_diagnostics.get("used")),
+                    },
+                    "context": context_diagnostics,
                 },
             ))
 
@@ -216,6 +280,7 @@ class ReplyPlanner:
                             **self.memory_service.diagnostics_for_package(memory_package),
                             "onboarding_stage": stage,
                         },
+                        "context": context_diagnostics,
                         "global_chat": {"one_shot": global_chat_one_shot, "active": False},
                     },
                 ))
@@ -239,7 +304,11 @@ class ReplyPlanner:
         global_chat_active = global_chat_one_shot or self._memory_global_chat_enabled(memory_package)
         global_chat_system_enabled = await self.bot_config.get_bool("global_chat_enabled", True)
         ai_enabled_config = await self.bot_config.get_bool("ai_enabled", False)
-        ai_needed = self._requires_openrouter(message.message_text) or global_chat_one_shot
+        ai_needed = (
+            self._requires_openrouter(message.message_text)
+            or global_chat_one_shot
+            or intent_result.intent in {MessageIntent.GENERAL_KNOWLEDGE, MessageIntent.OPINION_REQUEST}
+        )
         ai_enabled = (
             global_chat_active
             and global_chat_system_enabled
@@ -255,7 +324,7 @@ class ReplyPlanner:
                         reason=user_ai_check.reason,
                         should_reply=True,
                         reply_text=(
-                            "🤖 Global Chat limit reached.\n\n"
+                            "Global Chat limit reached.\n\n"
                             "Please try again tomorrow.\n\n"
                             "For live information, try:\n"
                             "• !search <query>\n"
@@ -271,6 +340,7 @@ class ReplyPlanner:
                             "cache": {"hit": False},
                             "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
                             "memory": self.memory_service.diagnostics_for_package(memory_package),
+                            "context": context_diagnostics,
                             "ai_quota": {
                                 "allowed": False,
                                 "reason": user_ai_check.reason,
@@ -296,6 +366,12 @@ class ReplyPlanner:
 
         # 8. Escalating fallback.
         no_match_text = await self._no_match_reply(message.chat_type)
+        if intent_result.intent == MessageIntent.GENERAL_KNOWLEDGE:
+            no_match_text = (
+                "I do not have enough local knowledge to answer that reliably yet.\n\n"
+                "You can use `!search <topic>` for live research, or enable Global Chat when you want me "
+                "to synthesize a broader answer."
+            )
         return await self._apply_identity_guard(PlannedReply(
             decision_type=DecisionType.NO_MATCH,
             reason="no rule, faq, cache, knowledge, memory, or ai match",
@@ -308,6 +384,7 @@ class ReplyPlanner:
                 "cache": {"hit": False},
                 "kb": {"matched": False, "confidence": search_result.confidence, "chunks": retrieval_context},
                 "memory": self.memory_service.diagnostics_for_package(memory_package),
+                "context": context_diagnostics,
                 "ai": {"used": False, "enabled": ai_enabled},
                 "global_chat": {
                     "one_shot": global_chat_one_shot,
@@ -316,6 +393,149 @@ class ReplyPlanner:
                 },
             },
         ))
+
+    async def _greeting_reply(self, message: NormalizedMessage, contact_id: int | None) -> PlannedReply:
+        memory_package: MemoryContextPackage | None = None
+        if contact_id:
+            memory_package = await self.memory_service.get_context_package(contact_id, query=message.message_text)
+            continuation = self.memory_service.build_continuation_reply(message.message_text, memory_package)
+            if continuation:
+                return await self._apply_identity_guard(PlannedReply(
+                    decision_type=DecisionType.MEMORY_REPLY,
+                    reason="greeting answered with meaningful memory context",
+                    should_reply=True,
+                    reply_text=continuation,
+                    source_diagnostics={
+                        "source": self.memory_service.source_label_for_package(memory_package, timeline_required=True),
+                        "memory": {
+                            **self.memory_service.diagnostics_for_package(memory_package),
+                            "context_used": True,
+                        },
+                    },
+                ))
+
+            name = memory_package.profile.get("display_name") or memory_package.profile.get("user_name")
+            has_prior_context = bool(memory_package.timeline_entries or memory_package.summaries)
+            conversation_count = int(memory_package.profile.get("conversation_count") or 0)
+            if name and (has_prior_context or conversation_count > 1):
+                return await self._apply_identity_guard(PlannedReply(
+                    decision_type=DecisionType.STATIC_REPLY,
+                    reason="greeting recognized returning user",
+                    should_reply=True,
+                    reply_text=f"Welcome back {name}.",
+                    source_diagnostics={
+                        "source": "Memory",
+                        "memory": {
+                            **self.memory_service.diagnostics_for_package(memory_package),
+                            "context_used": True,
+                        },
+                    },
+                ))
+
+        return await self._apply_identity_guard(PlannedReply(
+            decision_type=DecisionType.STATIC_REPLY,
+            reason="greeting handled before FAQ routing",
+            should_reply=True,
+            reply_text=await self.bot_config.introduction_reply(),
+            source_diagnostics={"source": "Identity", "memory": self.memory_service.diagnostics_for_package(memory_package)},
+        ))
+
+    async def _resolve_follow_up(
+        self,
+        message: NormalizedMessage,
+        memory_package: MemoryContextPackage,
+    ) -> tuple[NormalizedMessage | None, dict[str, object]]:
+        if not self._active_intent or self._active_intent.intent != MessageIntent.FOLLOW_UP:
+            return None, {"used": False}
+        active_topic = await self._active_topic(message.chat_id, memory_package, exclude_text=message.message_text)
+        if not active_topic:
+            return None, {"used": False, "reason": "no active topic"}
+        expanded = self._expand_followup_text(message.message_text, active_topic)
+        if not expanded or normalize_text(expanded) == normalize_text(message.message_text):
+            return None, {"used": False, "active_topic": active_topic}
+        return (
+            replace(message, message_text=expanded, normalized_text=normalize_text(expanded)),
+            {
+                "used": True,
+                "original_question": message.message_text,
+                "expanded_question": expanded,
+                "active_topic": active_topic,
+            },
+        )
+
+    async def _active_topic(
+        self,
+        chat_id: str,
+        memory_package: MemoryContextPackage,
+        *,
+        exclude_text: str,
+    ) -> str | None:
+        for entry in memory_package.timeline_entries:
+            topic = str(entry.get("topic") or "").strip()
+            if topic and normalize_text(topic) not in {"general conversation"}:
+                return topic
+
+        session_summary = await self._get_conversation_summary(chat_id)
+        topic = self._topic_from_text(session_summary)
+        if topic:
+            return topic
+
+        rows = (
+            await self.session.execute(
+                select(Message.message_text)
+                .where(Message.chat_id == chat_id)
+                .where(Message.message_text != exclude_text)
+                .order_by(Message.created_at.desc())
+                .limit(6)
+            )
+        ).scalars().all()
+        for text_value in rows:
+            topic = self._topic_from_text(text_value)
+            if topic:
+                return topic
+        return None
+
+    @staticmethod
+    def _topic_from_text(text_value: str | None) -> str | None:
+        if not text_value:
+            return None
+        normalized = normalize_text(text_value)
+        for marker, topic in (
+            ("datacube", "Datacube AU"),
+            ("zinax", "ZinaX"),
+            ("moxiz", "Moxiz Gateway"),
+            ("zina", "Zina"),
+            ("vps", "VPS deployment"),
+            ("server", "VPS deployment"),
+            ("internship", "cybersecurity internships"),
+        ):
+            if marker in normalized:
+                return topic
+        return None
+
+    @staticmethod
+    def _expand_followup_text(text_value: str, active_topic: str) -> str:
+        stripped = text_value.strip()
+        normalized = normalize_text(stripped)
+        if normalized in {"ram", "storage", "cost", "price", "performance"}:
+            return f"What about {normalized} for {active_topic}?"
+        if normalized.startswith("what about "):
+            return f"{stripped} for {active_topic}?"
+        if normalized.startswith("how about "):
+            return f"{stripped} for {active_topic}?"
+        if normalized in {"which one", "compare them"}:
+            return f"{stripped} for {active_topic}?"
+        if normalized in {"who owns it", "who built it"}:
+            return re.sub(r"\bit\b", active_topic, stripped, flags=re.IGNORECASE)
+        if re.search(r"\b(it|that|this|they|them|those)\b", normalized):
+            return re.sub(r"\b(it|that|this|they|them|those)\b", active_topic, stripped, flags=re.IGNORECASE)
+        return f"{stripped} about {active_topic}"
+
+    async def _identity_reply_if_known_project(self, message_text: str) -> str | None:
+        normalized = normalize_text(message_text)
+        if any(marker in normalized for marker in ("datacube", "zina", "zinax", "moxiz", "fabian")):
+            return await self.bot_config.identity_reply(message_text)
+        return None
 
     async def _try_ai(
         self,
@@ -346,6 +566,16 @@ class ReplyPlanner:
         if search_result.confidence < escalation_threshold and strictness == "high":
             force_escalation = True
         
+        # Load user memory context
+        user_context = ""
+        if contact_id and memory_package is None:
+            memory_package = await self.memory_service.get_context_package(contact_id, query=message.message_text)
+        if memory_package and memory_package.context_text:
+            user_context = memory_package.context_text
+        elif contact_id:
+            memory = await self.memory_service.get_memory(contact_id)
+            user_context = self.memory_service.get_memory_context(memory)
+
         dynamic_system_instructions = await self.bot_config.build_system_prompt()
         
         if force_escalation:
@@ -359,21 +589,14 @@ class ReplyPlanner:
                 ai_used=False,
                 source_diagnostics={
                     "kb": {"matched": False, "confidence": search_result.confidence},
-                    "memory": self.memory_service.diagnostics_for_package(memory_package),
+                    "memory": {
+                        **self.memory_service.diagnostics_for_package(memory_package),
+                        "context_used": bool(user_context),
+                    },
                     "ai": {"used": False, "escalated": True, "strictness": strictness},
                     "global_chat": global_chat or {},
                 },
             ))
-
-        # Load user memory context
-        user_context = ""
-        if contact_id and memory_package is None:
-            memory_package = await self.memory_service.get_context_package(contact_id, query=message.message_text)
-        if memory_package and memory_package.context_text:
-            user_context = memory_package.context_text
-        elif contact_id:
-            memory = await self.memory_service.get_memory(contact_id)
-            user_context = self.memory_service.get_memory_context(memory)
 
         ai_decision = DecisionType.AI_REPLY_DEEP if mode == AIMode.DEEP else DecisionType.AI_REPLY_LIGHT
         try:
@@ -411,7 +634,10 @@ class ReplyPlanner:
                         "confidence": search_result.confidence,
                         "chunks": self.retrieval.prompt_context(search_result),
                     },
-                    "memory": self.memory_service.diagnostics_for_package(memory_package),
+                    "memory": {
+                        **self.memory_service.diagnostics_for_package(memory_package),
+                        "context_used": bool(user_context),
+                    },
                     "ai": {
                         "used": True,
                         "mode": mode.value,
@@ -438,14 +664,15 @@ class ReplyPlanner:
         return summary or ""
 
     async def upsert_conversation_summary(self, *, chat_id: str, chat_type: str, user_text: str, bot_text: str, decision: str) -> None:
-        compact = f"decision:{decision} | user:{user_text[:140]} | assistant:{bot_text[:220]}"
+        topic = self.memory_service.infer_topic_label(user_text)
+        compact = f"topic:{topic} | decision:{decision} | user:{user_text[:140]} | assistant:{bot_text[:220]}"
         stmt = select(ConversationSession).where(ConversationSession.chat_id == chat_id).limit(1)
         model = (await self.session.execute(stmt)).scalar_one_or_none()
         if model:
             model.chat_type = chat_type
             previous = model.summary or ""
             model.summary = self._merge_summary(previous, compact)
-            model.last_intent = decision
+            model.last_intent = topic
             model.last_message_at = utcnow()
             model.updated_at = utcnow()
             return
@@ -455,7 +682,7 @@ class ReplyPlanner:
                 chat_id=chat_id,
                 chat_type=chat_type,
                 summary=compact,
-                last_intent=decision,
+                last_intent=topic,
                 last_message_at=utcnow(),
                 updated_at=utcnow(),
             )
@@ -486,6 +713,7 @@ class ReplyPlanner:
         )
 
     async def _apply_identity_guard(self, reply: PlannedReply) -> PlannedReply:
+        self._attach_router_analytics(reply)
         reply.source_diagnostics.setdefault("source", self._diagnostic_source(reply))
         if not reply.reply_text:
             return reply
@@ -508,8 +736,10 @@ class ReplyPlanner:
         if getattr(reply, "raw_reply_text", None) is None:
             setattr(reply, "raw_reply_text", reply.reply_text)
         source = str(reply.source_diagnostics.get("source") or self._diagnostic_source(reply))
-        show_source = await self.bot_config.get_bool("show_source_badges", settings.show_source_badges)
-        show_context = await self.bot_config.get_bool("show_context_badges", settings.show_context_badges)
+        configured_show_source = await self.bot_config.get_bool("show_source_badges", settings.show_source_badges)
+        show_source = configured_show_source and self._should_show_source(reply, source)
+        configured_show_context = await self.bot_config.get_bool("show_context_badges", settings.show_context_badges)
+        show_context = configured_show_context and self._context_was_used(reply)
         signature_style = await self.bot_config.get_bool("enable_signature_style", settings.enable_signature_style)
         memory_info = reply.source_diagnostics.get("memory")
         indicators = memory_context_indicators(memory_info if isinstance(memory_info, dict) else None)
@@ -530,6 +760,77 @@ class ReplyPlanner:
             experience_info["signature_style"] = signature_style
             experience_info["reply_mode"] = reply_mode
         return reply
+
+    def _attach_router_analytics(self, reply: PlannedReply) -> None:
+        classifier = getattr(self, "intent_classifier", IntentClassifier())
+        active_question = getattr(self, "_active_question", "") or ""
+        intent = getattr(self, "_active_intent", None) or classifier.classify(active_question)
+        reply.intent = intent.intent.value
+        source = str(reply.source_diagnostics.get("source") or self._diagnostic_source(reply))
+        memory_info = reply.source_diagnostics.get("memory")
+        faq_info = reply.source_diagnostics.get("faq")
+        kb_info = reply.source_diagnostics.get("kb")
+        internet_info = reply.source_diagnostics.get("internet")
+        ai_info = reply.source_diagnostics.get("ai")
+
+        memory_score = 0.0
+        if isinstance(memory_info, dict):
+            memory_score = min(1.0, float(memory_info.get("retrieved_items") or 0) / 4)
+            if memory_info.get("context_used"):
+                memory_score = max(memory_score, 0.85)
+        reply_confidence = float(getattr(reply, "kb_confidence", 0.0) or 0.0)
+        faq_score = float(faq_info.get("score") or 0.0) if isinstance(faq_info, dict) else 0.0
+        knowledge_score = float(kb_info.get("confidence") or reply_confidence or 0.0) if isinstance(kb_info, dict) else reply_confidence
+        internet_score = 1.0 if isinstance(internet_info, dict) and internet_info.get("success", True) and source in {"Internet", "Giphy", "Cache"} else 0.0
+        ai_score = 1.0 if getattr(reply, "ai_used", False) or (isinstance(ai_info, dict) and ai_info.get("used")) else 0.0
+
+        rejected: list[dict[str, object]] = []
+        if isinstance(faq_info, dict) and not faq_info.get("matched", False):
+            rejected.append({"source": "FAQ", "score": faq_score, "reason": "below confidence threshold"})
+        if isinstance(kb_info, dict) and not kb_info.get("matched", False):
+            rejected.append({"source": "Knowledge", "score": knowledge_score, "reason": "below confidence threshold"})
+        if isinstance(internet_info, dict) and internet_info.get("success") is False:
+            rejected.append({"source": "Internet", "score": internet_score, "reason": internet_info.get("error") or "provider unavailable"})
+        if isinstance(ai_info, dict) and ai_info.get("used") is False:
+            rejected.append({"source": "AI", "score": ai_score, "reason": "not needed or disabled"})
+
+        reply.source_diagnostics["intent"] = {
+            "name": intent.intent.value,
+            "confidence": intent.confidence,
+            "reason": intent.reason,
+        }
+        reply.source_diagnostics["router_analytics"] = {
+            "question": active_question,
+            "intent": intent.intent.value,
+            "scores": {
+                "memory": round(memory_score, 2),
+                "timeline": round(memory_score if isinstance(memory_info, dict) and memory_info.get("timeline_entries") else 0.0, 2),
+                "knowledge": round(knowledge_score, 2),
+                "faq": round(faq_score, 2),
+                "internet": round(internet_score, 2),
+                "ai": round(ai_score, 2),
+            },
+            "selected_source": source,
+            "rejected_sources": rejected,
+            "reason": getattr(reply, "reason", ""),
+        }
+
+    @staticmethod
+    def _should_show_source(reply: PlannedReply, source: str) -> bool:
+        if source in {"Internet", "Giphy", "AI", "Global Chat"}:
+            return True
+        memory_info = reply.source_diagnostics.get("memory")
+        if source in {"Memory", "Memory + Timeline", "Timeline"} and isinstance(memory_info, dict):
+            return bool(memory_info.get("context_used"))
+        return False
+
+    @staticmethod
+    def _context_was_used(reply: PlannedReply) -> bool:
+        context_info = reply.source_diagnostics.get("context")
+        if isinstance(context_info, dict) and context_info.get("used"):
+            return True
+        memory_info = reply.source_diagnostics.get("memory")
+        return isinstance(memory_info, dict) and bool(memory_info.get("context_used"))
 
     async def _handle_global_chat_command(
         self,

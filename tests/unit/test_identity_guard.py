@@ -199,5 +199,5 @@ async def test_bot_config_identity_prompt_intro_and_escalation() -> None:
     assert "You are Zina, Fabian's Personal AI Assistant." in prompt
     assert "Zina is not Fabian" in prompt
     assert "Never answer with \"I am Fabian\"" in prompt
-    assert intro.startswith("Hi 👋 I'm Zina")
+    assert intro.startswith("Hi. I'm Zina")
     assert escalation == "Fabian may need to answer this personally."

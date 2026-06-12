@@ -7,6 +7,7 @@ import pytest
 
 from app.config import settings
 from app.core.experience_formatter import WhatsAppExperienceFormatter
+from app.core.intent_classifier import IntentClassifier
 from app.core.message_normalizer import NormalizedMessage
 from app.core.reply_planner import PlannedReply, ReplyPlanner
 from app.core.rules_engine import RulesResult
@@ -155,6 +156,10 @@ class FakeMemory:
             "context_indicators": MemoryService.context_indicators_for_package(package),
         }
 
+    @staticmethod
+    def source_label_for_package(package: MemoryContextPackage, *, timeline_required: bool = False) -> str:
+        return MemoryService.source_label_for_package(package, timeline_required=timeline_required)
+
     async def get_memory(self, *_: Any) -> None:
         return None
 
@@ -203,6 +208,12 @@ class FakeBotConfig:
 
     async def build_system_prompt(self) -> str:
         return "You are Zina, Fabian's AI assistant."
+
+    async def introduction_reply(self) -> str:
+        return "Hi. I'm Zina, Fabian's AI assistant."
+
+    async def identity_reply(self, _: str) -> str:
+        return "I am Zina, Fabian's AI assistant."
 
     async def escalation_reply(self) -> str:
         return "Fabian may need to answer this personally."
@@ -269,6 +280,9 @@ def make_planner(
     planner.rate_limiter = FakeRateLimiter(user_allowed=user_allowed, global_allowed=global_allowed, ai_quota_allowed=ai_quota_allowed)
     planner.bot_config = FakeBotConfig(ai_enabled, strictness=strictness, threshold=threshold)
     planner.formatter = WhatsAppExperienceFormatter()
+    planner.intent_classifier = IntentClassifier()
+    planner._active_intent = None
+    planner._active_question = ""
 
     async def conversation_summary(_: str) -> str:
         return ""
@@ -285,8 +299,8 @@ async def test_rule_source_preempts_everything() -> None:
 
     assert reply.decision_type == DecisionType.REPLY_RULE
     assert reply.raw_reply_text == "Rule answer."
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "⚙️ Rule" in reply.reply_text
+    assert reply.reply_text.startswith("*Zina*")
+    assert "Rule answer." in reply.reply_text
     assert reply.source_diagnostics["source"] == "Rule"
     assert planner.faq.calls == 0
     assert planner.retrieval.cache_calls == 0
@@ -305,7 +319,7 @@ async def test_user_rate_limit_preempts_retrieval_and_ai() -> None:
 
 
 @pytest.mark.asyncio
-async def test_faq_source_preempts_cache_kb_memory_and_ai() -> None:
+async def test_identity_source_preempts_faq_cache_kb_memory_and_ai() -> None:
     planner = make_planner(
         faq_entry=FakeFAQEntry(),
         cache_hit=FakeCacheHit(),
@@ -316,13 +330,30 @@ async def test_faq_source_preempts_cache_kb_memory_and_ai() -> None:
 
     reply = await planner.plan(make_message("Who are you?"), contact_id=1)
 
-    assert reply.decision_type == DecisionType.FAQ_REPLY
-    assert reply.raw_reply_text == "I'm Zina, Fabian's AI assistant."
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "📚 FAQ" in reply.reply_text
-    assert reply.source_diagnostics["source"] == "FAQ"
+    assert reply.decision_type == DecisionType.STATIC_REPLY
+    assert reply.raw_reply_text == "I am Zina, Fabian's AI assistant."
+    assert reply.reply_text.startswith("*Zina*")
+    assert reply.source_diagnostics["source"] == "Identity"
     assert planner.retrieval.cache_calls == 0
     assert planner.memory_service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_faq_source_preempts_cache_kb_and_ai_for_non_identity_question() -> None:
+    planner = make_planner(
+        faq_entry=FakeFAQEntry(question="What services are offered?", answer="Fabian builds automation systems."),
+        cache_hit=FakeCacheHit(),
+        search_result=make_kb_result(),
+        ai_enabled=True,
+    )
+
+    reply = await planner.plan(make_message("What services are offered?"), contact_id=1)
+
+    assert reply.decision_type == DecisionType.FAQ_REPLY
+    assert reply.raw_reply_text == "Fabian builds automation systems."
+    assert reply.reply_text.startswith("*Zina*")
+    assert reply.source_diagnostics["source"] == "FAQ"
+    assert planner.retrieval.cache_calls == 0
 
 
 @pytest.mark.asyncio
@@ -333,8 +364,8 @@ async def test_cache_source_preempts_internet_and_ai_after_local_knowledge_misse
 
     assert reply.decision_type == DecisionType.KB_REPLY
     assert reply.raw_reply_text == "Cached answer."
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "💾 Cache" in reply.reply_text
+    assert reply.reply_text.startswith("*Zina*")
+    assert "Cached answer." in reply.reply_text
     assert reply.source_diagnostics["source"] == "Cache"
     assert planner.retrieval.search_calls == 1
     assert planner.memory_service.calls == 0
@@ -344,7 +375,7 @@ async def test_cache_source_preempts_internet_and_ai_after_local_knowledge_misse
 async def test_kb_source_preempts_memory_and_ai() -> None:
     planner = make_planner(search_result=make_kb_result(), memory_reply="Memory onboarding.", ai_enabled=True)
 
-    reply = await planner.plan(make_message("what is datacube"), contact_id=1)
+    reply = await planner.plan(make_message("datacube capabilities"), contact_id=1)
 
     assert reply.decision_type == DecisionType.KB_REPLY
     assert "Datacube AU is a WhatsApp assistant system" in reply.reply_text
@@ -354,14 +385,13 @@ async def test_kb_source_preempts_memory_and_ai() -> None:
 
 @pytest.mark.asyncio
 async def test_memory_source_preempts_ai() -> None:
-    planner = make_planner(memory_reply="Welcome! What's your name?", ai_enabled=True)
+    planner = make_planner(memory_reply="Welcome. What's your name?", ai_enabled=True)
 
-    reply = await planner.plan(make_message("hello"), contact_id=1)
+    reply = await planner.plan(make_message("I am new here"), contact_id=1)
 
     assert reply.decision_type == DecisionType.MEMORY_ONBOARD
-    assert reply.raw_reply_text == "Welcome! What's your name?"
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "🧠 Memory" in reply.reply_text
+    assert reply.raw_reply_text == "Welcome. What's your name?"
+    assert reply.reply_text.startswith("*Zina*")
     assert reply.source_diagnostics["source"] == "Memory"
 
 
@@ -385,7 +415,7 @@ async def test_memory_continuation_preempts_ai() -> None:
 
     assert reply.decision_type == DecisionType.MEMORY_REPLY
     assert "Welcome back Kingsley" in reply.reply_text
-    assert "📌 Welcome back Kingsley." in reply.reply_text
+    assert "Last time we discussed cybersecurity internships." in reply.reply_text
     assert reply.source_diagnostics["source"] == "Memory + Timeline"
     assert reply.source_diagnostics["memory"]["retrieved_items"] == 2
 
@@ -400,8 +430,8 @@ async def test_ai_used_only_after_earlier_sources_fail(monkeypatch, mock_openrou
 
     assert reply.decision_type == DecisionType.AI_REPLY_LIGHT
     assert reply.raw_reply_text == "AI answer from Zina."
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "🤖 Global Chat" in reply.reply_text
+    assert reply.reply_text.startswith("*Zina*")
+    assert "AI answer from Zina." in reply.reply_text
     assert reply.ai_used is True
     assert reply.source_diagnostics["source"] == "AI"
     assert mock_openrouter.calls == 1
@@ -416,8 +446,7 @@ async def test_global_chat_commands_toggle_contact_mode() -> None:
 
     assert enabled.decision_type == DecisionType.STATIC_REPLY
     assert enabled.source_diagnostics["global_chat"]["active"] is True
-    assert enabled.reply_text.startswith("🧠 Zina")
-    assert "⚙️ Rule" in enabled.reply_text
+    assert enabled.reply_text.startswith("*Zina*")
     assert disabled.source_diagnostics["global_chat"]["active"] is False
     assert planner.memory_service.global_chat_updates == [(1, True), (1, False)]
 
@@ -439,8 +468,8 @@ async def test_global_chat_enabled_profile_allows_ai_without_bang_ask(monkeypatc
 
     assert reply.decision_type == DecisionType.AI_REPLY_LIGHT
     assert reply.source_diagnostics["global_chat"]["active"] is True
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "📌 Welcome back Kingsley." in reply.reply_text
+    assert reply.reply_text.startswith("*Zina*")
+    assert "Welcome back Kingsley." in reply.reply_text
 
 
 @pytest.mark.asyncio
@@ -494,8 +523,7 @@ async def test_fallback_used_when_ai_disabled_and_no_sources(monkeypatch) -> Non
 
     assert reply.decision_type == DecisionType.NO_MATCH
     assert reply.raw_reply_text == "Fabian may need to answer this personally."
-    assert reply.reply_text.startswith("🧠 Zina")
-    assert "⚙️ Rule" in reply.reply_text
+    assert reply.reply_text.startswith("*Zina*")
     assert reply.source_diagnostics["source"] == "Fallback"
 
 
@@ -506,7 +534,7 @@ async def test_cache_answer_if_reusable_writes_supported_sources() -> None:
         decision_type=DecisionType.FAQ_REPLY,
         reason="test",
         should_reply=True,
-        reply_text="📚 FAQ\n\nI'm Zina.",
+        reply_text="*Zina*\n\nSource: FAQ\n\nI'm Zina.",
         raw_reply_text="I'm Zina.",
         kb_confidence=0.8,
         source_diagnostics={"source": "FAQ"},

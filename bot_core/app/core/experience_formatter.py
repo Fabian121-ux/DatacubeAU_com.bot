@@ -5,20 +5,21 @@ import re
 from typing import Any
 
 
-SOURCE_BADGES = {
-    "Rule": "⚙️ Rule",
-    "FAQ": "📚 FAQ",
-    "KB": "📖 Knowledge Base",
-    "Knowledge Base": "📖 Knowledge Base",
-    "Knowledge": "📖 Knowledge",
-    "Timeline": "📅 Timeline",
-    "Memory": "🧠 Memory",
-    "Cache": "💾 Cache",
-    "AI": "🤖 Global Chat",
-    "Global Chat": "🤖 Global Chat",
-    "Internet": "🌐 Internet",
-    "Giphy": "🎬 Giphy",
-    "Fallback": "⚙️ Rule",
+SOURCE_LABELS = {
+    "Rule": "Rule",
+    "FAQ": "FAQ",
+    "KB": "Knowledge",
+    "Knowledge Base": "Knowledge",
+    "Knowledge": "Knowledge",
+    "Timeline": "Timeline",
+    "Memory": "Memory",
+    "Cache": "Cache",
+    "AI": "Global Chat",
+    "Global Chat": "Global Chat",
+    "Internet": "Internet",
+    "Giphy": "Giphy",
+    "Identity": "Identity",
+    "Fallback": "Fallback",
 }
 
 SUPPORTED_PROJECTS = {"Datacube AU", "Zina", "ZinaX", "Moxiz Gateway"}
@@ -60,19 +61,19 @@ class WhatsAppExperienceFormatter:
                 show_source=show_source,
             )
 
-        parts = ["🧠 Zina"]
+        parts = ["*Zina*"]
         if indicators:
-            parts.append(self._section("📌 Context", "\n".join(indicators)))
+            parts.append("\n".join(indicators))
 
         answer_parts: list[str] = []
         if show_source:
-            answer_parts.append(self.source_badge(source))
+            answer_parts.append(f"Source: {self.source_badge(source)}")
         if body:
             answer_parts.append(body)
-        parts.append(self._section("💡 Answer", "\n\n".join(answer_parts)))
+        parts.append("\n\n".join(answer_parts))
 
         if next_step:
-            parts.append(self._section("🚀 Next Step", self.format_body(next_step)))
+            parts.append(self._section("*Next Step*", self.format_body(next_step)))
 
         return self._limit_reply("\n\n".join(part for part in parts if part), mode)
 
@@ -86,25 +87,25 @@ class WhatsAppExperienceFormatter:
     ) -> str:
         parts: list[str] = []
         if show_source:
-            parts.append(self.source_badge(source))
+            parts.append(f"Source: {self.source_badge(source)}")
         parts.append(body)
         return "\n\n".join(part for part in parts if part).strip()[: self.max_reply_chars]
 
     def source_badge(self, source: str | None) -> str:
         if source and "+" in source:
             parts = [part.strip() for part in source.split("+") if part.strip()]
-            return " + ".join(SOURCE_BADGES.get(part, part) for part in parts)
-        return SOURCE_BADGES.get(source or "", SOURCE_BADGES["Fallback"])
+            return " + ".join(SOURCE_LABELS.get(part, part) for part in parts)
+        return SOURCE_LABELS.get(source or "", SOURCE_LABELS["Fallback"])
 
     def thinking_indicator(self, stage: str) -> str:
         stage_key = stage.strip().lower()
         if stage_key == "knowledge":
-            return "📚 Searching knowledge..."
+            return "Searching knowledge..."
         if stage_key == "memory":
-            return "🔎 Checking memory..."
+            return "Checking memory..."
         if stage_key == "internet":
-            return "🌐 Searching internet..."
-        return "🧠 Thinking..."
+            return "Searching internet..."
+        return "Generating response..."
 
     def format_body(self, text: str) -> str:
         cleaned = self._normalize_spacing(text)
@@ -136,7 +137,7 @@ class WhatsAppExperienceFormatter:
         next_step: str = "",
     ) -> str:
         project_name = name.strip()
-        lines = [f"🚀 Project: {project_name}"]
+        lines = [f"*{project_name}*"]
         if purpose:
             lines.extend(["", "Purpose:", purpose.strip()])
         if status:
@@ -159,7 +160,7 @@ class WhatsAppExperienceFormatter:
         ai: str = "",
         details: list[str] | None = None,
     ) -> str:
-        lines = [f"📊 {title.strip()}"]
+        lines = [f"*{title.strip()}*"]
         if status:
             lines.extend(["", "Status:", status.strip()])
         for label, value in (
@@ -213,8 +214,6 @@ class WhatsAppExperienceFormatter:
             value = indicator.strip()
             if not value:
                 continue
-            if not value.startswith("📌"):
-                value = f"📌 {value}"
             if value not in seen:
                 seen.add(value)
                 cleaned.append(value)
@@ -283,6 +282,8 @@ class WhatsAppExperienceFormatter:
 
 def memory_context_indicators(memory_diagnostics: dict[str, Any] | None) -> list[str]:
     if not isinstance(memory_diagnostics, dict):
+        return []
+    if not memory_diagnostics.get("context_used"):
         return []
     indicators = memory_diagnostics.get("context_indicators")
     if isinstance(indicators, list):

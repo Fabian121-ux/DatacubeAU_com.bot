@@ -41,7 +41,7 @@ _DEFAULTS: dict[str, str] = {
     "typing_delay_enabled": "true",
     "min_typing_delay_seconds": "1",
     "max_typing_delay_seconds": "6",
-    "show_source_badges": "true",
+    "show_source_badges": "false",
     "show_context_badges": "true",
     "enable_signature_style": "true",
     "experience_source_badges_enabled": "true",
@@ -197,9 +197,65 @@ class BotConfigService:
     async def introduction_reply(self) -> str:
         profile = await self.get_identity_profile()
         return (
-            f"Hi 👋 I'm {profile['assistant_name']}, {profile['owner_name']}'s AI assistant. "
+            f"Hi. I'm {profile['assistant_name']}, {profile['owner_name']}'s AI assistant. "
             f"I help answer questions about {profile['owner_name']}, his projects, and Datacube AU."
         )
+
+    async def identity_reply(self, message_text: str) -> str:
+        profile = await self.get_identity_profile()
+        normalized = re.sub(r"\s+", " ", message_text.strip().lower())
+        assistant_name = profile["assistant_name"] or "Zina"
+        owner_name = profile["owner_name"] or "Fabian"
+
+        if any(phrase in normalized for phrase in ("what is your name", "whats your name", "who are you", "what are you")):
+            return f"I am {assistant_name}, {owner_name}'s AI assistant."
+        if any(phrase in normalized for phrase in ("who created you", "who built you", "who created zina")):
+            return f"{owner_name} created me."
+        if any(phrase in normalized for phrase in ("why were you created", "why do you exist")):
+            return (
+                f"I was created to help {owner_name} manage memory, project context, knowledge retrieval, "
+                "WhatsApp conversations, and controlled AI access."
+            )
+        if "who is fabian" in normalized:
+            return profile["owner_bio"] or f"{owner_name} is the owner and creator I assist."
+        if "projects" in normalized and "fabian" in normalized:
+            return (
+                "Fabian's core projects are:\n\n"
+                "• Datacube AU\n"
+                "• Zina\n"
+                "• ZinaX\n"
+                "• Moxiz Gateway"
+            )
+        project_answer = self._project_identity_reply(normalized, owner_name)
+        if project_answer:
+            return project_answer
+        return f"I am {assistant_name}, {owner_name}'s AI assistant."
+
+    @staticmethod
+    def _project_identity_reply(normalized: str, owner_name: str) -> str | None:
+        if "datacube" in normalized:
+            if "owner" in normalized or "owns" in normalized or "founder" in normalized or "founded" in normalized:
+                return f"Datacube AU is owned by {owner_name}."
+            return (
+                "*Datacube AU*\n\n"
+                "An AI-powered educational intelligence platform focused on:\n\n"
+                "• Document intelligence\n"
+                "• Exam preparation\n"
+                "• Knowledge retrieval\n"
+                "• Personalized learning\n\n"
+                f"Founder:\n{owner_name}"
+            )
+        if "zinax" in normalized:
+            return "*ZinaX*\n\nA project in Fabian's AI assistant and automation ecosystem."
+        if "moxiz" in normalized:
+            return "*Moxiz Gateway*\n\nA gateway project in Fabian's broader automation ecosystem."
+        if "zina" in normalized:
+            return (
+                "*Zina*\n\n"
+                "Fabian's personal AI operating system inside WhatsApp, built for memory, project intelligence, "
+                "knowledge retrieval, owner control, and controlled AI access."
+            )
+        return None
 
     async def escalation_reply(self) -> str:
         profile = await self.get_identity_profile()

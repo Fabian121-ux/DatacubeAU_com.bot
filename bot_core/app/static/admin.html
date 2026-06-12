@@ -756,20 +756,22 @@ async function loadDecisions() {
     const d = await api('/admin/router-decisions/recent?limit=50');
     if (!d.items.length) { document.getElementById('decisionsTable').innerHTML = '<em>No decisions logged yet.</em>'; return; }
     document.getElementById('decisionsTable').innerHTML = `<table>
-      <thead><tr><th>Time</th><th>Msg ID</th><th>Source / Decision</th><th>Reason</th><th>Conf</th><th>AI</th><th>Tokens</th><th>Latency</th><th>Queued?</th></tr></thead>
+      <thead><tr><th>Time</th><th>Question</th><th>Intent</th><th>Selected</th><th>Scores</th><th>Decision</th><th>Reason</th><th>AI</th><th>Queued?</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
-        <td>${m.message_id}</td>
+        <td title="${esc(m.question || '')}">${esc((m.question || `#${m.message_id}`).substring(0,70))}</td>
+        <td><span class="badge badge-gray">${esc(m.intent || m.router_analytics?.intent || 'unknown')}</span></td>
+        <td>${esc(m.router_analytics?.selected_source || '—')}</td>
+        <td class="mono" title="${esc(JSON.stringify(m.router_analytics?.scores || {}))}">
+          ${Object.entries(m.router_analytics?.scores || {}).filter(([,v]) => Number(v) > 0).map(([k,v]) => `${esc(k)}:${Number(v).toFixed(2)}`).join('<br>') || '—'}
+        </td>
         <td>
           <span class="badge ${m.decision_type.includes('ai_')?'badge-purple':(m.decision_type==='escalated'?'badge-red':'badge-blue')}">
             ${m.decision_type}
           </span>
         </td>
         <td title="${esc(m.reason)}">${esc((m.reason||'').substring(0,40))}</td>
-        <td>${(m.confidence||0).toFixed(2)}</td>
         <td title="${esc(m.prompt_hash||'')}">${esc(m.ai_model || '—')}</td>
-        <td>${m.ai_tokens > 0 ? m.ai_tokens : '—'}</td>
-        <td>${m.latency_ms ? `${m.latency_ms}ms` : '—'}</td>
         <td><span class="badge ${m.reply_sent?'badge-green':'badge-gray'}">${m.reply_sent?'yes':'no'}</span></td>
       </tr>`).join('')}</tbody></table>`;
   } catch (_) {}

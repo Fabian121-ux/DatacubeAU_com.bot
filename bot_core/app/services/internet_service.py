@@ -160,8 +160,8 @@ class InternetService:
                 service=service,
                 query=query,
                 reply_text=(
-                    "🌐 Internet search limit reached.\n\n"
-                    f"Used: {quota['used']}/{quota['limit']}\n"
+                    "*Internet Limit Reached*\n\n"
+                    f"Used:\n{quota['used']}/{quota['limit']}\n\n"
                     "Please try again tomorrow."
                 ),
                 success=False,
@@ -213,7 +213,7 @@ class InternetService:
             return InternetResult(
                 service=service,
                 query=query,
-                reply_text=f"🌐 Internet service unavailable.\n\n{exc}",
+                reply_text=f"*Internet Service Unavailable*\n\n{exc}",
                 provider=provider,
                 success=False,
                 diagnostics={"internet": {"service": service, "provider": provider, "error": str(exc)}},
@@ -238,27 +238,27 @@ class InternetService:
 
     async def _web(self, query: str, *, provider: str) -> tuple[str, dict[str, Any], str, None]:
         if provider == "tavily" and settings.tavily_api_key:
-            return await self._tavily(query, title="🔎 Web Search")
+            return await self._tavily(query, title="Web Search")
         if provider == "brave" and settings.brave_search_api_key:
             return await self._brave_search_endpoint(
                 "web",
                 query,
-                title="🔎 Web Search",
+                title="Web Search",
                 url="https://api.search.brave.com/res/v1/web/search",
             )
-        return await self._searxng(query, title="🔎 Web Search", service="web")
+        return await self._searxng(query, title="Web Search", service="web")
 
     async def _news(self, query: str, *, provider: str) -> tuple[str, dict[str, Any], str, None]:
         if provider == "brave" and settings.brave_search_api_key:
             return await self._brave_search_endpoint(
                 "news",
                 query,
-                title="📰 News",
+                title="News",
                 url="https://api.search.brave.com/res/v1/news/search",
             )
         if provider == "tavily" and settings.tavily_api_key:
-            return await self._tavily(f"latest news {query}", title="📰 News")
-        return await self._searxng(query, title="📰 News", service="news")
+            return await self._tavily(f"latest news {query}", title="News")
+        return await self._searxng(query, title="News", service="news")
 
     async def _youtube(self, query: str, *, provider: str) -> tuple[str, dict[str, Any], str, None]:
         if settings.youtube_api_key:
@@ -286,24 +286,24 @@ class InternetService:
                             "description": snippet.get("description") or "",
                         }
                     )
-            return self._format_results("▶️ YouTube", query, items), payload, "youtube", None
+            return self._format_results("YouTube", query, items), payload, "youtube", None
         searx_query = query if "youtube" in normalize_text(query) else f"site:youtube.com {query}"
-        return await self._searxng(searx_query, title="▶️ YouTube", service="youtube")
+        return await self._searxng(searx_query, title="YouTube", service="youtube")
 
     async def _image(self, query: str, *, provider: str) -> tuple[str, dict[str, Any], str, None]:
         if provider == "brave" and settings.brave_search_api_key:
             return await self._brave_search_endpoint(
                 "image",
                 query,
-                title="🖼️ Image Search",
+                title="Image Search",
                 url="https://api.search.brave.com/res/v1/images/search",
             )
-        return await self._searxng(query, title="🖼️ Image Search", service="image")
+        return await self._searxng(query, title="Image Search", service="image")
 
     async def _sticker(self, query: str, *, provider: str) -> tuple[str, dict[str, Any], str, dict[str, str] | None]:
         if settings.giphy_api_key:
             return await self._giphy(query, media_kind="stickers")
-        return await self._searxng(f"{query} sticker transparent png", title="🏷️ Sticker Search", service="sticker")
+        return await self._searxng(f"{query} sticker transparent png", title="Sticker Search", service="sticker")
 
     async def _giphy(self, query: str, *, media_kind: str) -> tuple[str, dict[str, Any], str, dict[str, str] | None]:
         if not settings.giphy_api_key:
@@ -326,7 +326,7 @@ class InternetService:
             if not media_url and url:
                 media_url = url
             items.append({"title": title, "url": url or item.get("url") or "", "description": item.get("url") or ""})
-        label = "🎬 Giphy"
+        label = "Giphy"
         answer = self._format_results(label, query, items)
         media = {"url": media_url, "type": "image", "caption": f"{label}: {title}"} if media_url else None
         return answer, payload, "giphy", media
@@ -355,7 +355,7 @@ class InternetService:
         code = current.get("weather_code")
         display_name = place.get("display_name") or location
         lines = [
-            f"🌦️ Weather: {self._short_place_name(display_name)}",
+            f"*Weather*\n\nLocation:\n{self._short_place_name(display_name)}",
             "",
             f"Condition:\n{self.weather_code_label(code)}",
             "",
@@ -383,7 +383,7 @@ class InternetService:
                 continue
             if result is not None:
                 return (
-                    f"💱 Currency\n\n{amount:g} {from_code} = {float(result):,.2f} {to_code}\n\nRate:\n{rate}",
+                    f"*Currency*\n\n{amount:g} {from_code} = {float(result):,.2f} {to_code}\n\nRate:\n{rate}",
                     payload,
                     provider_name,
                     None,
@@ -635,7 +635,7 @@ class InternetService:
         }.get(service, "!search")
         owner_hint = "/internet on" if reason == "internet_disabled" else "/internet on"
         return (
-            "🌐 Internet services are disabled for this request.\n\n"
+            "*Internet Disabled*\n\n"
             f"Use:\n{command} <query>\n\n"
             f"Owner can enable it with:\n{owner_hint}"
         )

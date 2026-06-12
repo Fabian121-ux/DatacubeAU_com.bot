@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     typing_delay_enabled: bool = Field(default=True, alias="TYPING_DELAY_ENABLED")
     min_typing_delay_seconds: float = Field(default=1.0, alias="MIN_TYPING_DELAY_SECONDS")
     max_typing_delay_seconds: float = Field(default=6.0, alias="MAX_TYPING_DELAY_SECONDS")
-    show_source_badges: bool = Field(default=True, alias="SHOW_SOURCE_BADGES")
+    show_source_badges: bool = Field(default=False, alias="SHOW_SOURCE_BADGES")
     show_context_badges: bool = Field(default=True, alias="SHOW_CONTEXT_BADGES")
     enable_signature_style: bool = Field(default=True, alias="ENABLE_SIGNATURE_STYLE")
 
