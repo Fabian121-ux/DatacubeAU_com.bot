@@ -21,10 +21,13 @@ from app.models.schema import (
     FeedbackReview,
     ForcedReplyTarget,
     FAQEntry,
+    FAQImportCandidate,
     GroupMetadata,
+    IdentityRegistryEntry,
     InternetCache,
     InternetUsageEvent,
     Message,
+    CommandCatalogEntry,
     UserTrigger,
     UserMemory,
     UserMemoryTimeline,
@@ -64,7 +67,10 @@ async def db_session():
             UserTrigger,
             UserMemoryTimeline,
             UserMemory,
+            FAQImportCandidate,
             FAQEntry,
+            IdentityRegistryEntry,
+            CommandCatalogEntry,
             Contact,
         ):
             await session.execute(delete(model))
@@ -86,7 +92,10 @@ async def db_session():
             UserTrigger,
             UserMemoryTimeline,
             UserMemory,
+            FAQImportCandidate,
             FAQEntry,
+            IdentityRegistryEntry,
+            CommandCatalogEntry,
             Contact,
         ):
             await session.execute(delete(model))

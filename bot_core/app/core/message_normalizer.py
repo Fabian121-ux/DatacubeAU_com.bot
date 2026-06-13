@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import settings
@@ -19,6 +19,7 @@ class NormalizedMessage:
     message_type: str
     is_bot_mentioned: bool
     payload: dict[str, Any]
+    sender_alternate_ids: list[str] = field(default_factory=list)
 
 
 class MessageNormalizer:
@@ -27,9 +28,22 @@ class MessageNormalizer:
         if not isinstance(payload, dict):
             payload = {}
 
-        sender_id = str(payload.get("from") or payload.get("sender", {}).get("id") or "unknown@local")
+        chat_id = str(payload.get("chatId") or payload.get("chat", {}).get("id") or payload.get("from") or "unknown-chat")
+        sender_candidates = self._sender_id_candidates(payload, chat_id)
+        sender_id = sender_candidates[0] if sender_candidates else "unknown@local"
+        alternate_ids = sender_candidates[1:]
         chat_id = str(payload.get("chatId") or payload.get("chat", {}).get("id") or sender_id or "unknown-chat")
-        sender_name = payload.get("notifyName") or payload.get("pushName") or payload.get("sender", {}).get("name")
+        sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+        contact = payload.get("contact") if isinstance(payload.get("contact"), dict) else {}
+        sender_name = (
+            payload.get("notifyName")
+            or payload.get("pushName")
+            or sender.get("pushName")
+            or sender.get("name")
+            or contact.get("pushName")
+            or contact.get("name")
+            or contact.get("shortName")
+        )
 
         message_text = self._extract_text(payload)
         normalized = normalize_text(message_text)
@@ -47,7 +61,39 @@ class MessageNormalizer:
             message_type=message_type,
             is_bot_mentioned=self._is_mentioned(message_text, mentions),
             payload=payload,
+            sender_alternate_ids=alternate_ids,
         )
+
+    @classmethod
+    def _sender_id_candidates(cls, payload: dict[str, Any], chat_id: str) -> list[str]:
+        sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+        raw_values = [
+            payload.get("participant"),
+            payload.get("participantId"),
+            payload.get("author"),
+            payload.get("authorId"),
+            payload.get("senderId"),
+            sender.get("id"),
+            sender.get("_serialized"),
+            payload.get("from"),
+            sender.get("lid"),
+            sender.get("phone"),
+            payload.get("fromMe") if isinstance(payload.get("fromMe"), str) else None,
+        ]
+        if not cls._is_group(payload, chat_id):
+            raw_values.append(chat_id)
+        candidates: list[str] = []
+        for raw in raw_values:
+            if raw is None:
+                continue
+            value = str(raw).strip()
+            if not value or value in {"True", "False"}:
+                continue
+            if value.endswith("@g.us"):
+                continue
+            if value not in candidates:
+                candidates.append(value)
+        return candidates
 
     @staticmethod
     def _is_group(payload: dict[str, Any], chat_id: str) -> bool:

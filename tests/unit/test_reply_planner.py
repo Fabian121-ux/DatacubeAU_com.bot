@@ -75,9 +75,19 @@ class FakeFAQ:
         self.score = score
         self.calls = 0
 
-    async def search_faq(self, *_: Any) -> tuple[FakeFAQEntry | None, float]:
+    async def search_faq(self, *_: Any, **__: Any) -> tuple[FakeFAQEntry | None, float]:
         self.calls += 1
         return self.entry, self.score
+
+
+class FakeIdentityRegistry:
+    async def resolve_references(self, text_value: str) -> str:
+        return text_value
+
+
+class FakeCommandCatalog:
+    async def is_enabled(self, _: str) -> bool:
+        return True
 
 
 class FakeRetrieval:
@@ -274,9 +284,11 @@ def make_planner(
     planner.session = None
     planner.rules = FakeRules(rule_reply)
     planner.faq = FakeFAQ(faq_entry)
+    planner.identity_registry = FakeIdentityRegistry()
     planner.retrieval = FakeRetrieval(cache_hit, search_result)
     planner.memory_service = FakeMemory(memory_reply, memory_context, memory_continuation)
     planner.internet_service = FakeInternet()
+    planner.command_catalog = FakeCommandCatalog()
     planner.rate_limiter = FakeRateLimiter(user_allowed=user_allowed, global_allowed=global_allowed, ai_quota_allowed=ai_quota_allowed)
     planner.bot_config = FakeBotConfig(ai_enabled, strictness=strictness, threshold=threshold)
     planner.formatter = WhatsAppExperienceFormatter()
@@ -470,6 +482,20 @@ async def test_global_chat_enabled_profile_allows_ai_without_bang_ask(monkeypatc
     assert reply.source_diagnostics["global_chat"]["active"] is True
     assert reply.reply_text.startswith("*Zina*")
     assert "Welcome back Kingsley." in reply.reply_text
+
+
+@pytest.mark.asyncio
+async def test_general_knowledge_routes_to_ai_after_local_sources_miss(monkeypatch, mock_openrouter) -> None:
+    monkeypatch.setattr("app.core.reply_planner.OpenRouterClient", mock_openrouter)
+    monkeypatch.setattr(settings, "ai_enabled", True)
+    planner = make_planner(ai_enabled=True)
+
+    reply = await planner.plan(make_message("What is the psychology behind humanity?"), contact_id=1)
+
+    assert reply.decision_type == DecisionType.AI_REPLY_LIGHT
+    assert reply.source_diagnostics["source"] == "AI"
+    assert "general knowledge requires synthesis" in reply.source_diagnostics["ai"]["invocation_reason"]
+    assert mock_openrouter.calls == 1
 
 
 @pytest.mark.asyncio

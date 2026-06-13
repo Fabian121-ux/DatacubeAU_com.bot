@@ -26,6 +26,7 @@ from app.models.schema import (
     ConversationTimeline,
     FAQEntry,
     GroupConfig,
+    IdentityRegistryEntry,
     InternetCache,
     InternetUsageEvent,
     KnowledgeDocument,
@@ -38,7 +39,9 @@ from app.models.schema import (
     UserMemoryTimeline,
 )
 from app.services.bot_config_service import BotConfigService
+from app.services.command_catalog_service import CommandCatalogService
 from app.services.faq_service import FAQService
+from app.services.identity_registry_service import IdentityRegistryService
 from app.services.memory_service import MemoryService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
@@ -107,6 +110,30 @@ class IdentityUpdate(BaseModel):
 
 class FAQSaveIn(BaseModel):
     content: str
+
+
+class FAQImportIn(BaseModel):
+    content: str
+    source_name: str | None = None
+    category: str = "General"
+
+
+class CommandToggleIn(BaseModel):
+    name: str
+    enabled: bool
+
+
+class IdentityRegistryUpdate(BaseModel):
+    registry_key: str
+    category: str | None = None
+    name: str | None = None
+    description: str | None = None
+    aliases: list[str] | None = None
+    keywords: list[str] | None = None
+    entities: list[str] | None = None
+    answer: str | None = None
+    facts_json: dict[str, Any] | None = None
+    enabled: bool | None = None
 
 
 class MemoryUpdate(BaseModel):
@@ -201,12 +228,41 @@ async def recent_router_decisions(
             for entity_id, details_json in audit_rows
             if entity_id is not None
         }
+    inbound_ids = [row[0].message_id for row in rows]
+    inbound_map: dict[int, Message] = {}
+    final_response_map: dict[int, str] = {}
+    if inbound_ids:
+        inbound_messages = (
+            await db.execute(select(Message).where(Message.id.in_(inbound_ids)))
+        ).scalars().all()
+        inbound_map = {message.id: message for message in inbound_messages}
+        chat_ids = sorted({message.chat_id for message in inbound_messages})
+        outbound_messages = (
+            await db.execute(
+                select(Message)
+                .where(Message.direction == "outbound")
+                .where(Message.chat_id.in_(chat_ids))
+                .order_by(Message.created_at.asc())
+            )
+        ).scalars().all()
+        for inbound in inbound_messages:
+            final = next(
+                (
+                    outbound
+                    for outbound in outbound_messages
+                    if outbound.chat_id == inbound.chat_id and outbound.created_at >= inbound.created_at
+                ),
+                None,
+            )
+            if final:
+                final_response_map[inbound.id] = final.message_text
     return {
         "count": len(rows),
         "items": [
             {
                 "id": row[0].id,
                 "message_id": row[0].message_id,
+                "message": (inbound_map.get(row[0].message_id).message_text if inbound_map.get(row[0].message_id) else None),
                 "question": audit_map.get(str(row[0].id), {}).get("question"),
                 "intent": audit_map.get(str(row[0].id), {}).get("intent"),
                 "decision_type": row[0].decision_type,
@@ -220,10 +276,30 @@ async def recent_router_decisions(
                 "latency_ms": row[5] or 0,
                 "router_analytics": audit_map.get(str(row[0].id), {}).get("router_analytics") or {},
                 "source_diagnostics": audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {},
+                "expanded_query": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("expanded_query"),
+                "topic": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("topic"),
+                "entities": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("entities") or [],
+                "memory_hits": ((audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("hits") or {}).get("memory", 0),
+                "faq_hits": ((audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("hits") or {}).get("faq", 0),
+                "knowledge_hits": ((audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("hits") or {}).get("knowledge", 0),
+                "internet_hits": ((audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("hits") or {}).get("internet", 0),
+                "ai_hits": ((audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("hits") or {}).get("ai", 0),
+                "selected_source": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("selected_source"),
+                "selected_route": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("selected_route"),
+                "rejected_routes": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("rejected_routes") or [],
+                "final_response": final_response_map.get(row[0].message_id),
             }
             for row in rows
         ],
     }
+
+
+@router.get("/conversation-inspector")
+async def conversation_inspector(
+    limit: int = Query(default=settings.recent_items_limit, ge=1, le=200),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    return await recent_router_decisions(limit=limit, db=db)
 
 
 @router.get("/messages/recent")
@@ -992,6 +1068,7 @@ async def identity_status(
     timeline_count = (await db.execute(select(func.count(ConversationTimeline.id)))).scalar_one()
     summary_count = (await db.execute(select(func.count(ConversationSummary.id)))).scalar_one()
     cache_count = (await db.execute(select(func.count(QACache.id)))).scalar_one()
+    identity_count = (await db.execute(select(func.count(IdentityRegistryEntry.id)).where(IdentityRegistryEntry.is_enabled.is_(True)))).scalar_one()
     source_rows = (
         await db.execute(
             select(KnowledgeDocument.source_type, func.count(KnowledgeDocument.id))
@@ -1012,8 +1089,60 @@ async def identity_status(
             "conversation_timeline_entries": timeline_count,
             "conversation_summaries": summary_count,
             "qa_cache_entries": cache_count,
+            "identity_registry_entries": identity_count,
         },
     }
+
+
+@router.get("/identity/registry")
+async def get_identity_registry(
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    svc = IdentityRegistryService(db)
+    entries = await svc.enabled_entries()
+    return {"count": len(entries), "items": [svc.serialize(row) for row in entries]}
+
+
+@router.post("/identity/registry")
+async def upsert_identity_registry(
+    payload: IdentityRegistryUpdate,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    key = payload.registry_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="registry_key is required")
+    row = (
+        await db.execute(select(IdentityRegistryEntry).where(IdentityRegistryEntry.registry_key == key).limit(1))
+    ).scalar_one_or_none()
+    if not row:
+        if not payload.name or not payload.description or not payload.answer:
+            raise HTTPException(status_code=400, detail="name, description, and answer are required for a new identity registry entry")
+        row = IdentityRegistryEntry(
+            registry_key=key,
+            category=payload.category or "Identity",
+            name=payload.name,
+            description=payload.description,
+            aliases=payload.aliases or [],
+            keywords=payload.keywords or [],
+            entities=payload.entities or [],
+            answer=payload.answer,
+            facts_json=payload.facts_json or {},
+            is_enabled=True if payload.enabled is None else payload.enabled,
+            created_at=utcnow(),
+            updated_at=utcnow(),
+        )
+        db.add(row)
+    else:
+        for field in ("category", "name", "description", "aliases", "keywords", "entities", "answer", "facts_json"):
+            value = getattr(payload, field)
+            if value is not None:
+                setattr(row, field, value)
+        if payload.enabled is not None:
+            row.is_enabled = payload.enabled
+        row.updated_at = utcnow()
+    db.add(AuditLog(action="identity_registry_updated", entity_type="identity_registry", entity_id=key, details_json={"registry_key": key}))
+    await db.commit()
+    return {"ok": True, "item": IdentityRegistryService.serialize(row)}
 
 
 @router.get("/faq")
@@ -1022,21 +1151,13 @@ async def get_faq(
 ) -> dict[str, Any]:
     content = CORE_FAQ_PATH.read_text(encoding="utf-8") if CORE_FAQ_PATH.exists() else ""
     rows = (await db.execute(select(FAQEntry).order_by(FAQEntry.id))).scalars().all()
+    analytics = await FAQService(db).analytics()
     return {
         "path": str(CORE_FAQ_PATH),
         "content": content,
         "count": len(rows),
-        "items": [
-            {
-                "id": row.id,
-                "question": row.question,
-                "answer": row.answer,
-                "is_enabled": row.is_enabled,
-                "created_at": row.created_at,
-                "updated_at": row.updated_at,
-            }
-            for row in rows
-        ],
+        "items": [FAQService.serialize_entry(row) for row in rows],
+        "analytics": analytics,
     }
 
 
@@ -1057,6 +1178,127 @@ async def save_faq(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     return await _save_and_sync_faq(payload.content, db, action="faq_saved", filename=None)
+
+
+@router.get("/faq/analytics")
+async def faq_analytics(
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    return await FAQService(db).analytics()
+
+
+@router.post("/faq/import")
+async def import_faq(
+    payload: FAQImportIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="FAQ import content is empty")
+    service = FAQService(db)
+    result = await service.import_candidates(
+        payload.content,
+        source_name=payload.source_name or "admin",
+        default_category=payload.category,
+    )
+    db.add(
+        AuditLog(
+            action="faq_imported",
+            entity_type="faq_import_candidates",
+            entity_id=None,
+            details_json=result,
+        )
+    )
+    await db.commit()
+    return {"ok": True, **result}
+
+
+@router.get("/faq/candidates")
+async def faq_candidates(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=300),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = FAQService(db)
+    rows = await service.list_candidates(status=status, limit=limit)
+    return {"count": len(rows), "items": [service.serialize_candidate(row) for row in rows]}
+
+
+@router.post("/faq/candidates/{candidate_id}/approve")
+async def approve_faq_candidate(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = FAQService(db)
+    try:
+        entry = await service.approve_candidate(candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="faq_candidate_approved",
+            entity_type="faq_entries",
+            entity_id=str(entry.id),
+            details_json={"candidate_id": candidate_id, "refresh": _knowledge_refresh_targets()},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize_entry(entry)}
+
+
+@router.post("/faq/candidates/{candidate_id}/reject")
+async def reject_faq_candidate(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = FAQService(db)
+    try:
+        candidate = await service.reject_candidate(candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="faq_candidate_rejected",
+            entity_type="faq_import_candidates",
+            entity_id=str(candidate.id),
+            details_json={"candidate_id": candidate_id},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize_candidate(candidate)}
+
+
+@router.get("/commands")
+async def list_commands(
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = CommandCatalogService(db)
+    items = await service.list_commands()
+    sections: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        sections.setdefault(item["category"], []).append(item)
+    return {"count": len(items), "sections": sections, "items": items}
+
+
+@router.post("/commands/toggle")
+async def toggle_command(
+    payload: CommandToggleIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = CommandCatalogService(db)
+    try:
+        row = await service.set_enabled(payload.name, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="command_catalog_updated",
+            entity_type="command_catalog",
+            entity_id=payload.name,
+            details_json={"enabled": payload.enabled},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize(row)}
 
 
 @router.get("/queue")
@@ -1540,11 +1782,30 @@ async def _save_and_sync_faq(
             action=action,
             entity_type="faq_entries",
             entity_id=None,
-            details_json={"filename": filename, "entries": count, "path": str(CORE_FAQ_PATH)},
+            details_json={
+                "filename": filename,
+                "entries": count,
+                "path": str(CORE_FAQ_PATH),
+                "refresh": _knowledge_refresh_targets(),
+            },
         )
     )
     await db.commit()
-    return {"ok": True, "entries": count, "path": str(CORE_FAQ_PATH)}
+    return {"ok": True, "entries": count, "path": str(CORE_FAQ_PATH), "refresh": _knowledge_refresh_targets()}
+
+
+def _knowledge_refresh_targets() -> list[str]:
+    return [
+        "identity_engine",
+        "help_engine",
+        "project_responses",
+        "command_help",
+        "router_faq_index",
+        "semantic_search_index",
+        "conversation_engine",
+        "project_intelligence",
+        "ai_router_analytics",
+    ]
 
 
 async def _ai_usage_totals(db: AsyncSession, since) -> dict[str, int]:

@@ -15,7 +15,9 @@ from app.core.rules_engine import RulesEngine
 from app.models.enums import AIMode, ChatType, DecisionType
 from app.models.schema import AICall, ConversationSession, Message
 from app.services.bot_config_service import BotConfigService
+from app.services.command_catalog_service import CommandCatalogService
 from app.services.faq_service import FAQService
+from app.services.identity_registry_service import IdentityRegistryService
 from app.services.internet_service import InternetService
 from app.services.memory_service import MemoryContextPackage, MemoryService
 from app.services.openrouter_client import OpenRouterClient, OpenRouterClientError
@@ -50,9 +52,11 @@ class ReplyPlanner:
         self.session = session
         self.rules = RulesEngine(session)
         self.faq = FAQService(session)
+        self.identity_registry = IdentityRegistryService(session)
         self.retrieval = RetrievalService(session)
         self.memory_service = MemoryService(session)
         self.internet_service = InternetService(session)
+        self.command_catalog = CommandCatalogService(session)
         self.rate_limiter = RateLimiter(session)
         self.bot_config = BotConfigService(session)
         self.formatter = WhatsAppExperienceFormatter()
@@ -92,6 +96,14 @@ class ReplyPlanner:
         internet_request: tuple[str, str, str] | None = None
         service, command, query = self.internet_service.parse_user_command(message.message_text)
         if service:
+            if not await self.command_catalog.is_enabled(command):
+                return await self._apply_identity_guard(PlannedReply(
+                    decision_type=DecisionType.STATIC_REPLY,
+                    reason=f"command disabled: {command}",
+                    should_reply=True,
+                    reply_text="This command is currently disabled.",
+                    source_diagnostics={"source": "Command", "internet": {"command": command, "enabled": False}},
+                ))
             if not query:
                 return await self._apply_identity_guard(PlannedReply(
                     decision_type=DecisionType.STATIC_REPLY,
@@ -199,20 +211,30 @@ class ReplyPlanner:
             ))
 
         # 4. Core FAQ layer.
-        faq_entry, faq_score = await self.faq.search_faq(message.message_text)
+        context_entities = []
+        active_topic = context_diagnostics.get("active_topic") if isinstance(context_diagnostics, dict) else None
+        if isinstance(active_topic, str) and active_topic:
+            context_entities.append(active_topic)
+        faq_entry, faq_score = await self.faq.search_faq(message.message_text, context_entities=context_entities)
         if faq_entry:
+            faq_answer = await self.identity_registry.resolve_references(faq_entry.answer)
             return await self._apply_identity_guard(PlannedReply(
                 decision_type=DecisionType.FAQ_REPLY,
                 reason="core FAQ match above threshold",
                 should_reply=True,
-                reply_text=faq_entry.answer,
+                reply_text=faq_answer,
                 kb_confidence=faq_score,
                 source_diagnostics={
+                    "source": "FAQ",
                     "faq": {
                         "matched": True,
                         "score": faq_score,
                         "entry_id": faq_entry.id,
                         "question": faq_entry.question,
+                        "intent": getattr(faq_entry, "intent", ""),
+                        "category": getattr(faq_entry, "category", ""),
+                        "entities": getattr(faq_entry, "entities", None) or [],
+                        "keywords": getattr(faq_entry, "keywords", None) or [],
                     },
                     "context": context_diagnostics,
                 },
@@ -309,9 +331,10 @@ class ReplyPlanner:
             or global_chat_one_shot
             or intent_result.intent in {MessageIntent.GENERAL_KNOWLEDGE, MessageIntent.OPINION_REQUEST}
         )
+        direct_ai_allowed = intent_result.intent in {MessageIntent.GENERAL_KNOWLEDGE, MessageIntent.OPINION_REQUEST}
         ai_enabled = (
-            global_chat_active
-            and global_chat_system_enabled
+            (global_chat_active or direct_ai_allowed)
+            and (global_chat_system_enabled or direct_ai_allowed)
             and ai_needed
             and (settings.ai_enabled or ai_enabled_config or bool(settings.openrouter_api_key))
         )
@@ -360,6 +383,7 @@ class ReplyPlanner:
                     contact_id,
                     memory_package=memory_package,
                     global_chat={"one_shot": global_chat_one_shot, "active": global_chat_active},
+                    invocation_reason=self._ai_invocation_reason(message.message_text, intent_result, search_result.confidence),
                 )
                 if ai_plan:
                     return ai_plan
@@ -460,6 +484,7 @@ class ReplyPlanner:
                 "original_question": message.message_text,
                 "expanded_question": expanded,
                 "active_topic": active_topic,
+                "entities": [active_topic],
             },
         )
 
@@ -545,6 +570,7 @@ class ReplyPlanner:
         *,
         memory_package: MemoryContextPackage | None = None,
         global_chat: dict[str, object] | None = None,
+        invocation_reason: str = "local knowledge insufficient",
     ) -> PlannedReply | None:
         client = OpenRouterClient()
         mode = AIMode.DEEP if looks_complex(message.message_text) else AIMode.LIGHT
@@ -640,6 +666,7 @@ class ReplyPlanner:
                     },
                     "ai": {
                         "used": True,
+                        "invocation_reason": invocation_reason,
                         "mode": mode.value,
                         "model": result.model,
                         "prompt_hash": result.prompt_hash,
@@ -772,6 +799,7 @@ class ReplyPlanner:
         kb_info = reply.source_diagnostics.get("kb")
         internet_info = reply.source_diagnostics.get("internet")
         ai_info = reply.source_diagnostics.get("ai")
+        context_info = reply.source_diagnostics.get("context")
 
         memory_score = 0.0
         if isinstance(memory_info, dict):
@@ -801,7 +829,11 @@ class ReplyPlanner:
         }
         reply.source_diagnostics["router_analytics"] = {
             "question": active_question,
+            "expanded_query": context_info.get("expanded_question") if isinstance(context_info, dict) else active_question,
+            "topic": context_info.get("active_topic") if isinstance(context_info, dict) else None,
+            "entities": self._analytics_entities(faq_info, kb_info, context_info),
             "intent": intent.intent.value,
+            "intent_confidence": intent.confidence,
             "scores": {
                 "memory": round(memory_score, 2),
                 "timeline": round(memory_score if isinstance(memory_info, dict) and memory_info.get("timeline_entries") else 0.0, 2),
@@ -810,10 +842,39 @@ class ReplyPlanner:
                 "internet": round(internet_score, 2),
                 "ai": round(ai_score, 2),
             },
+            "hits": {
+                "memory": int(memory_info.get("retrieved_items") or 0) if isinstance(memory_info, dict) else 0,
+                "faq": 1 if isinstance(faq_info, dict) and faq_info.get("matched") else 0,
+                "knowledge": len(kb_info.get("chunks") or []) if isinstance(kb_info, dict) else len(getattr(reply, "matched_chunks", []) or []),
+                "internet": 1 if isinstance(internet_info, dict) and internet_info.get("success") else 0,
+                "ai": 1 if ai_score else 0,
+            },
             "selected_source": source,
+            "selected_route": source,
             "rejected_sources": rejected,
+            "rejected_routes": rejected,
             "reason": getattr(reply, "reason", ""),
+            "decision_reason": getattr(reply, "reason", ""),
         }
+
+    @staticmethod
+    def _analytics_entities(*items: object) -> list[str]:
+        values: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("entities", "active_topic", "topic"):
+                raw = item.get(key)
+                if isinstance(raw, list):
+                    for value in raw:
+                        text = str(value).strip()
+                        if text and text not in values:
+                            values.append(text)
+                elif raw:
+                    text = str(raw).strip()
+                    if text and text not in values:
+                        values.append(text)
+        return values
 
     @staticmethod
     def _should_show_source(reply: PlannedReply, source: str) -> bool:
@@ -993,6 +1054,16 @@ class ReplyPlanner:
             "architecture",
         )
         return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _ai_invocation_reason(text_value: str, intent_result: IntentResult, kb_confidence: float) -> str:
+        if intent_result.intent == MessageIntent.GENERAL_KNOWLEDGE:
+            return f"general knowledge requires synthesis after local confidence {kb_confidence:.2f}"
+        if intent_result.intent == MessageIntent.OPINION_REQUEST:
+            return f"opinion or recommendation requires reasoning after local confidence {kb_confidence:.2f}"
+        if looks_complex(text_value):
+            return f"complex question requires reasoning after local confidence {kb_confidence:.2f}"
+        return f"local knowledge insufficient at confidence {kb_confidence:.2f}"
 
     @staticmethod
     def _memory_global_chat_enabled(memory_package: MemoryContextPackage | None) -> bool:

@@ -123,9 +123,11 @@ tr:hover td{background:var(--surface2)}
       <button data-tab="identity"><span class="icon">👤</span><span>Identity</span></button>
       <button data-tab="knowledge"><span class="icon">📚</span><span>Knowledge Base</span></button>
       <button data-tab="faq"><span class="icon">❓</span><span>FAQ Manager</span></button>
+      <button data-tab="commands"><span class="icon">⌘</span><span>Commands</span></button>
       <button data-tab="groups"><span class="icon">👥</span><span>Groups</span></button>
       <button data-tab="rules"><span class="icon">📋</span><span>Reply Rules</span></button>
       <button data-tab="decisions"><span class="icon">🐞</span><span>Debugger</span></button>
+      <button data-tab="inspector"><span class="icon">🔎</span><span>Inspector</span></button>
       <button data-tab="waha"><span class="icon">📱</span><span>WAHA</span></button>
       <button data-tab="queue"><span class="icon">📬</span><span>Queue</span></button>
       <button data-tab="aiusage"><span class="icon">🤖</span><span>AI Usage</span></button>
@@ -199,7 +201,8 @@ tr:hover td{background:var(--surface2)}
 
     <!-- FAQ MANAGER -->
     <div id="tab-faq" class="panel">
-      <h2>❓ Core FAQ Manager</h2>
+      <h2>❓ FAQ Knowledge Layer</h2>
+      <div class="stats" id="faqStats"></div>
       <div class="card">
         <div class="form-row">
           <div><label>Markdown File</label><input type="file" id="faqUpload" accept=".md,.txt"></div>
@@ -215,8 +218,36 @@ tr:hover td{background:var(--surface2)}
         </div>
       </div>
       <div class="card">
-        <h3>Parsed Entries</h3>
+        <h3>Import Candidates</h3>
+        <div class="form-wide">
+          <label>Plain Text, Markdown, TXT, or MD</label>
+          <textarea id="faqImportText" rows="8" style="min-height:160px" placeholder="Who is Fabian?\n\nFabian is an AI systems builder.\n\nWhat is Zina?\n\nZina is Fabian's AI assistant."></textarea>
+        </div>
+        <div class="form-row" style="margin-top:.7rem">
+          <div><label>Category</label><select id="faqImportCategory"><option>General</option><option>Identity</option><option>Projects</option><option>Datacube AU</option><option>Zina</option><option>ZinaX</option><option>Commands</option><option>Owner</option><option>Knowledge</option><option>Services</option><option>Contact</option><option>Custom</option></select></div>
+          <div><button class="btn btn-primary" onclick="importFaq()">Queue Import</button></div>
+          <div><button class="btn btn-ghost" onclick="loadFaqCandidates()">Refresh Queue</button></div>
+        </div>
+        <div id="faqCandidates" class="tbl-wrap" style="margin-top:1rem">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Published FAQ</h3>
         <div id="faqEntries">Loading…</div>
+      </div>
+      <div class="card">
+        <h3>Analytics</h3>
+        <div id="faqAnalytics">Loading…</div>
+      </div>
+    </div>
+
+    <!-- COMMANDS -->
+    <div id="tab-commands" class="panel">
+      <h2>⌘ Command Center</h2>
+      <div class="card">
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadCommands()">Refresh</button>
+        </div>
+        <div id="commandsPanel">Loading…</div>
       </div>
     </div>
 
@@ -319,6 +350,17 @@ tr:hover td{background:var(--surface2)}
           <button class="btn btn-ghost btn-sm" onclick="loadDecisions()">Refresh</button>
         </div>
         <div class="tbl-wrap" id="decisionsTable">Loading…</div>
+      </div>
+    </div>
+
+    <!-- CONVERSATION INSPECTOR -->
+    <div id="tab-inspector" class="panel">
+      <h2>🔎 Conversation Inspector</h2>
+      <div class="card">
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadConversationInspector()">Refresh</button>
+        </div>
+        <div class="tbl-wrap" id="conversationInspectorTable">Loading…</div>
       </div>
     </div>
 
@@ -538,7 +580,7 @@ function loadTab(tab) {
   const loaders = {
     status: loadStatus, rules: loadRules, memory: loadMemory,
     cache: loadCache, logs: loadLogsCombined, config: loadConfig,
-    knowledge: loadKnowledge, groups: loadGroups, decisions: loadDecisions,
+    knowledge: loadKnowledge, commands: loadCommands, groups: loadGroups, decisions: loadDecisions, inspector: loadConversationInspector,
     identity: loadIdentity, faq: loadFaq, queue: loadQueue, aiusage: loadAIUsage, internet: loadInternetUsage, profiles: loadProfiles, waha: loadWaha
   };
   if (loaders[tab]) loaders[tab]();
@@ -591,7 +633,7 @@ async function loadIdentityStatus() {
         <div class="detail"><div class="k">Assistant</div><div class="v">${esc(d.assistant_name)}<br>${esc(d.assistant_role)}</div></div>
         <div class="detail"><div class="k">Owner</div><div class="v">${esc(d.owner_name)}</div></div>
         <div class="detail"><div class="k">Personality</div><div class="v">${esc(d.active_personality_settings.tone)} · ${esc(d.active_personality_settings.reply_length)} · ${esc(d.active_personality_settings.technical_depth)}</div></div>
-        <div class="detail"><div class="k">Sources</div><div class="v">FAQ: ${sources.core_faq_entries || 0}<br>Docs: ${docText}<br>Profiles: ${sources.memory_profiles || 0}<br>Timeline: ${sources.conversation_timeline_entries || 0}<br>Summaries: ${sources.conversation_summaries || 0}<br>Cache: ${sources.qa_cache_entries || 0}</div></div>
+        <div class="detail"><div class="k">Sources</div><div class="v">Identity Registry: ${sources.identity_registry_entries || 0}<br>FAQ: ${sources.core_faq_entries || 0}<br>Docs: ${docText}<br>Profiles: ${sources.memory_profiles || 0}<br>Timeline: ${sources.conversation_timeline_entries || 0}<br>Summaries: ${sources.conversation_summaries || 0}<br>Cache: ${sources.qa_cache_entries || 0}</div></div>
       </div>
     `;
   } catch (_) {
@@ -629,16 +671,23 @@ async function loadFaq() {
   try {
     const d = await api('/admin/faq');
     document.getElementById('faqEditor').value = d.content || '';
+    renderFaqStats(d.analytics || {});
+    renderFaqAnalytics(d.analytics || {});
     const entries = document.getElementById('faqEntries');
-    if (!d.items.length) { entries.innerHTML = '<em>No FAQ entries parsed.</em>'; return; }
+    if (!d.items.length) { entries.innerHTML = '<em>No FAQ entries parsed.</em>'; loadFaqCandidates(); return; }
     entries.innerHTML = `<table>
-      <thead><tr><th>ID</th><th>Question</th><th>Answer</th><th>Enabled</th></tr></thead>
+      <thead><tr><th>ID</th><th>Category</th><th>Intent</th><th>Question</th><th>Answer</th><th>Usage</th><th>Success</th><th>Enabled</th></tr></thead>
       <tbody>${d.items.map(f => `<tr>
         <td>${f.id}</td>
+        <td><span class="badge badge-blue">${esc(f.category || 'General')}</span></td>
+        <td><span class="badge badge-purple">${esc(f.intent || 'custom')}</span></td>
         <td title="${esc(f.question)}">${esc((f.question||'').substring(0,70))}</td>
         <td title="${esc(f.answer)}">${esc((f.answer||'').substring(0,90))}</td>
-        <td><span class="badge ${f.is_enabled?'badge-green':'badge-gray'}">${f.is_enabled?'yes':'no'}</span></td>
+        <td>${f.usage_count || 0}</td>
+        <td>${Math.round((f.success_rate || 0) * 100)}%</td>
+        <td><span class="badge ${f.enabled?'badge-green':'badge-gray'}">${f.enabled?'yes':'no'}</span></td>
       </tr>`).join('')}</tbody></table>`;
+    loadFaqCandidates();
   } catch (_) {}
 }
 async function saveFaq() {
@@ -658,6 +707,107 @@ async function uploadFaq() {
   input.value = '';
   loadFaq();
   loadIdentityStatus();
+}
+async function importFaq() {
+  const content = document.getElementById('faqImportText').value.trim();
+  if (!content) return toast('Paste FAQ import text first', true);
+  const category = document.getElementById('faqImportCategory').value;
+  const r = await api('/admin/faq/import', { method: 'POST', body: JSON.stringify({ content, category, source_name: 'dashboard' }) });
+  toast(`FAQ candidates: ${r.created} queued, ${r.duplicates} duplicates`);
+  document.getElementById('faqImportText').value = '';
+  loadFaq();
+}
+async function loadFaqCandidates() {
+  try {
+    const d = await api('/admin/faq/candidates?limit=80');
+    const div = document.getElementById('faqCandidates');
+    if (!d.items.length) { div.innerHTML = '<em>No import candidates.</em>'; return; }
+    div.innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Status</th><th>Category</th><th>Question</th><th>Answer</th><th>Duplicate</th><th></th></tr></thead>
+      <tbody>${d.items.map(c => `<tr>
+        <td>${c.id}</td>
+        <td><span class="badge ${candidateBadge(c.status)}">${esc(c.status)}</span></td>
+        <td><span class="badge badge-blue">${esc(c.category || 'General')}</span></td>
+        <td title="${esc(c.question)}">${esc((c.question || '').substring(0,70))}</td>
+        <td title="${esc(c.answer)}">${esc((c.answer || '').substring(0,90))}</td>
+        <td>${c.duplicate_of_faq_id ? `#${c.duplicate_of_faq_id}` : '—'}</td>
+        <td>${c.status === 'approved' || c.status === 'rejected' ? '—' : `<button class="btn btn-primary btn-sm" onclick="approveFaqCandidate(${c.id})">Approve</button> <button class="btn btn-danger btn-sm" onclick="rejectFaqCandidate(${c.id})">Reject</button>`}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+function candidateBadge(status) {
+  if (status === 'approved') return 'badge-green';
+  if (status === 'rejected') return 'badge-red';
+  if (status === 'duplicate') return 'badge-orange';
+  return 'badge-blue';
+}
+async function approveFaqCandidate(id) {
+  await api(`/admin/faq/candidates/${id}/approve`, { method: 'POST' });
+  toast('FAQ candidate approved');
+  loadFaq();
+  loadIdentityStatus();
+}
+async function rejectFaqCandidate(id) {
+  await api(`/admin/faq/candidates/${id}/reject`, { method: 'POST' });
+  toast('FAQ candidate rejected');
+  loadFaqCandidates();
+}
+function renderFaqStats(a) {
+  const stats = document.getElementById('faqStats');
+  if (!stats) return;
+  stats.innerHTML = `
+    <div class="stat"><div class="val">${a.enabled_count || 0}</div><div class="lbl">Published</div></div>
+    <div class="stat"><div class="val">${a.pending_candidates || 0}</div><div class="lbl">Pending</div></div>
+    <div class="stat"><div class="val">${(a.duplicate_candidates || []).length}</div><div class="lbl">Duplicates</div></div>
+    <div class="stat"><div class="val">${Math.round((a.overall_success_rate || 0) * 100)}%</div><div class="lbl">Success</div></div>
+  `;
+}
+function renderFaqAnalytics(a) {
+  const div = document.getElementById('faqAnalytics');
+  if (!div) return;
+  const list = (title, rows) => `
+    <div class="detail" style="margin-bottom:.7rem">
+      <div class="k">${title}</div>
+      <div class="v">${(rows || []).length ? rows.slice(0,5).map(r => `${esc(r.question || '')} (${r.usage_count || 0} uses, ${r.failed_count || 0} missed)`).join('<br>') : 'none'}</div>
+    </div>`;
+  div.innerHTML = `
+    <div class="detail-grid">
+      ${list('Top FAQ', a.top_faq)}
+      ${list('Most Missed FAQ', a.most_missed_faq)}
+      ${list('Unused FAQ', a.unused_faqs)}
+      ${list('Duplicate FAQ', a.duplicate_candidates)}
+      ${list('Low Confidence FAQ', a.low_confidence_faqs)}
+    </div>`;
+}
+
+// ---- COMMANDS ----
+async function loadCommands() {
+  try {
+    const d = await api('/admin/commands');
+    const panel = document.getElementById('commandsPanel');
+    const sections = d.sections || {};
+    const order = ['User Commands', 'Owner Commands', 'Internet Commands', 'Media Commands', 'Memory Commands'];
+    panel.innerHTML = order.filter(name => sections[name]?.length).map(name => `
+      <div class="card" style="background:var(--surface2);margin-bottom:1rem">
+        <h3>${esc(name)}</h3>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Name</th><th>Description</th><th>Example</th><th>Permissions</th><th>Enabled</th><th></th></tr></thead>
+          <tbody>${sections[name].map(cmd => `<tr>
+            <td><strong>${esc(cmd.name)}</strong></td>
+            <td>${esc(cmd.description)}</td>
+            <td title="${esc(cmd.example)}">${esc((cmd.example || '').substring(0,70))}</td>
+            <td><span class="badge ${cmd.permissions === 'owner' ? 'badge-orange' : 'badge-blue'}">${esc(cmd.permissions)}</span></td>
+            <td><span class="badge ${cmd.enabled ? 'badge-green' : 'badge-gray'}">${cmd.enabled ? 'yes' : 'no'}</span></td>
+            <td><button class="btn btn-ghost btn-sm" onclick="toggleCommand('${esc(cmd.name)}', ${!cmd.enabled})">${cmd.enabled ? 'Disable' : 'Enable'}</button></td>
+          </tr>`).join('')}</tbody></table></div>
+      </div>
+    `).join('') || '<em>No commands found.</em>';
+  } catch (_) {}
+}
+async function toggleCommand(name, enabled) {
+  await api('/admin/commands/toggle', { method: 'POST', body: JSON.stringify({ name, enabled }) });
+  toast(enabled ? 'Command enabled' : 'Command disabled');
+  loadCommands();
 }
 
 // ---- KNOWLEDGE ----
@@ -773,6 +923,28 @@ async function loadDecisions() {
         <td title="${esc(m.reason)}">${esc((m.reason||'').substring(0,40))}</td>
         <td title="${esc(m.prompt_hash||'')}">${esc(m.ai_model || '—')}</td>
         <td><span class="badge ${m.reply_sent?'badge-green':'badge-gray'}">${m.reply_sent?'yes':'no'}</span></td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (_) {}
+}
+
+async function loadConversationInspector() {
+  try {
+    const d = await api('/admin/conversation-inspector?limit=50');
+    const table = document.getElementById('conversationInspectorTable');
+    if (!d.items.length) { table.innerHTML = '<em>No conversations inspected yet.</em>'; return; }
+    table.innerHTML = `<table>
+      <thead><tr><th>Time</th><th>Message</th><th>Intent</th><th>Expanded Query</th><th>Topic</th><th>Entities</th><th>Hits</th><th>Selected Source</th><th>Reason</th><th>Final Response</th></tr></thead>
+      <tbody>${d.items.map(m => `<tr>
+        <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
+        <td title="${esc(m.message || m.question || '')}">${esc((m.message || m.question || '').substring(0,70))}</td>
+        <td><span class="badge badge-gray">${esc(m.intent || m.router_analytics?.intent || 'unknown')}</span></td>
+        <td title="${esc(m.expanded_query || '')}">${esc((m.expanded_query || '—').substring(0,70))}</td>
+        <td>${esc(m.topic || '—')}</td>
+        <td title="${esc((m.entities || []).join(', '))}">${esc((m.entities || []).join(', ').substring(0,50)) || '—'}</td>
+        <td class="mono">M:${m.memory_hits || 0}<br>F:${m.faq_hits || 0}<br>K:${m.knowledge_hits || 0}<br>I:${m.internet_hits || 0}<br>AI:${m.ai_hits || 0}</td>
+        <td><span class="badge badge-purple">${esc(m.selected_source || m.selected_route || '—')}</span></td>
+        <td title="${esc(m.reason || '')}">${esc((m.reason || '').substring(0,70))}</td>
+        <td title="${esc(m.final_response || '')}">${esc((m.final_response || '—').substring(0,90))}</td>
       </tr>`).join('')}</tbody></table>`;
   } catch (_) {}
 }

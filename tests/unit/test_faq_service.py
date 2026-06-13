@@ -40,37 +40,24 @@ class FakeExecuteResult:
 class FakeFAQSession:
     def __init__(self):
         self.entries: list[FAQEntry] = []
+        self.candidates = []
         self.flushed = False
         self.rolled_back = False
 
     async def execute(self, statement):
+        statement_text = str(statement)
         if statement.__class__.__name__ == "Delete":
             self.entries.clear()
-        if statement.__class__.__name__ == "Insert":
-            params = statement.compile().params
-            existing = next(
-                (entry for entry in self.entries if entry.normalized_question == params["normalized_question"]),
-                None,
-            )
-            if existing:
-                existing.question = params["question"]
-                existing.answer = params["answer"]
-                existing.is_enabled = params["is_enabled"]
-                existing.updated_at = params["updated_at"]
-            else:
-                self.entries.append(
-                    FAQEntry(
-                        question=params["question"],
-                        normalized_question=params["normalized_question"],
-                        answer=params["answer"],
-                        is_enabled=params["is_enabled"],
-                        created_at=params["created_at"],
-                        updated_at=params["updated_at"],
-                    )
-                )
+        if "faq_import_candidates" in statement_text:
+            return FakeExecuteResult(self.candidates)
         return FakeExecuteResult(self.entries)
 
     def add(self, entry):
+        if entry.__class__.__name__ == "FAQImportCandidate":
+            entry.id = len(self.candidates) + 1
+            self.candidates.append(entry)
+            return
+        entry.id = len(self.entries) + 1
         self.entries.append(entry)
 
     async def flush(self):
@@ -78,6 +65,10 @@ class FakeFAQSession:
 
     async def rollback(self):
         self.rolled_back = True
+
+    async def get(self, model, row_id):
+        rows = self.candidates if model.__name__ == "FAQImportCandidate" else self.entries
+        return next((row for row in rows if row.id == row_id), None)
 
 
 def test_parse_faq_text_reads_markdown_pairs() -> None:
@@ -123,6 +114,56 @@ async def test_empty_faq_query_short_circuits_fake_session() -> None:
 
     assert entry is None
     assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_semantic_faq_lookup_handles_paraphrases_and_abbreviations() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+
+    await service.sync_faq_in_db([("What is your name?", "I'm Zina.")])
+
+    entry, score = await service.search_faq("What's ur name?")
+    identity_entry, identity_score = await service.search_faq("Tell me about yourself.")
+
+    assert entry is not None
+    assert entry.answer == "I'm Zina."
+    assert score >= 0.72
+    assert identity_entry is not None
+    assert identity_score >= 0.68
+
+
+@pytest.mark.asyncio
+async def test_sync_faq_is_idempotent_for_help_command_variations() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+    answer = "Available commands: /help, /status, /mode."
+
+    count = await service.sync_faq_in_db([("help", answer), ("/help", answer), ("commands", answer)])
+
+    assert count == 1
+    assert len(session.entries) == 1
+    assert session.entries[0].intent == "command_help"
+    assert set(session.entries[0].question_variations) >= {"help", "/help", "commands"}
+
+
+@pytest.mark.asyncio
+async def test_import_candidates_require_approval_before_publish() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+    raw = "Who is Fabian?\n\nFabian is an AI systems builder."
+
+    result = await service.import_candidates(raw, source_name="test")
+    missing, _ = await service.search_faq("who is fabian", track_usage=False)
+    entry = await service.approve_candidate(1)
+    approved, score = await service.search_faq("who is fabian", track_usage=False)
+
+    assert result["created"] == 1
+    assert missing is None
+    assert entry.question == "Who is Fabian?"
+    assert approved is not None
+    assert approved.answer == "Fabian is an AI systems builder."
+    assert score >= 0.72
 
 
 @pytest.mark.asyncio

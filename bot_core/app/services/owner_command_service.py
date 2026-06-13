@@ -32,13 +32,15 @@ from app.models.schema import (
     UserTrigger,
 )
 from app.services.bot_config_service import BotConfigService
+from app.services.command_catalog_service import CommandCatalogService
+from app.services.faq_service import FAQService
 from app.services.retrieval_service import RetrievalService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
 
-OWNER_ACCESS_DENIED = "⛔ Owner command. Access denied."
+OWNER_ACCESS_DENIED = "Owner command. Access denied."
 
 
 @dataclass(slots=True)
@@ -55,6 +57,7 @@ class OwnerCommandService:
         "/memory-search",
         "/recent-memory",
         "/teach",
+        "/faq-import",
         "/create-command",
         "/edit-command",
         "/delete-command",
@@ -107,6 +110,8 @@ class OwnerCommandService:
         self.session = session
         self.config = BotConfigService(session)
         self.retrieval = RetrievalService(session)
+        self.faq = FAQService(session)
+        self.command_catalog = CommandCatalogService(session)
 
     async def handle(self, message, contact: Contact) -> OwnerCommandResult | None:
         command, args = self.extract_command(message.message_text)
@@ -114,12 +119,25 @@ class OwnerCommandService:
             return None
 
         if command in self.USER_COMMANDS:
+            if not await self.command_catalog.is_enabled(command):
+                return OwnerCommandResult(
+                    command=command,
+                    reply_text="This command is currently disabled.",
+                    source_diagnostics={"source": "Command", "command": {"name": command, "enabled": False}},
+                )
             return await self._handle_user_command(command, args, message, contact)
 
         if command not in self.OWNER_COMMANDS:
             return None
 
-        is_owner = await self.is_owner_id(message.sender_id)
+        if not await self.command_catalog.is_enabled(command):
+            return OwnerCommandResult(
+                command=command,
+                reply_text="This owner command is currently disabled.",
+                source_diagnostics={"source": "Command", "owner_command": {"command": command, "enabled": False}},
+            )
+
+        is_owner = await self.is_owner_message(message)
         if not is_owner:
             await self._audit(
                 action="owner_command_denied",
@@ -173,13 +191,22 @@ class OwnerCommandService:
         configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
         return self.is_owner_id_static(sender_id, configured)
 
+    async def is_owner_message(self, message) -> bool:
+        configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
+        return bool(self.identity_keys_for_message(message) & self.identity_keys_for_config(configured))
+
     @staticmethod
     def is_owner_id_static(sender_id: str, configured_ids: str) -> bool:
         sender_keys = OwnerCommandService._identity_keys(sender_id)
+        owner_keys = OwnerCommandService.identity_keys_for_config(configured_ids)
+        return bool(sender_keys & owner_keys)
+
+    @staticmethod
+    def identity_keys_for_config(configured_ids: str) -> set[str]:
         owner_keys: set[str] = set()
         for item in re.split(r"[\s,;]+", configured_ids or ""):
             owner_keys.update(OwnerCommandService._identity_keys(item))
-        return bool(sender_keys & owner_keys)
+        return owner_keys
 
     async def _handle_user_command(
         self,
@@ -209,7 +236,7 @@ class OwnerCommandService:
                 source_diagnostics={"source": "Rule", "user_command": {"command": command}},
             )
         if command == "/whoami":
-            reply = await self._whoami(message.sender_id)
+            reply = await self._whoami(message)
             await self._audit(
                 action="owner_whoami_checked",
                 command=command,
@@ -232,6 +259,7 @@ class OwnerCommandService:
             "/memory-search": self._memory_search,
             "/recent-memory": self._recent_memory,
             "/teach": self._teach,
+            "/faq-import": self._faq_import,
             "/create-command": self._create_command,
             "/edit-command": self._edit_command,
             "/delete-command": self._delete_command,
@@ -282,35 +310,31 @@ class OwnerCommandService:
             raise ValueError("Unknown owner command.")
         return await handler(args, message, contact)
 
-    async def _whoami(self, sender_id: str) -> str:
+    async def _whoami(self, message) -> str:
+        sender_id = message.sender_id
         configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
-        is_owner = self.is_owner_id_static(sender_id, configured)
-        sender_keys = sorted(self._identity_keys(sender_id))
+        sender_keys = sorted(self.identity_keys_for_message(message))
+        is_owner = bool(set(sender_keys) & self.identity_keys_for_config(configured))
         configured_count = len([item for item in re.split(r"[\s,;]+", configured or "") if item.strip()])
+        normalized = self.normalized_whatsapp_id(sender_id)
         return (
             "*Who Am I*\n\n"
             f"Detected WhatsApp ID:\n{sender_id or 'unknown'}\n\n"
+            f"Normalized WhatsApp ID:\n{normalized or 'unknown'}\n\n"
             f"Owner status:\n{'Owner' if is_owner else 'Not owner'}\n\n"
             f"Permissions:\n{'Owner commands allowed' if is_owner else 'Owner commands denied'}\n\n"
             f"Configured owner entries:\n{configured_count}\n\n"
             "Matching keys checked:\n"
-            + "\n".join(f"• {key}" for key in sender_keys[:4])
+            + "\n".join(f"• {key}" for key in sender_keys[:8])
         )
 
     async def _owner_help(self, args: str, message, contact: Contact) -> str:
-        commands = [
-            "/system",
-            "/groups",
-            "/memory-stats",
-            "/internet-status",
-            "/whoami",
-            "/memory-search <keyword>",
-            "/recent-memory",
-            "/queue",
-            "/logs",
-            "/errors",
-        ]
-        return "*Owner Help*\n\nCommon owner commands:\n\n" + "\n".join(f"• {item}" for item in commands)
+        commands = await self.command_catalog.list_commands()
+        owner_commands = [item for item in commands if item["permissions"] == "owner" and item["enabled"]]
+        lines = ["*Owner Help*", "", "Common owner commands:"]
+        for item in owner_commands[:12]:
+            lines.append(f"• {item['name']} - {item['description']}")
+        return "\n".join(lines)
 
     async def _remember(self, args: str, message, contact: Contact) -> str:
         fact = args.strip()
@@ -406,30 +430,22 @@ class OwnerCommandService:
         answer = blocks.get("answer", "").strip()
         if not question or not answer:
             raise ValueError("Usage: /teach\nQuestion:\n...\nAnswer:\n...")
-        normalized = normalize_text(question)
-        existing = (
-            await self.session.execute(select(FAQEntry).where(FAQEntry.normalized_question == normalized).limit(1))
-        ).scalar_one_or_none()
-        if existing:
-            existing.question = question
-            existing.answer = answer
-            existing.is_enabled = True
-            existing.updated_at = utcnow()
-            entry_id = existing.id
-            action = "updated"
-        else:
-            entry = FAQEntry(
-                question=question,
-                normalized_question=normalized,
-                answer=answer,
-                is_enabled=True,
-                updated_at=utcnow(),
-            )
-            self.session.add(entry)
-            await self.session.flush()
-            entry_id = entry.id
-            action = "created"
-        return f"*FAQ {action.title()}*\n\nFAQ ID:\n{entry_id}\n\nQuestion:\n{question}"
+        entry, created = await self.faq.upsert_faq(question, answer)
+        action = "created" if created else "updated"
+        return f"*FAQ {action.title()}*\n\nFAQ ID:\n{entry.id}\n\nQuestion:\n{question}"
+
+    async def _faq_import(self, args: str, message, contact: Contact) -> str:
+        text_value = args.strip()
+        if not text_value:
+            raise ValueError("Usage: /faq-import\nWho is Fabian?\n\nFabian is an AI systems builder.")
+        result = await self.faq.import_candidates(text_value, source_name=f"owner:{contact.id}")
+        return (
+            "*FAQ Import Queued*\n\n"
+            f"Candidates created:\n{result['created']}\n\n"
+            f"Duplicate candidates:\n{result['duplicates']}\n\n"
+            f"Skipped:\n{result['skipped']}\n\n"
+            "Review and approve candidates in the FAQ Manager before publishing."
+        )
 
     async def _create_command(self, args: str, message, contact: Contact) -> str:
         blocks = self.parse_label_blocks(args)
@@ -1352,7 +1368,7 @@ class OwnerCommandService:
 
     @staticmethod
     def clean_target(value: str) -> str:
-        raw = value.strip()
+        raw = (value or "").strip()
         mailto_match = re.search(r"mailto:([^)>\s]+)", raw, flags=re.IGNORECASE)
         if mailto_match:
             return mailto_match.group(1).strip()
@@ -1367,19 +1383,72 @@ class OwnerCommandService:
         return cleaned.strip()
 
     @staticmethod
+    def identity_keys_for_message(message) -> set[str]:
+        values = [getattr(message, "sender_id", "")]
+        values.extend(getattr(message, "sender_alternate_ids", []) or [])
+        payload = getattr(message, "payload", None)
+        if isinstance(payload, dict):
+            sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+            values.extend(
+                [
+                    payload.get("from"),
+                    payload.get("participant"),
+                    payload.get("participantId"),
+                    payload.get("author"),
+                    payload.get("authorId"),
+                    payload.get("senderId"),
+                    sender.get("id"),
+                    sender.get("_serialized"),
+                    sender.get("lid"),
+                    sender.get("phone"),
+                ]
+            )
+        keys: set[str] = set()
+        for value in values:
+            if value:
+                keys.update(OwnerCommandService._identity_keys(str(value)))
+        return keys
+
+    @staticmethod
+    def normalized_whatsapp_id(value: str) -> str:
+        keys = OwnerCommandService._identity_keys(value)
+        c_us = sorted(key for key in keys if key.endswith("@c.us"))
+        if c_us:
+            return c_us[0]
+        digits = sorted(key for key in keys if key.isdigit())
+        if digits:
+            return f"{digits[0]}@c.us"
+        return OwnerCommandService.clean_target(value).lower()
+
+    @staticmethod
     def _identity_keys(value: str) -> set[str]:
         cleaned = OwnerCommandService.clean_target(str(value or "").lower())
         if not cleaned:
             return set()
         keys = {cleaned}
         if "@" in cleaned:
-            keys.add(cleaned.split("@", 1)[0])
+            local, domain = cleaned.split("@", 1)
+            keys.add(local)
+            if domain in {"s.whatsapp.net", "c.us"}:
+                keys.add(f"{local}@c.us")
+                keys.add(f"{local}@s.whatsapp.net")
+            if domain == "lid":
+                keys.add(f"{local}@lid")
         else:
             keys.add(f"{cleaned}@c.us")
         digits = re.sub(r"\D+", "", cleaned)
         if digits:
             keys.add(digits)
             keys.add(f"{digits}@c.us")
+            keys.add(f"{digits}@s.whatsapp.net")
+            keys.add(f"{digits}@lid")
+            if digits.startswith("00") and len(digits) > 2:
+                intl = digits[2:]
+                keys.add(intl)
+                keys.add(f"{intl}@c.us")
+                keys.add(f"{intl}@s.whatsapp.net")
+            if digits.startswith("0") and len(digits) > 8:
+                keys.add(digits.lstrip("0"))
         return keys
 
     @staticmethod

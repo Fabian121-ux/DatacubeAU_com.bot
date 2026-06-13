@@ -203,6 +203,15 @@ class BotConfigService:
 
     async def identity_reply(self, message_text: str) -> str:
         profile = await self.get_identity_profile()
+        try:
+            from app.services.identity_registry_service import IdentityRegistryService
+
+            registry_answer = await IdentityRegistryService(self.session).answer(message_text)
+            if registry_answer:
+                return registry_answer
+        except Exception:
+            # Registry reads are best-effort during migration/bootstrap; bot_config remains the fallback.
+            pass
         normalized = re.sub(r"\s+", " ", message_text.strip().lower())
         assistant_name = profile["assistant_name"] or "Zina"
         owner_name = profile["owner_name"] or "Fabian"

@@ -477,7 +477,8 @@ async def test_onboarding_starts_with_name_and_logs_fact() -> None:
     assert stage == "ask_preferences"
     assert "Nice to meet you, Ada." in reply
     assert calls["upsert"] == [(10, {"user_name": "Ada"})]
-    assert calls["facts"][0][1]["memory_text"] == "user_name: Ada"
+    assert calls["facts"][0][1]["memory_text"].startswith("user_name: Ada")
+    assert calls["facts"][0][1]["confidence"] == 0.9
 
 
 @pytest.mark.asyncio
@@ -523,9 +524,9 @@ async def test_onboarding_existing_user_preferences_and_skip_paths() -> None:
     pref_reply, pref_stage = await service.check_onboarding(10, "I like detailed examples")
 
     assert skip_stage is None
-    assert "All set, Ada!" in skip_reply
+    assert "All set, Ada." in skip_reply
     assert pref_stage is None
-    assert "Got it, Ada!" in pref_reply
+    assert "Got it, Ada." in pref_reply
     assert updates[0] == (10, {"onboarding_complete": True})
     assert updates[1] == (10, {"preferences": "I like detailed examples", "onboarding_complete": True})
 
@@ -551,9 +552,46 @@ async def test_onboarding_complete_user_returns_no_reply() -> None:
     [
         ("My name is Ada Lovelace", "Ada Lovelace"),
         ("call me grace", "Grace"),
-        ("Backend automation", "Backend Automation"),
+        ("Backend automation", None),
         ("I am a developer", None),
+        ("kk", None),
+        ("yes", None),
+        ("wow", None),
+        ("fine", None),
+        ("okay", None),
     ],
 )
 def test_name_extraction(text: str, expected: str | None) -> None:
     assert MemoryService._extract_name(text) == expected
+
+
+@pytest.mark.asyncio
+async def test_onboarding_uses_trusted_display_name_before_message_text() -> None:
+    class Memory:
+        user_name = None
+        display_name = "Ada Lovelace"
+        onboarding_complete = False
+
+    service = MemoryService(None)  # type: ignore[arg-type]
+    updates = []
+    facts = []
+
+    async def get_memory(_contact_id):
+        return Memory()
+
+    async def upsert_memory(contact_id, **kwargs):
+        updates.append((contact_id, kwargs))
+
+    async def log_memory_fact(contact_id, **kwargs):
+        facts.append((contact_id, kwargs))
+
+    service.get_memory = get_memory  # type: ignore[method-assign]
+    service.upsert_memory = upsert_memory  # type: ignore[method-assign]
+    service.log_memory_fact = log_memory_fact  # type: ignore[method-assign]
+
+    reply, stage = await service.check_onboarding(10, "kk")
+
+    assert stage == "ask_preferences"
+    assert "Nice to meet you, Ada Lovelace." in reply
+    assert updates == [(10, {"user_name": "Ada Lovelace"})]
+    assert "source=whatsapp_metadata" in facts[0][1]["memory_text"]

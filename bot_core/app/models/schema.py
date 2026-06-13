@@ -370,9 +370,82 @@ class FAQEntry(Base):
     __tablename__ = "faq_entries"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, server_default=text("'General'"))
+    intent: Mapped[str] = mapped_column(String(120), nullable=False, server_default=text("'custom'"))
     question: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_question: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    question_variations: Mapped[list[str] | None] = mapped_column(JSON)
+    keywords: Mapped[list[str] | None] = mapped_column(JSON)
+    entities: Mapped[list[str] | None] = mapped_column(JSON)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.72"))
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+    @property
+    def enabled(self) -> bool:
+        return self.is_enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self.is_enabled = value
+
+
+class FAQImportCandidate(Base):
+    __tablename__ = "faq_import_candidates"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_name: Mapped[str | None] = mapped_column(String(220))
+    source_text: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, server_default=text("'General'"))
+    intent: Mapped[str] = mapped_column(String(120), nullable=False, server_default=text("'custom'"))
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_question: Mapped[str] = mapped_column(Text, nullable=False)
+    question_variations: Mapped[list[str] | None] = mapped_column(JSON)
+    keywords: Mapped[list[str] | None] = mapped_column(JSON)
+    entities: Mapped[list[str] | None] = mapped_column(JSON)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
+    duplicate_of_faq_id: Mapped[int | None] = mapped_column(ForeignKey("faq_entries.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(30), nullable=False, server_default=text("'pending'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class IdentityRegistryEntry(Base):
+    __tablename__ = "identity_registry"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    registry_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, server_default=text("'Identity'"))
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases: Mapped[list[str] | None] = mapped_column(JSON)
+    keywords: Mapped[list[str] | None] = mapped_column(JSON)
+    entities: Mapped[list[str] | None] = mapped_column(JSON)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    facts_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class CommandCatalogEntry(Base):
+    __tablename__ = "command_catalog"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    example: Mapped[str] = mapped_column(Text, nullable=False)
+    permissions: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'user'"))
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))

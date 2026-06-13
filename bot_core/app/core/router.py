@@ -431,8 +431,10 @@ class InboundRouter:
             stage = "internet"
         elif planned.source_diagnostics.get("memory") or source in {"Memory", "Timeline", "Memory + Timeline"}:
             stage = "memory"
-        else:
+        elif planned.ai_used or source in {"AI", "Global Chat"}:
             stage = "thinking"
+        else:
+            return
         planned.source_diagnostics.setdefault("experience", {})["thinking_indicator"] = (
             self.reply_planner.formatter.thinking_indicator(stage)
         )

@@ -26,6 +26,29 @@ _STAGE_ASK_NAME = "ask_name"
 _STAGE_ASK_PREF = "ask_preferences"
 DEFAULT_SUMMARY_THRESHOLDS = (25, 50, 100)
 RELATIONSHIP_TYPES = {item.value for item in RelationshipType}
+ACKNOWLEDGEMENT_NAMES = {
+    "ah",
+    "fine",
+    "good",
+    "great",
+    "hmm",
+    "kk",
+    "k",
+    "lol",
+    "nah",
+    "nice",
+    "no",
+    "okay",
+    "ok",
+    "sure",
+    "thanks",
+    "thank you",
+    "wow",
+    "ya",
+    "yeah",
+    "yes",
+    "yup",
+}
 
 
 @dataclass(slots=True)
@@ -383,14 +406,14 @@ class MemoryService:
 
         # New user — start onboarding
         if memory is None:
-            name = self._extract_name(message_text)
+            name, confidence, source = self._extract_name_candidate(message_text)
             if name:
                 await self.upsert_memory(contact_id, user_name=name)
                 await self.log_memory_fact(
                     contact_id,
-                    memory_text=f"user_name: {name}",
+                    memory_text=f"user_name: {name} (source={source}, confidence={confidence:.2f})",
                     source="onboarding",
-                    confidence=0.9,
+                    confidence=confidence,
                 )
                 return (
                     f"Nice to meet you, {name}. "
@@ -408,9 +431,15 @@ class MemoryService:
 
         # Waiting for name
         if not memory.user_name:
-            name = self._extract_name(message_text)
+            name, confidence, source = self._name_from_memory_or_text(memory, message_text)
             if name:
                 await self.upsert_memory(contact_id, user_name=name)
+                await self.log_memory_fact(
+                    contact_id,
+                    memory_text=f"user_name: {name} (source={source}, confidence={confidence:.2f})",
+                    source="onboarding",
+                    confidence=confidence,
+                )
                 return (
                     f"Nice to meet you, {name}. "
                     "Is there anything I should know about you? "
@@ -429,7 +458,7 @@ class MemoryService:
             if text_lower in {"skip", "no", "none", "n/a", "nothing", "nah"}:
                 await self.upsert_memory(contact_id, onboarding_complete=True)
                 return (
-                    f"All set, {memory.user_name}! Ask me anything or type /help. 🚀",
+                    f"All set, {memory.user_name}. Ask me anything or type /help.",
                     None,
                 )
             await self.upsert_memory(
@@ -438,7 +467,7 @@ class MemoryService:
                 onboarding_complete=True,
             )
             return (
-                f"Got it, {memory.user_name}! I'll remember that. Ask me anything or type /help. 🚀",
+                f"Got it, {memory.user_name}. I'll remember that. Ask me anything or type /help.",
                 None,
             )
 
@@ -729,8 +758,15 @@ class MemoryService:
 
     @staticmethod
     def _extract_name(text: str) -> str | None:
+        name, _, _ = MemoryService._extract_name_candidate(text)
+        return name
+
+    @staticmethod
+    def _extract_name_candidate(text: str) -> tuple[str | None, float, str]:
         """Try to extract a name from freeform text."""
         cleaned = text.strip()
+        if MemoryService._is_invalid_name_candidate(cleaned):
+            return None, 0.0, "invalid"
         # Common patterns: "My name is X", "I'm X", "I am X", "Call me X", or just the name
         patterns = [
             r"(?:my name is|i'm|i am|call me|it's|its)\s+(.+)",
@@ -740,14 +776,11 @@ class MemoryService:
             match = re.search(pattern, cleaned, re.IGNORECASE)
             if match:
                 candidate = match.group(1).strip()
-                lowered = candidate.lower()
-                invalid_prefixes = ("a ", "an ", "the ", "into ", "interested ", "working ", "building ", "trying ")
-                invalid_names = {"hello", "hi", "hey", "yo"}
-                if lowered.startswith(invalid_prefixes) or lowered in invalid_names:
+                if MemoryService._is_invalid_name_candidate(candidate):
                     continue
                 name = candidate.title()
                 if 1 < len(name) <= 40:
-                    return name
+                    return name, 0.9, "explicit_message"
         # Fallback: if it's short enough, treat entire input as name
         words = cleaned.split()
         stop_words = {"i", "am", "im", "i'm", "my", "name", "is", "a", "an", "the"}
@@ -758,9 +791,56 @@ class MemoryService:
             and cleaned.replace(" ", "").isalpha()
             and not any(word.lower() in stop_words for word in words)
             and not any(word.lower() in greeting_words for word in words)
+            and not MemoryService._is_invalid_name_candidate(cleaned)
         ):
-            return cleaned.strip().title()
-        return None
+            return cleaned.strip().title(), 0.55, "freeform_guess"
+        return None, 0.0, "none"
+
+    @staticmethod
+    def _name_from_memory_or_text(memory: UserMemory, message_text: str) -> tuple[str | None, float, str]:
+        display_name = MemoryService._trusted_display_name(getattr(memory, "display_name", None))
+        if display_name:
+            return display_name, 0.86, "whatsapp_metadata"
+        return MemoryService._extract_name_candidate(message_text)
+
+    @staticmethod
+    def _trusted_display_name(display_name: str | None) -> str | None:
+        cleaned = " ".join(str(display_name or "").strip().split())
+        if not cleaned or MemoryService._is_invalid_name_candidate(cleaned):
+            return None
+        if "@" in cleaned or re.fullmatch(r"\+?\d[\d\s().-]{6,}", cleaned):
+            return None
+        if len(cleaned) > 50:
+            return None
+        return cleaned.title()
+
+    @staticmethod
+    def _is_invalid_name_candidate(candidate: str) -> bool:
+        lowered = " ".join(str(candidate or "").strip().lower().split())
+        if not lowered:
+            return True
+        invalid_prefixes = ("a ", "an ", "the ", "into ", "interested ", "working ", "building ", "trying ")
+        invalid_terms = {
+            "automation",
+            "backend",
+            "bot",
+            "developer",
+            "engineer",
+            "frontend",
+            "project",
+            "software",
+            "student",
+            "system",
+            "testing",
+        }
+        if lowered in ACKNOWLEDGEMENT_NAMES or lowered in {"hello", "hi", "hey", "yo"}:
+            return True
+        words = lowered.split()
+        if any(word in ACKNOWLEDGEMENT_NAMES for word in words):
+            return True
+        if lowered.startswith(invalid_prefixes):
+            return True
+        return any(word in invalid_terms for word in words)
 
     @staticmethod
     def _extract_profile_fields(text: str) -> dict[str, str]:
