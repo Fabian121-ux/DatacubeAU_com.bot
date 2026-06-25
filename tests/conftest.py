@@ -34,6 +34,20 @@ from app.models.schema import (
 )
 from app.services.memory_service import MemoryContextPackage
 from app.utils.text import normalize_text
+from app.db import Base
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def setup_test_database():
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+
 
 
 @pytest_asyncio.fixture

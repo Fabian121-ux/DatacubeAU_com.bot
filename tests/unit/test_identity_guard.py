@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from typing import Any
 
 from app.core.experience_formatter import WhatsAppExperienceFormatter
 from app.core.reply_planner import PlannedReply, ReplyPlanner
@@ -21,6 +22,10 @@ class FakeBotConfig:
     async def get_bool(self, key: str, default: bool = False) -> bool:
         if key.startswith("experience_") or key in {"show_source_badges", "show_context_badges", "enable_signature_style"}:
             return False
+        return default
+
+    async def get(self, key: str, default: Any = None) -> Any:
+        """Generic get method for config values."""
         return default
 
     async def get_identity_profile(self) -> dict[str, str]:
