@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import FAQEntry, FAQImportCandidate
+from app.utils.hashing import sha256_text
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
@@ -133,26 +134,103 @@ class FAQService:
         return self._parse_plain_faq(raw_text)
 
     async def sync_faq_in_db(self, pairs: list[tuple[str, str]]) -> int:
+        return await self.replace_source_entries(
+            pairs,
+            source_id="core_faq",
+            source_name="core_faq.md",
+            source_version="legacy-sync",
+        )
+
+    async def replace_source_entries(
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        source_id: str,
+        source_name: str,
+        source_version: str | None = None,
+    ) -> int:
+        report = await self.replace_source_entries_report(
+            pairs,
+            source_id=source_id,
+            source_name=source_name,
+            source_version=source_version,
+        )
+        return int(report["active_entries"])
+
+    async def replace_source_entries_report(
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        source_id: str,
+        source_name: str,
+        source_version: str | None = None,
+    ) -> dict[str, int | str]:
+        if not pairs:
+            raise ValueError("FAQ source did not contain any parseable entries.")
+        version = source_version or self.version_for_pairs(pairs)
+        source_hash = sha256_text("\n\n".join(f"{q}\n{a}" for q, a in pairs))
         count = 0
+        created = 0
+        updated = 0
+        duplicates = 0
+        superseded = 0
         seen: set[str] = set()
         seen_questions: set[str] = set()
         entries = await self._fetch_all_entries()
+        active_ids: set[int] = set()
+        active_objects: set[int] = set()
         for question, answer in pairs:
             payload = self.build_payload(question=question, answer=answer)
             dedupe_key = self._dedupe_key(payload)
             if dedupe_key in seen or payload.normalized_question in seen_questions:
+                duplicates += 1
                 continue
             seen.add(dedupe_key)
             seen_questions.add(payload.normalized_question)
             existing = self._find_existing_entry(payload, entries)
             entry = await self._upsert_entry(payload, existing)
+            entry.source_id = source_id
+            entry.source_name = source_name
+            entry.source_version = version
+            entry.source_hash = source_hash
+            entry.sync_status = "synced"
+            entry.is_enabled = True
+            entry.last_synchronized_at = utcnow()
             if existing is None:
                 entries.append(entry)
+                created += 1
+            else:
+                updated += 1
+            if getattr(entry, "id", None):
+                active_ids.add(int(entry.id))
+            active_objects.add(id(entry))
             count += 1
+
+        for entry in entries:
+            if getattr(entry, "source_id", "core_faq") != source_id:
+                continue
+            if id(entry) in active_objects:
+                continue
+            if getattr(entry, "id", None) and int(entry.id) in active_ids:
+                continue
+            if getattr(entry, "is_enabled", True):
+                entry.is_enabled = False
+                entry.sync_status = "superseded"
+                entry.updated_at = utcnow()
+                superseded += 1
 
         await self.session.flush()
         logger.info("Synchronized %s FAQ entries in database.", count)
-        return count
+        return {
+            "source_id": source_id,
+            "source_version": version,
+            "active_entries": count,
+            "created": created,
+            "updated": updated,
+            "superseded": superseded,
+            "disabled": superseded,
+            "duplicates": duplicates,
+        }
 
     async def upsert_faq(self, question: str, answer: str, *, category: str | None = None) -> tuple[FAQEntry, bool]:
         payload = self.build_payload(question=question, answer=answer, category=category)
@@ -170,7 +248,12 @@ class FAQService:
         try:
             raw = path.read_text(encoding="utf-8")
             pairs = self.parse_faq_text(raw)
-            return await self.sync_faq_in_db(pairs)
+            return await self.replace_source_entries(
+                pairs,
+                source_id="core_faq",
+                source_name=path.name,
+                source_version=self.version_for_text(raw),
+            )
         except Exception as exc:
             await self.session.rollback()
             logger.error("Failed to load FAQ from file %s: %s", file_path, exc, exc_info=True)
@@ -372,6 +455,38 @@ class FAQService:
             "overall_success_rate": round(total_success / total_usage, 4) if total_usage else 0.0,
         }
 
+    async def preview_source(self, raw_text: str) -> dict[str, Any]:
+        pairs = self.parse_faq_text(raw_text)
+        entries = []
+        duplicates = []
+        seen: set[str] = set()
+        for question, answer in pairs:
+            payload = self.build_payload(question=question, answer=answer)
+            key = self._dedupe_key(payload)
+            item = {
+                "question": payload.question,
+                "answer": payload.answer,
+                "category": payload.category,
+                "intent": payload.intent,
+                "normalized_question": payload.normalized_question,
+                "dedupe_key": key,
+                "keywords": payload.keywords or [],
+                "entities": payload.entities or [],
+            }
+            if key in seen:
+                duplicates.append(item)
+                continue
+            seen.add(key)
+            entries.append(item)
+        return {
+            "source_id": "core_faq",
+            "source_version": self.version_for_text(raw_text),
+            "parse_status": "ok" if entries else "empty",
+            "entry_count": len(entries),
+            "duplicates": duplicates,
+            "entries": entries,
+        }
+
     async def record_match(self, entry: FAQEntry, *, success: bool) -> None:
         entry.usage_count = int(getattr(entry, "usage_count", 0) or 0) + 1
         if success:
@@ -565,6 +680,11 @@ class FAQService:
         rate = success_rate if success_rate is not None else (round(success / usage, 4) if usage else 0.0)
         return {
             "id": row.id,
+            "source_id": getattr(row, "source_id", "core_faq"),
+            "source_name": getattr(row, "source_name", None),
+            "source_version": getattr(row, "source_version", "legacy"),
+            "source_hash": getattr(row, "source_hash", None),
+            "sync_status": getattr(row, "sync_status", "synced"),
             "category": getattr(row, "category", "General") or "General",
             "intent": getattr(row, "intent", "custom") or "custom",
             "question": row.question,
@@ -579,6 +699,7 @@ class FAQService:
             "failed_count": int(getattr(row, "failed_count", 0) or 0),
             "success_rate": rate,
             "last_used_at": getattr(row, "last_used_at", None),
+            "last_synchronized_at": getattr(row, "last_synchronized_at", None),
             "enabled": bool(getattr(row, "is_enabled", True)),
             "is_enabled": bool(getattr(row, "is_enabled", True)),
             "created_at": row.created_at,
@@ -637,24 +758,31 @@ class FAQService:
     @staticmethod
     def _parse_plain_faq(raw_text: str) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
-        blocks = [block.strip() for block in re.split(r"\n\s*\n", raw_text or "") if block.strip()]
-        index = 0
-        while index < len(blocks):
-            block = blocks[index]
-            lines = [line.strip() for line in block.splitlines() if line.strip()]
-            if not lines:
-                index += 1
-                continue
+        question: str | None = None
+        answer_lines: list[str] = []
 
-            first = re.sub(r"^[-*]\s*", "", lines[0]).strip()
-            if first.endswith("?") or QUESTION_LINE_RE.match(first):
-                answer = "\n".join(lines[1:]).strip()
-                if not answer and index + 1 < len(blocks):
-                    answer = blocks[index + 1].strip()
-                    index += 1
-                if answer:
-                    pairs.append((first, answer))
-            index += 1
+        def flush() -> None:
+            nonlocal question, answer_lines
+            answer = "\n".join(line for line in answer_lines if line.strip()).strip()
+            if question and answer:
+                pairs.append((question, answer))
+            question = None
+            answer_lines = []
+
+        for raw_line in (raw_text or "").splitlines():
+            line = re.sub(r"^[-*]\s*", "", raw_line.strip()).strip()
+            if not line:
+                continue
+            is_question = line.endswith("?") or bool(QUESTION_LINE_RE.match(line))
+            if is_question:
+                flush()
+                question = line
+                answer_lines = []
+                continue
+            if question:
+                answer_lines.append(line)
+
+        flush()
         return pairs
 
     async def _fetch_all_entries(self) -> list[FAQEntry]:
@@ -662,7 +790,8 @@ class FAQService:
 
     async def _fetch_enabled_entries(self) -> list[FAQEntry]:
         stmt = select(FAQEntry).where(FAQEntry.is_enabled.is_(True)).order_by(FAQEntry.id)
-        return (await self.session.execute(stmt)).scalars().all()
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [row for row in rows if getattr(row, "is_enabled", True)]
 
     async def _fetch_candidates(self) -> list[FAQImportCandidate]:
         return (await self.session.execute(select(FAQImportCandidate).order_by(FAQImportCandidate.id))).scalars().all()
@@ -685,6 +814,10 @@ class FAQService:
             return existing
 
         entry = FAQEntry(
+            source_id="core_faq",
+            source_name="core_faq.md",
+            source_version="legacy",
+            sync_status="synced",
             question=payload.question,
             normalized_question=payload.normalized_question,
             dedupe_key=payload.dedupe_key,
@@ -696,6 +829,7 @@ class FAQService:
             entities=payload.entities,
             confidence_threshold=payload.confidence_threshold,
             is_enabled=True,
+            last_synchronized_at=now,
             created_at=now,
             updated_at=now,
         )
@@ -718,16 +852,29 @@ class FAQService:
         if payload.intent == "command_help":
             same_intent = [entry for entry in entries if getattr(entry, "intent", None) == "command_help"]
         else:
+            payload_entities = set(payload.entities or [])
             same_intent = [
                 entry
                 for entry in entries
                 if getattr(entry, "intent", None) == payload.intent
                 and payload.intent in {"identity_question", "contact_question", "service_question"}
-                and set(payload.entities or [])
-                & set(self._coerce_list(getattr(entry, "entities", None)) or payload.entities or [])
+                and payload.dedupe_key.startswith("intent:identity_question:")
+                and payload_entities
+                and set(self._coerce_list(getattr(entry, "entities", None))) == payload_entities
             ]
         if same_intent:
             return same_intent[0]
+        same_answer = next(
+            (
+                entry
+                for entry in entries
+                if self._looks_like_alias(payload.question, getattr(entry, "question", ""))
+                and normalize_text(getattr(entry, "answer", "")) == normalize_text(payload.answer)
+            ),
+            None,
+        )
+        if same_answer:
+            return same_answer
         best = None
         best_score = 0.0
         for entry in entries:
@@ -753,16 +900,50 @@ class FAQService:
                 return True
         return False
 
+    @staticmethod
+    def _looks_like_alias(question: str, existing_question: str) -> bool:
+        def compact(value: str) -> str:
+            return normalize_text(value).strip()
+
+        left = compact(question)
+        right = compact(existing_question)
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        return len(left.split()) <= 3 and len(right.split()) <= 3
+
     @classmethod
     def _dedupe_key(cls, payload: FAQPayload) -> str:
         return payload.dedupe_key
+
+    @staticmethod
+    def version_for_text(raw_text: str) -> str:
+        cleaned = raw_text.strip()
+        return sha256_text(cleaned)[:16] if cleaned else "empty"
+
+    @classmethod
+    def version_for_pairs(cls, pairs: list[tuple[str, str]]) -> str:
+        raw = "\n\n".join(f"{question.strip()}\n{answer.strip()}" for question, answer in pairs)
+        return cls.version_for_text(raw)
 
     @classmethod
     def _dedupe_key_from_parts(cls, normalized_question: str, intent: str, entities: list[str] | None) -> str:
         if intent == "command_help":
             return "intent:command_help"
         entity_key = ",".join(sorted(entities or []))
-        if intent == "identity_question" and entity_key:
+        identity_markers = (
+            "who is ",
+            "what is ",
+            "who are you",
+            "your name",
+            "who created",
+            "who made",
+            "who built",
+            "who owns",
+            "who founded",
+        )
+        if intent == "identity_question" and entity_key and any(marker in normalized_question for marker in identity_markers):
             return f"intent:identity_question:{entity_key}"
         return normalized_question
 

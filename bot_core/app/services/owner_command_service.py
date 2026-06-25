@@ -31,6 +31,7 @@ from app.models.schema import (
     UserMemoryTimeline,
     UserTrigger,
 )
+from app.services.admin_management_service import AdminManagementService
 from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.faq_service import FAQService
@@ -104,7 +105,7 @@ class OwnerCommandService:
         "/owner-help",
     }
 
-    USER_COMMANDS = {"/review", "/whoami"}
+    USER_COMMANDS = {"/help", "/start", "/status", "/review", "/whoami"}
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -125,7 +126,9 @@ class OwnerCommandService:
                     reply_text="This command is currently disabled.",
                     source_diagnostics={"source": "Command", "command": {"name": command, "enabled": False}},
                 )
-            return await self._handle_user_command(command, args, message, contact)
+            result = await self._handle_user_command(command, args, message, contact)
+            await self.command_catalog.record_usage(command)
+            return result
 
         if command not in self.OWNER_COMMANDS:
             return None
@@ -151,7 +154,7 @@ class OwnerCommandService:
                 command=command,
                 reply_text=OWNER_ACCESS_DENIED,
                 source_diagnostics={
-                    "source": "Rule",
+                    "source": "Command",
                     "experience": {"formatted": True},
                     "owner_command": {"command": command, "allowed": False},
                 },
@@ -172,10 +175,11 @@ class OwnerCommandService:
             result=result,
             details={"args_preview": args[:160]},
         )
+        await self.command_catalog.record_usage(command)
         return OwnerCommandResult(
             command=command,
             reply_text=reply,
-            source_diagnostics={"source": "Rule", "owner_command": {"command": command, "allowed": True, "result": result}},
+            source_diagnostics={"source": "Command", "owner_command": {"command": command, "allowed": True, "result": result}},
         )
 
     @classmethod
@@ -192,6 +196,11 @@ class OwnerCommandService:
         return self.is_owner_id_static(sender_id, configured)
 
     async def is_owner_message(self, message) -> bool:
+        try:
+            if await AdminManagementService(self.session).is_admin_message(message):
+                return True
+        except Exception:
+            pass
         configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
         return bool(self.identity_keys_for_message(message) & self.identity_keys_for_config(configured))
 
@@ -215,6 +224,50 @@ class OwnerCommandService:
         message,
         contact: Contact,
     ) -> OwnerCommandResult:
+        if command == "/help":
+            reply = await self._user_help(message)
+            await self._audit(
+                action="user_help_requested",
+                command=command,
+                sender_id=message.sender_id,
+                contact_id=contact.id,
+                result="ok",
+                details={},
+            )
+            return OwnerCommandResult(
+                command=command,
+                reply_text=reply,
+                source_diagnostics={"source": "Command", "user_command": {"command": command}},
+            )
+        if command == "/start":
+            reply = await self.config.introduction_reply()
+            await self._audit(
+                action="user_start_requested",
+                command=command,
+                sender_id=message.sender_id,
+                contact_id=contact.id,
+                result="ok",
+                details={},
+            )
+            return OwnerCommandResult(
+                command=command,
+                reply_text=reply,
+                source_diagnostics={"source": "Command", "user_command": {"command": command}},
+            )
+        if command == "/status":
+            await self._audit(
+                action="user_status_requested",
+                command=command,
+                sender_id=message.sender_id,
+                contact_id=contact.id,
+                result="ok",
+                details={},
+            )
+            return OwnerCommandResult(
+                command=command,
+                reply_text="*Zina Status*\n\nOnline and ready to respond.",
+                source_diagnostics={"source": "Command", "user_command": {"command": command}},
+            )
         if command == "/review":
             try:
                 reply = await self._review(args, message.sender_id, contact.id)
@@ -233,7 +286,7 @@ class OwnerCommandService:
             return OwnerCommandResult(
                 command=command,
                 reply_text=reply,
-                source_diagnostics={"source": "Rule", "user_command": {"command": command}},
+                source_diagnostics={"source": "Command", "user_command": {"command": command}},
             )
         if command == "/whoami":
             reply = await self._whoami(message)
@@ -248,9 +301,9 @@ class OwnerCommandService:
             return OwnerCommandResult(
                 command=command,
                 reply_text=reply,
-                source_diagnostics={"source": "Rule", "user_command": {"command": command}},
+                source_diagnostics={"source": "Command", "user_command": {"command": command}},
             )
-        return OwnerCommandResult(command=command, reply_text="", source_diagnostics={"source": "Rule"})
+        return OwnerCommandResult(command=command, reply_text="", source_diagnostics={"source": "Command"})
 
     async def _dispatch(self, command: str, args: str, message, contact: Contact) -> str:
         handlers = {
@@ -314,15 +367,21 @@ class OwnerCommandService:
         sender_id = message.sender_id
         configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
         sender_keys = sorted(self.identity_keys_for_message(message))
-        is_owner = bool(set(sender_keys) & self.identity_keys_for_config(configured))
+        try:
+            is_owner = await AdminManagementService(self.session).is_admin_message(message)
+        except Exception:
+            is_owner = False
+        is_owner = is_owner or bool(set(sender_keys) & self.identity_keys_for_config(configured))
         configured_count = len([item for item in re.split(r"[\s,;]+", configured or "") if item.strip()])
         normalized = self.normalized_whatsapp_id(sender_id)
+        owner_text = "Yes" if is_owner else "No"
+        permissions = "Full" if is_owner else "None"
         return (
             "*Who Am I*\n\n"
-            f"Detected WhatsApp ID:\n{sender_id or 'unknown'}\n\n"
-            f"Normalized WhatsApp ID:\n{normalized or 'unknown'}\n\n"
-            f"Owner status:\n{'Owner' if is_owner else 'Not owner'}\n\n"
-            f"Permissions:\n{'Owner commands allowed' if is_owner else 'Owner commands denied'}\n\n"
+            f"Owner: {owner_text}\n\n"
+            f"Detected:\n{sender_id or 'unknown'}\n\n"
+            f"Normalized:\n{normalized or 'unknown'}\n\n"
+            f"Permissions:\n{permissions}\n\n"
             f"Configured owner entries:\n{configured_count}\n\n"
             "Matching keys checked:\n"
             + "\n".join(f"• {key}" for key in sender_keys[:8])
@@ -331,9 +390,44 @@ class OwnerCommandService:
     async def _owner_help(self, args: str, message, contact: Contact) -> str:
         commands = await self.command_catalog.list_commands()
         owner_commands = [item for item in commands if item["permissions"] == "owner" and item["enabled"]]
-        lines = ["*Owner Help*", "", "Common owner commands:"]
-        for item in owner_commands[:12]:
-            lines.append(f"• {item['name']} - {item['description']}")
+        lines = ["*Owner Help*", "", "Admin commands:"]
+        for item in owner_commands:
+            syntax = item.get("trigger_syntax") or item["name"]
+            lines.append(f"- {syntax} - {item['description']}")
+        return "\n".join(lines)
+
+    async def _user_help(self, message=None) -> str:
+        commands = await self.command_catalog.list_commands()
+        include_admin = False
+        if message is not None:
+            try:
+                include_admin = await self.is_owner_message(message)
+            except Exception:
+                include_admin = False
+        visible = [item for item in commands if item["enabled"] and (item["permissions"] == "user" or include_admin)]
+        category_order = [
+            "User Commands",
+            "Admin Commands",
+            "Internet Commands",
+            "Memory Commands",
+            "Media Commands",
+            "Experimental Commands",
+        ]
+        grouped: dict[str, list[dict[str, Any]]] = {category: [] for category in category_order}
+        for item in visible:
+            grouped.setdefault(item.get("category") or "User Commands", []).append(item)
+
+        lines = ["*Available Commands*"]
+        for category in category_order:
+            items = sorted(grouped.get(category, []), key=lambda row: row["name"])
+            if not items:
+                continue
+            lines.extend(["", f"*{category}*"])
+            for item in items:
+                syntax = item.get("trigger_syntax") or item["name"]
+                lines.append(f"- {syntax} - {item['description']}")
+        if include_admin:
+            lines.extend(["", "Admin commands are available because this number is registered as an administrator."])
         return "\n".join(lines)
 
     async def _remember(self, args: str, message, contact: Contact) -> str:
@@ -453,18 +547,30 @@ class OwnerCommandService:
         reply = blocks.get("reply", "").strip()
         if not keyword or not reply:
             raise ValueError("Usage: /create-command\nCommand:\n/scholarship\nReply:\nCheck School Info updates.")
-        rule = ReplyRule(
-            keyword=keyword,
-            response_text=reply,
-            match_mode="exact",
-            chat_type_filter=None,
-            is_enabled=True,
-            priority=100,
-            updated_at=utcnow(),
-        )
-        self.session.add(rule)
+        rule = await self._find_reply_rule(keyword)
+        created = rule is None
+        if rule is None:
+            rule = ReplyRule(
+                keyword=keyword,
+                response_text=reply,
+                match_mode="exact",
+                chat_type_filter=None,
+                is_enabled=True,
+                priority=100,
+                updated_at=utcnow(),
+            )
+            self.session.add(rule)
+        else:
+            rule.keyword = keyword
+            rule.response_text = reply
+            rule.match_mode = "exact"
+            rule.chat_type_filter = None
+            rule.is_enabled = True
+            rule.priority = 100
+            rule.updated_at = utcnow()
         await self.session.flush()
-        return f"*Custom Command Created*\n\nCommand:\n{keyword}\n\nRule ID:\n{rule.id}"
+        action = "Created" if created else "Updated"
+        return f"*Custom Command {action}*\n\nCommand:\n{keyword}\n\nRule ID:\n{rule.id}"
 
     async def _edit_command(self, args: str, message, contact: Contact) -> str:
         blocks = self.parse_label_blocks(args)

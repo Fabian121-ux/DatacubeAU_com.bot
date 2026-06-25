@@ -10,7 +10,9 @@ from fastapi import FastAPI
 from app.api import admin, admin_auth, admin_ui, health, inbound, knowledge
 from app.config import settings
 from app.db import SessionLocal, engine, ping_database
+from app.services.bot_config_service import BotConfigService
 from app.services.faq_service import FAQService
+from app.services.identity_registry_service import IdentityRegistryService
 from app.services.logging_service import configure_logging, log_event
 from app.workers.background_workers import outbound_queue_delivery_worker, waha_monitor_worker
 
@@ -44,6 +46,8 @@ async def lifespan(_: FastAPI):
 
 async def _sync_core_faq() -> None:
     async with SessionLocal() as session:
+        config = BotConfigService(session)
+        await IdentityRegistryService(session).ensure_defaults_from_profile(await config.get_identity_profile())
         service = FAQService(session)
         count = await service.load_faq_from_file(str(CORE_FAQ_PATH))
         await session.commit()

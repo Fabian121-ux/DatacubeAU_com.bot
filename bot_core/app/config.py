@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     show_source_badges: bool = Field(default=False, alias="SHOW_SOURCE_BADGES")
     show_context_badges: bool = Field(default=True, alias="SHOW_CONTEXT_BADGES")
     enable_signature_style: bool = Field(default=True, alias="ENABLE_SIGNATURE_STYLE")
+    whatsapp_message_format: str = Field(default="automatic", alias="WHATSAPP_MESSAGE_FORMAT")
 
     local_test_dm_whatsapp_id: str = Field(default="234000000000@c.us", alias="LOCAL_TEST_DM_WHATSAPP_ID")
     local_test_group_chat_id: str = Field(default="120363000000000000@g.us", alias="LOCAL_TEST_GROUP_CHAT_ID")
@@ -146,6 +147,8 @@ class Settings(BaseSettings):
             errors.append("MAX_TYPING_DELAY_SECONDS must be 0 or greater.")
         if self.max_typing_delay_seconds < self.min_typing_delay_seconds:
             errors.append("MAX_TYPING_DELAY_SECONDS must be greater than or equal to MIN_TYPING_DELAY_SECONDS.")
+        if self.whatsapp_message_format.strip().lower() not in {"standard", "quote", "automatic"}:
+            errors.append("WHATSAPP_MESSAGE_FORMAT must be 'standard', 'quote', or 'automatic'.")
         if errors:
             raise RuntimeError("Invalid runtime settings: " + " ".join(errors))
 
@@ -202,6 +205,7 @@ class Settings(BaseSettings):
             "show_source_badges": self.show_source_badges,
             "show_context_badges": self.show_context_badges,
             "enable_signature_style": self.enable_signature_style,
+            "whatsapp_message_format": self.whatsapp_message_format,
             "admin_api_token_configured": bool(self.admin_api_token),
             "admin_username": self.admin_username,
             "admin_session_ttl_seconds": self.admin_session_ttl_seconds,

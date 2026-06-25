@@ -8,7 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.experience_formatter import WhatsAppExperienceFormatter, memory_context_indicators
+from app.core.experience_formatter import (
+    WhatsAppExperienceFormatter,
+    WhatsAppMessageFormat,
+    is_whatsapp_quoted,
+    memory_context_indicators,
+)
 from app.core.intent_classifier import IntentClassifier, IntentResult, MessageIntent
 from app.core.message_normalizer import NormalizedMessage
 from app.core.rules_engine import RulesEngine
@@ -83,9 +88,10 @@ class ReplyPlanner:
                     reason="empty global chat command",
                     should_reply=True,
                     reply_text="Use `!ask` followed by your question.",
-                    source_diagnostics={"source": "Rule", "global_chat": {"one_shot": True, "valid": False}},
+                    source_diagnostics={"source": "Command", "global_chat": {"one_shot": True, "valid": False}},
                 ))
             global_chat_one_shot = True
+            await self._record_command_usage("!ask")
             message = replace(
                 message,
                 message_text=ask_text.strip(),
@@ -112,6 +118,7 @@ class ReplyPlanner:
                     reply_text=self.internet_service.usage_for_command(command),
                     source_diagnostics={"source": "Internet", "internet": {"command": command, "valid": False}},
                 ))
+            await self._record_command_usage(command)
             internet_request = (service, command, query)
             message = replace(
                 message,
@@ -384,21 +391,28 @@ class ReplyPlanner:
                     memory_package=memory_package,
                     global_chat={"one_shot": global_chat_one_shot, "active": global_chat_active},
                     invocation_reason=self._ai_invocation_reason(message.message_text, intent_result, search_result.confidence),
+                    faq_score=faq_score,
+                    context_diagnostics=context_diagnostics,
                 )
                 if ai_plan:
                     return ai_plan
 
-        # 8. Escalating fallback.
-        no_match_text = await self._no_match_reply(message.chat_type)
+        # 8. Final fallback. Human escalation is reserved for private decisions.
+        human_escalation = self._requires_human_escalation(message.message_text)
+        no_match_text = await self._no_match_reply(message.chat_type, message.message_text)
         if intent_result.intent == MessageIntent.GENERAL_KNOWLEDGE:
             no_match_text = (
-                "I do not have enough local knowledge to answer that reliably yet.\n\n"
-                "You can use `!search <topic>` for live research, or enable Global Chat when you want me "
-                "to synthesize a broader answer."
+                "I do not have enough approved local information to answer that fully right now.\n\n"
+                "If internet or AI reasoning is enabled, I can use those routes. Otherwise, try `!search <topic>` "
+                "for live research."
             )
         return await self._apply_identity_guard(PlannedReply(
-            decision_type=DecisionType.NO_MATCH,
-            reason="no rule, faq, cache, knowledge, memory, or ai match",
+            decision_type=DecisionType.ESCALATED if human_escalation else DecisionType.NO_MATCH,
+            reason=(
+                "human escalation required for private owner decision"
+                if human_escalation
+                else "no identity, memory, faq, cache, knowledge, internet, or ai answer available"
+            ),
             should_reply=no_match_text is not None,
             reply_text=no_match_text,
             kb_confidence=search_result.confidence,
@@ -410,6 +424,14 @@ class ReplyPlanner:
                 "memory": self.memory_service.diagnostics_for_package(memory_package),
                 "context": context_diagnostics,
                 "ai": {"used": False, "enabled": ai_enabled},
+                "fallback": {
+                    "human_escalation": human_escalation,
+                    "reason": (
+                        "private_owner_decision_or_personal_opinion"
+                        if human_escalation
+                        else "approved_sources_missing_and_ai_unavailable_or_failed"
+                    ),
+                },
                 "global_chat": {
                     "one_shot": global_chat_one_shot,
                     "active": global_chat_active,
@@ -571,6 +593,8 @@ class ReplyPlanner:
         memory_package: MemoryContextPackage | None = None,
         global_chat: dict[str, object] | None = None,
         invocation_reason: str = "local knowledge insufficient",
+        faq_score: float = 0.0,
+        context_diagnostics: dict[str, object] | None = None,
     ) -> PlannedReply | None:
         client = OpenRouterClient()
         mode = AIMode.DEEP if looks_complex(message.message_text) else AIMode.LIGHT
@@ -581,16 +605,7 @@ class ReplyPlanner:
         
         # Load AI behavior settings
         strictness = await self.bot_config.get("ai_strictness", "medium")
-        try:
-            escalation_threshold = float(await self.bot_config.get("ai_escalation_threshold", "0.3"))
-        except ValueError:
-            escalation_threshold = 0.3
         hallucination_protection = await self.bot_config.get("ai_hallucination_protection", "high")
-        
-        # Check escalation based on KB confidence vs threshold
-        force_escalation = False
-        if search_result.confidence < escalation_threshold and strictness == "high":
-            force_escalation = True
         
         # Load user memory context
         user_context = ""
@@ -604,26 +619,6 @@ class ReplyPlanner:
 
         dynamic_system_instructions = await self.bot_config.build_system_prompt()
         
-        if force_escalation:
-            return await self._apply_identity_guard(PlannedReply(
-                decision_type=DecisionType.ESCALATED,
-                reason="kb confidence below escalation threshold",
-                should_reply=True,
-                reply_text=await self.bot_config.escalation_reply(),
-                kb_confidence=search_result.confidence,
-                matched_chunks=self.retrieval.prompt_context(search_result),
-                ai_used=False,
-                source_diagnostics={
-                    "kb": {"matched": False, "confidence": search_result.confidence},
-                    "memory": {
-                        **self.memory_service.diagnostics_for_package(memory_package),
-                        "context_used": bool(user_context),
-                    },
-                    "ai": {"used": False, "escalated": True, "strictness": strictness},
-                    "global_chat": global_chat or {},
-                },
-            ))
-
         ai_decision = DecisionType.AI_REPLY_DEEP if mode == AIMode.DEEP else DecisionType.AI_REPLY_LIGHT
         try:
             result = await client.generate(
@@ -655,6 +650,8 @@ class ReplyPlanner:
                 kb_confidence=search_result.confidence,
                 matched_chunks=self.retrieval.prompt_context(search_result),
                 source_diagnostics={
+                    "faq": {"matched": False, "score": faq_score},
+                    "cache": {"hit": False},
                     "kb": {
                         "matched": bool(search_result.chunks),
                         "confidence": search_result.confidence,
@@ -664,6 +661,7 @@ class ReplyPlanner:
                         **self.memory_service.diagnostics_for_package(memory_package),
                         "context_used": bool(user_context),
                     },
+                    "context": context_diagnostics or {"used": False},
                     "ai": {
                         "used": True,
                         "invocation_reason": invocation_reason,
@@ -771,6 +769,11 @@ class ReplyPlanner:
         memory_info = reply.source_diagnostics.get("memory")
         indicators = memory_context_indicators(memory_info if isinstance(memory_info, dict) else None)
         reply_mode = str(reply.source_diagnostics.get("reply_mode") or "normal")
+        message_format = self._normalize_whatsapp_message_format(
+            await self.bot_config.get("whatsapp_message_format", settings.whatsapp_message_format)
+        )
+        quote_body, quote_reason = self._should_quote_whatsapp_body(reply, source, message_format)
+        raw_already_quoted = is_whatsapp_quoted(reply.raw_reply_text or "")
         reply.reply_text = self.formatter.format_reply(
             reply.raw_reply_text or "",
             source=source,
@@ -779,6 +782,7 @@ class ReplyPlanner:
             show_context=show_context,
             enable_signature_style=signature_style,
             mode=reply_mode,
+            quote_body=quote_body,
         )
         if isinstance(experience_info, dict):
             experience_info["formatted"] = True
@@ -786,6 +790,11 @@ class ReplyPlanner:
             experience_info["context_indicators"] = indicators
             experience_info["signature_style"] = signature_style
             experience_info["reply_mode"] = reply_mode
+            experience_info["whatsapp_message_format"] = message_format.value
+            experience_info["quote_rendered"] = quote_body
+            experience_info["quote_applied"] = quote_body and not raw_already_quoted
+            experience_info["quote_reason"] = quote_reason
+            experience_info["raw_reply_text_stored"] = bool(reply.raw_reply_text)
         return reply
 
     def _attach_router_analytics(self, reply: PlannedReply) -> None:
@@ -893,6 +902,127 @@ class ReplyPlanner:
         memory_info = reply.source_diagnostics.get("memory")
         return isinstance(memory_info, dict) and bool(memory_info.get("context_used"))
 
+    @staticmethod
+    def _normalize_whatsapp_message_format(value: str | None) -> WhatsAppMessageFormat:
+        try:
+            return WhatsAppMessageFormat(str(value or "").strip().lower())
+        except ValueError:
+            return WhatsAppMessageFormat.AUTOMATIC
+
+    def _should_quote_whatsapp_body(
+        self,
+        reply: PlannedReply,
+        source: str,
+        mode: WhatsAppMessageFormat,
+    ) -> tuple[bool, str]:
+        if mode == WhatsAppMessageFormat.STANDARD:
+            return False, "standard mode"
+        text = (reply.raw_reply_text or reply.reply_text or "").strip()
+        if not text:
+            return False, "empty response"
+        if is_whatsapp_quoted(text):
+            return True, "already quoted"
+        blocked_reason = self._whatsapp_quote_block_reason(reply, source, text)
+        if blocked_reason:
+            return False, blocked_reason
+        if mode == WhatsAppMessageFormat.QUOTE:
+            if self._quote_mode_candidate(reply, source, text):
+                return True, "quote mode eligible"
+            return False, "not an eligible Zina response"
+        if self._automatic_quote_candidate(reply, source, text):
+            return True, "automatic highlight"
+        return False, "automatic mode left as standard text"
+
+    @staticmethod
+    def _whatsapp_quote_block_reason(reply: PlannedReply, source: str, text: str) -> str | None:
+        diagnostics = reply.source_diagnostics or {}
+        if source in {"Command", "Internet", "Giphy"}:
+            return f"{source.lower()} output"
+        if any(key in diagnostics for key in ("owner_command", "user_command")):
+            return "command output"
+        if isinstance(diagnostics.get("internet"), dict):
+            return "internet output"
+
+        normalized = normalize_text(text)
+        if re.search(r"https?://|www\.", text, flags=re.IGNORECASE):
+            return "contains url"
+        if "`" in text or "```" in text:
+            return "technical or command markup"
+        if re.search(r"(^|\n)\s*(traceback|error|exception):", text, flags=re.IGNORECASE):
+            return "technical output"
+        if re.search(r"(^|\n)\s*[{[]", text) or re.search(r"\b[A-Z][A-Z0-9_]{3,}\b[:=]", text):
+            return "raw technical output"
+        if normalized.startswith(("available commands", "usage:", "command:", "/help", "!help")):
+            return "command help"
+
+        nonblank_lines = [line for line in text.splitlines() if line.strip()]
+        paragraphs = [paragraph for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
+        if len(text) > 900 or len(nonblank_lines) > 10 or len(paragraphs) > 5:
+            return "long response"
+        if getattr(reply, "intent", "") == MessageIntent.GREETING.value and len(text) < 160:
+            return "ordinary greeting"
+        if normalized.startswith(("hi ", "hi.", "hello", "good morning", "good afternoon", "good evening")) and len(text) < 160:
+            return "ordinary greeting"
+        return None
+
+    @staticmethod
+    def _quote_mode_candidate(reply: PlannedReply, source: str, text: str) -> bool:
+        if reply.decision_type in {
+            DecisionType.FAQ_REPLY,
+            DecisionType.KB_REPLY,
+            DecisionType.MEMORY_REPLY,
+            DecisionType.AI_REPLY_LIGHT,
+            DecisionType.AI_REPLY_DEEP,
+            DecisionType.ESCALATED,
+            DecisionType.NO_MATCH,
+            DecisionType.RATE_LIMITED,
+        }:
+            return True
+        if source in {"FAQ", "KB", "Knowledge", "Memory", "Memory + Timeline", "Identity", "AI", "Global Chat", "Fallback", "Cache"}:
+            return True
+        return ReplyPlanner._looks_like_highlight_content(text)
+
+    @staticmethod
+    def _automatic_quote_candidate(reply: PlannedReply, source: str, text: str) -> bool:
+        if reply.decision_type in {
+            DecisionType.FAQ_REPLY,
+            DecisionType.KB_REPLY,
+            DecisionType.AI_REPLY_LIGHT,
+            DecisionType.AI_REPLY_DEEP,
+            DecisionType.ESCALATED,
+            DecisionType.NO_MATCH,
+            DecisionType.RATE_LIMITED,
+        }:
+            return True
+        if reply.decision_type == DecisionType.MEMORY_REPLY:
+            memory_info = reply.source_diagnostics.get("memory")
+            return isinstance(memory_info, dict) and bool(memory_info.get("context_used") or memory_info.get("timeline_entries"))
+        if source in {"Identity", "Cache"} and ReplyPlanner._looks_like_highlight_content(text):
+            return True
+        return ReplyPlanner._looks_like_highlight_content(text) and 40 <= len(text) <= 700
+
+    @staticmethod
+    def _looks_like_highlight_content(text: str) -> bool:
+        normalized = normalize_text(text)
+        markers = (
+            " is ",
+            " are ",
+            " means ",
+            " designed ",
+            " focused ",
+            " important",
+            " warning",
+            " summary",
+            " key ",
+            " should ",
+            " need ",
+            " must ",
+            " use ",
+            " steps",
+            " instruction",
+        )
+        return any(marker in f" {normalized} " for marker in markers)
+
     async def _handle_global_chat_command(
         self,
         message: NormalizedMessage,
@@ -907,10 +1037,11 @@ class ReplyPlanner:
                 reason="global chat command missing contact",
                 should_reply=True,
                 reply_text="Global Chat needs a contact profile first.",
-                source_diagnostics={"source": "Rule"},
+                source_diagnostics={"source": "Command"},
             )
         enabled = normalized == "global on"
         await self.memory_service.set_global_chat(contact_id, enabled)
+        await self._record_command_usage("/global")
         if enabled:
             text = "Global Chat is on. Use `!ask` for one-off AI questions, or send a normal message while Global Chat is on."
         else:
@@ -920,8 +1051,14 @@ class ReplyPlanner:
             reason=f"global chat {'enabled' if enabled else 'disabled'}",
             should_reply=True,
             reply_text=text,
-            source_diagnostics={"source": "Rule", "global_chat": {"active": enabled, "command": normalized}},
+            source_diagnostics={"source": "Command", "global_chat": {"active": enabled, "command": normalized}},
         )
+
+    async def _record_command_usage(self, command: str) -> None:
+        try:
+            await self.command_catalog.record_usage(command)
+        except Exception:
+            return None
 
     async def _handle_internet_command(
         self,
@@ -1096,10 +1233,34 @@ class ReplyPlanner:
             return "AI"
         return "Fallback"
 
-    async def _no_match_reply(self, chat_type: ChatType) -> str | None:
-        if chat_type == ChatType.DM:
+    async def _no_match_reply(self, chat_type: ChatType, message_text: str) -> str | None:
+        if self._requires_human_escalation(message_text):
             return await self.bot_config.escalation_reply()
-        return await self.bot_config.escalation_reply()
+        if chat_type == ChatType.DM:
+            return (
+                "I do not have enough approved information to answer that reliably yet.\n\n"
+                "I checked identity, memory, FAQ, knowledge, internet availability, and AI reasoning before stopping."
+            )
+        return None
+
+    @staticmethod
+    def _requires_human_escalation(message_text: str) -> bool:
+        normalized = normalize_text(message_text)
+        private_markers = {
+            "should fabian",
+            "will fabian",
+            "can fabian approve",
+            "can fabian decide",
+            "does fabian want",
+            "fabian opinion",
+            "fabian private",
+            "personal decision",
+            "private decision",
+            "approve this",
+            "hire me",
+            "give me permission",
+        }
+        return any(marker in normalized for marker in private_markers)
 
     @staticmethod
     def _merge_summary(previous: str, latest: str) -> str:

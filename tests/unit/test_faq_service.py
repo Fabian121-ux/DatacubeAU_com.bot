@@ -83,6 +83,22 @@ def test_parse_faq_text_reads_markdown_pairs() -> None:
     ]
 
 
+def test_parse_plain_faq_text_reads_pasted_question_answer_pairs() -> None:
+    service = FAQService(None)  # type: ignore[arg-type]
+    raw = """Who is Fabian?
+Fabian is an AI systems builder.
+What is Zina?
+Zina is Fabian's AI assistant.
+"""
+
+    pairs = service.parse_faq_text(raw)
+
+    assert pairs == [
+        ("Who is Fabian?", "Fabian is an AI systems builder."),
+        ("What is Zina?", "Zina is Fabian's AI assistant."),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_sync_and_search_faq_with_fake_session() -> None:
     session = FakeFAQSession()
@@ -103,6 +119,73 @@ async def test_sync_and_search_faq_with_fake_session() -> None:
     assert similar_score >= 0.55
     assert missing_entry is None
     assert missing_score < 0.95
+
+
+@pytest.mark.asyncio
+async def test_replacing_core_faq_supersedes_obsolete_entries() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+
+    await service.replace_source_entries(
+        service.parse_faq_text("Who are you?\nI am Zina."),
+        source_id="core_faq",
+        source_name="core_faq.md",
+        source_version="v1",
+    )
+    await service.replace_source_entries(
+        service.parse_faq_text("What is Zina?\nZina is Fabian's AI assistant."),
+        source_id="core_faq",
+        source_name="core_faq.md",
+        source_version="v2",
+    )
+
+    old = next(row for row in session.entries if row.question == "Who are you?")
+    current = next(row for row in session.entries if row.question == "What is Zina?")
+    old_search, _ = await service.search_faq("Who are you?", track_usage=False)
+    current_search, _ = await service.search_faq("What is Zina?", track_usage=False)
+
+    assert old.is_enabled is False
+    assert old.sync_status == "superseded"
+    assert current.is_enabled is True
+    assert current.source_version == "v2"
+    assert old_search is None
+    assert current_search is current
+
+
+@pytest.mark.asyncio
+async def test_repeated_core_faq_replacement_is_idempotent() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+    pairs = service.parse_faq_text("What is Zina?\nZina is Fabian's AI assistant.")
+
+    first = await service.replace_source_entries(pairs, source_id="core_faq", source_name="core_faq.md", source_version="same")
+    second = await service.replace_source_entries(pairs, source_id="core_faq", source_name="core_faq.md", source_version="same")
+
+    assert first == 1
+    assert second == 1
+    assert len([row for row in session.entries if row.question == "What is Zina?"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_plain_identity_import_sync_keeps_distinct_entities() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+    raw = """Who is Fabian?
+Fabian is an AI systems builder.
+What is Zina?
+Zina is Fabian's AI assistant.
+"""
+
+    count = await service.sync_faq_in_db(service.parse_faq_text(raw))
+    fabian, _ = await service.search_faq("Who is Fabian?", track_usage=False)
+    zina, _ = await service.search_faq("What is Zina?", track_usage=False)
+
+    assert count == 2
+    assert len(session.entries) == 2
+    assert fabian is not None
+    assert fabian.answer == "Fabian is an AI systems builder."
+    assert zina is not None
+    assert zina.answer == "Zina is Fabian's AI assistant."
 
 
 @pytest.mark.asyncio
@@ -164,6 +247,38 @@ async def test_import_candidates_require_approval_before_publish() -> None:
     assert approved is not None
     assert approved.answer == "Fabian is an AI systems builder."
     assert score >= 0.72
+
+
+@pytest.mark.asyncio
+async def test_plain_identity_import_creates_two_pending_candidates() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+    raw = """Who is Fabian?
+Fabian is an AI systems builder.
+What is Zina?
+Zina is Fabian's AI assistant.
+"""
+
+    result = await service.import_candidates(raw, source_name="test")
+
+    assert result["created"] == 2
+    assert result["duplicates"] == 0
+    assert len(session.candidates) == 2
+
+
+@pytest.mark.asyncio
+async def test_import_candidates_are_idempotent_for_pending_duplicates() -> None:
+    session = FakeFAQSession()
+    service = FAQService(session)  # type: ignore[arg-type]
+    raw = "Who is Fabian?\n\nFabian is an AI systems builder."
+
+    first = await service.import_candidates(raw, source_name="test")
+    second = await service.import_candidates(raw, source_name="test")
+
+    assert first["created"] == 1
+    assert second["created"] == 0
+    assert second["skipped"] == 1
+    assert len(session.candidates) == 1
 
 
 @pytest.mark.asyncio

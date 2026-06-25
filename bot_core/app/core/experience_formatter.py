@@ -31,6 +31,32 @@ class ReplyMode(str, Enum):
     DETAILED = "detailed"
 
 
+class WhatsAppMessageFormat(str, Enum):
+    STANDARD = "standard"
+    QUOTE = "quote"
+    AUTOMATIC = "automatic"
+
+
+def format_whatsapp_quote(text: str) -> str:
+    """Apply WhatsApp native quote markup without changing paragraph spacing."""
+    if not text:
+        return text
+    quoted_lines: list[str] = []
+    for line in text.split("\n"):
+        if not line.strip():
+            quoted_lines.append("")
+        elif line.lstrip().startswith(">"):
+            quoted_lines.append(line.lstrip())
+        else:
+            quoted_lines.append(f"> {line}")
+    return "\n".join(quoted_lines)
+
+
+def is_whatsapp_quoted(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return bool(lines) and all(line.lstrip().startswith(">") for line in lines)
+
+
 class WhatsAppExperienceFormatter:
     """Formats user-visible replies without hiding full admin diagnostics."""
 
@@ -50,8 +76,11 @@ class WhatsAppExperienceFormatter:
         enable_signature_style: bool = True,
         mode: str = ReplyMode.NORMAL.value,
         next_step: str | None = None,
+        quote_body: bool = False,
     ) -> str:
         body = self.format_body(reply_text)
+        if quote_body:
+            body = format_whatsapp_quote(body)
         indicators = self._clean_indicators(context_indicators or []) if show_context else []
         if not enable_signature_style:
             return self._legacy_reply(
@@ -238,6 +267,7 @@ class WhatsAppExperienceFormatter:
     def _already_structured(text: str) -> bool:
         return bool(
             bool(re.search(r"(^|\n)([-*•]|\d+\.)\s+", text))
+            or bool(re.search(r"(^|\n)>\s*", text))
             or "\n\n" in text
             or re.search(r"^\*[^*]+\*", text)
             or re.search(r"^[\w\s]+:\n", text)

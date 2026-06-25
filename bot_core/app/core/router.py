@@ -45,7 +45,7 @@ class InboundRouter:
 
     async def process_event(self, event: dict[str, Any]) -> dict[str, Any]:
         normalized = self.normalizer.normalize(event)
-        contact = await self._get_or_create_contact(normalized.sender_id, normalized.sender_name)
+        contact = await self._get_or_create_contact(normalized)
         inbound = await self._save_inbound_message(normalized, contact.id)
         await self.reply_planner.memory_service.ensure_relationship_profile(
             contact.id,
@@ -146,14 +146,23 @@ class InboundRouter:
             ))
 
         await self._maybe_typing_delay(normalized, planned)
+        formatting_metadata = self._reply_formatting_metadata(planned)
         queued = await self._queue_outbound_message(
             normalized.chat_id,
             planned.reply_text,
             media_url=planned.media_url,
             media_type=planned.media_type,
             media_caption=planned.media_caption,
+            formatting_json=formatting_metadata,
         )
-        outbound = await self._save_outbound_message(normalized, contact.id, planned.reply_text, queued.id)
+        outbound = await self._save_outbound_message(
+            normalized,
+            contact.id,
+            planned.reply_text,
+            queued.id,
+            raw_reply_text=planned.raw_reply_text,
+            formatting_json=formatting_metadata,
+        )
         decision.reply_sent = True
         if planned.ai_call:
             planned.ai_call.message_id = inbound.id
@@ -171,7 +180,7 @@ class InboundRouter:
             chat_id=normalized.chat_id,
             chat_type=normalized.chat_type.value,
             user_text=normalized.message_text,
-            bot_text=planned.reply_text,
+            bot_text=planned.raw_reply_text or planned.reply_text,
             decision=planned.decision_type.value,
         )
         timeline_entry = await self.reply_planner.memory_service.log_conversation_event(
@@ -225,6 +234,9 @@ class InboundRouter:
                 "chat_id": normalized.chat_id,
                 "media_url": planned.media_url,
                 "media_type": planned.media_type,
+                "raw_reply_text": planned.raw_reply_text,
+                "final_reply_text": planned.reply_text,
+                "formatting": formatting_metadata,
                 "source_diagnostics": planned.source_diagnostics,
             },
         )
@@ -256,19 +268,55 @@ class InboundRouter:
     async def close(self) -> None:
         return None
 
-    async def _get_or_create_contact(self, whatsapp_id: str, display_name: str | None) -> Contact:
+    async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
+        whatsapp_id = normalized.sender_id
+        identity = normalized.sender_identity or {}
+        display_name = self._resolved_display_name(identity, normalized.sender_name)
         stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1)
         model = (await self.session.execute(stmt)).scalar_one_or_none()
         if model:
-            if display_name and display_name != model.display_name:
+            if display_name and display_name != model.display_name and not getattr(model, "is_name_verified", False):
                 model.display_name = display_name
+            self._apply_contact_identity(model, normalized, identity)
             model.updated_at = utcnow()
             return model
 
         model = Contact(whatsapp_id=whatsapp_id or "unknown@local", display_name=display_name, updated_at=utcnow())
+        self._apply_contact_identity(model, normalized, identity)
         self.session.add(model)
         await self.session.flush()
         return model
+
+    @staticmethod
+    def _resolved_display_name(identity: dict[str, Any], fallback: str | None) -> str | None:
+        for key in ("contact_name", "push_name", "profile_name", "display_name", "normalized_phone"):
+            value = identity.get(key) if isinstance(identity, dict) else None
+            text = " ".join(str(value or "").strip().split())
+            if text:
+                return text[:180]
+        return fallback
+
+    @staticmethod
+    def _apply_contact_identity(model: Contact, normalized: NormalizedMessage, identity: dict[str, Any]) -> None:
+        model.chat_id = normalized.chat_id
+        model.whatsapp_phone = identity.get("phone") or model.whatsapp_phone
+        model.normalized_phone = identity.get("normalized_phone") or model.normalized_phone
+        model.waha_contact_id = identity.get("waha_contact_id") or model.waha_contact_id
+        model.waha_participant_id = identity.get("waha_participant_id") or model.waha_participant_id
+        model.push_name = identity.get("push_name") or model.push_name
+        model.contact_name = identity.get("contact_name") or model.contact_name
+        model.profile_image_url = identity.get("profile_image_url") or model.profile_image_url
+        model.identity_source = (
+            "contact_name"
+            if identity.get("contact_name")
+            else "push_name"
+            if identity.get("push_name")
+            else "phone"
+            if identity.get("normalized_phone")
+            else model.identity_source
+        )
+        model.identity_json = identity or model.identity_json
+        model.last_active_at = utcnow()
 
     async def _save_inbound_message(self, msg: NormalizedMessage, contact_id: int) -> Message:
         model = Message(
@@ -292,6 +340,9 @@ class InboundRouter:
         contact_id: int,
         text: str,
         outbound_queue_id: int,
+        *,
+        raw_reply_text: str | None = None,
+        formatting_json: dict[str, Any] | None = None,
     ) -> Message:
         model = Message(
             bot_number_id=None,
@@ -302,7 +353,13 @@ class InboundRouter:
             message_text=text,
             normalized_text=normalize_text(text),
             message_type="text",
-            raw_payload_json={"source": "router_queue", "outbound_queue_id": outbound_queue_id},
+            raw_payload_json={
+                "source": "router_queue",
+                "outbound_queue_id": outbound_queue_id,
+                "raw_reply_text": raw_reply_text or text,
+                "final_reply_text": text,
+                "formatting": formatting_json or {},
+            },
         )
         self.session.add(model)
         await self.session.flush()
@@ -316,6 +373,7 @@ class InboundRouter:
         media_url: str | None = None,
         media_type: str | None = None,
         media_caption: str | None = None,
+        formatting_json: dict[str, Any] | None = None,
     ) -> OutboundMessage:
         model = OutboundMessage(
             chat_id=chat_id or "unknown-chat",
@@ -323,6 +381,7 @@ class InboundRouter:
             media_url=media_url,
             media_type=media_type,
             media_caption=media_caption,
+            formatting_json=formatting_json,
             status="pending",
             retry_count=0,
             max_retries=3,
@@ -332,6 +391,20 @@ class InboundRouter:
         self.session.add(model)
         await self.session.flush()
         return model
+
+    @staticmethod
+    def _reply_formatting_metadata(planned: PlannedReply) -> dict[str, Any]:
+        experience = planned.source_diagnostics.get("experience")
+        if not isinstance(experience, dict):
+            experience = {}
+        return {
+            "raw_reply_text": planned.raw_reply_text or planned.reply_text,
+            "final_reply_text": planned.reply_text,
+            "whatsapp_message_format": experience.get("whatsapp_message_format", "standard"),
+            "quote_rendered": bool(experience.get("quote_rendered")),
+            "quote_applied": bool(experience.get("quote_applied")),
+            "quote_reason": experience.get("quote_reason"),
+        }
 
     async def _save_router_decision(
         self,

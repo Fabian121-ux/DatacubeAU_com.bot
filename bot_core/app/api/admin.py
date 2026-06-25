@@ -10,14 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin_session
 from app.config import settings
+from app.core.experience_formatter import WhatsAppMessageFormat
 from app.core.message_normalizer import NormalizedMessage
 from app.core.router import InboundRouter
 from app.db import get_db_session
-from app.models.enums import ChatType, GroupReplyMode
+from app.models.enums import ChatType, DecisionType, GroupReplyMode
 from app.models.schema import (
     AICall,
     AIUsageEvent,
     AIUsageQuota,
+    AdminAccount,
     AuditLog,
     BotConfig,
     Contact,
@@ -26,6 +28,7 @@ from app.models.schema import (
     ConversationTimeline,
     FAQEntry,
     GroupConfig,
+    GroupMetadata,
     IdentityRegistryEntry,
     InternetCache,
     InternetUsageEvent,
@@ -38,6 +41,7 @@ from app.models.schema import (
     UserMemory,
     UserMemoryTimeline,
 )
+from app.services.admin_management_service import AdminManagementService
 from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.faq_service import FAQService
@@ -70,6 +74,22 @@ class GroupModeIn(BaseModel):
     reply_mode: GroupReplyMode = GroupReplyMode.MENTION_ONLY
     is_enabled: bool = True
     cooldown_seconds: int = Field(default=45, ge=0, le=3600)
+
+
+class GroupConfigIn(BaseModel):
+    chat_id: str
+    display_name: str | None = None
+    reply_mode: GroupReplyMode = GroupReplyMode.MENTION_ONLY
+    is_enabled: bool = True
+    cooldown_seconds: int = Field(default=45, ge=0, le=3600)
+
+
+class GroupConfigUpdate(BaseModel):
+    chat_id: str | None = None
+    display_name: str | None = None
+    reply_mode: GroupReplyMode | None = None
+    is_enabled: bool | None = None
+    cooldown_seconds: int | None = Field(default=None, ge=0, le=3600)
 
 
 class ReplyRuleIn(BaseModel):
@@ -123,6 +143,23 @@ class CommandToggleIn(BaseModel):
     enabled: bool
 
 
+class AdminAccountIn(BaseModel):
+    name: str
+    whatsapp_number: str
+    role: str = "admin"
+    permission_level: str = "owner"
+    is_primary: bool = False
+
+
+class AdminAccountUpdate(BaseModel):
+    name: str | None = None
+    whatsapp_number: str | None = None
+    role: str | None = None
+    permission_level: str | None = None
+    is_enabled: bool | None = None
+    is_primary: bool | None = None
+
+
 class IdentityRegistryUpdate(BaseModel):
     registry_key: str
     category: str | None = None
@@ -149,6 +186,26 @@ class MemoryUpdate(BaseModel):
     relationship: str | None = None
     relationship_type: str | None = None
     personality_notes: str | None = None
+    is_enabled: bool | None = None
+
+
+class MemoryFactIn(BaseModel):
+    contact_id: int
+    memory_text: str = Field(min_length=2, max_length=1200)
+    memory_type: str = "profile_fact"
+    source: str = "admin"
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    is_enabled: bool = True
+
+
+class MemoryFactUpdate(BaseModel):
+    memory_text: str | None = Field(default=None, min_length=2, max_length=1200)
+    memory_type: str | None = None
+    source: str | None = None
+    importance: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    is_enabled: bool | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -230,12 +287,19 @@ async def recent_router_decisions(
         }
     inbound_ids = [row[0].message_id for row in rows]
     inbound_map: dict[int, Message] = {}
+    contact_map: dict[int, Contact] = {}
     final_response_map: dict[int, str] = {}
+    whatsapp_final_response_map: dict[int, str] = {}
+    response_formatting_map: dict[int, dict[str, Any]] = {}
     if inbound_ids:
         inbound_messages = (
             await db.execute(select(Message).where(Message.id.in_(inbound_ids)))
         ).scalars().all()
         inbound_map = {message.id: message for message in inbound_messages}
+        contact_ids = [message.contact_id for message in inbound_messages if message.contact_id]
+        if contact_ids:
+            contacts = (await db.execute(select(Contact).where(Contact.id.in_(contact_ids)))).scalars().all()
+            contact_map = {contact.id: contact for contact in contacts}
         chat_ids = sorted({message.chat_id for message in inbound_messages})
         outbound_messages = (
             await db.execute(
@@ -255,7 +319,9 @@ async def recent_router_decisions(
                 None,
             )
             if final:
-                final_response_map[inbound.id] = final.message_text
+                final_response_map[inbound.id] = _display_text_for_message(final)
+                whatsapp_final_response_map[inbound.id] = final.message_text
+                response_formatting_map[inbound.id] = _message_formatting(final)
     return {
         "count": len(rows),
         "items": [
@@ -263,6 +329,28 @@ async def recent_router_decisions(
                 "id": row[0].id,
                 "message_id": row[0].message_id,
                 "message": (inbound_map.get(row[0].message_id).message_text if inbound_map.get(row[0].message_id) else None),
+                "user_name": (
+                    contact_map.get(inbound_map[row[0].message_id].contact_id).display_name
+                    if inbound_map.get(row[0].message_id)
+                    and inbound_map[row[0].message_id].contact_id
+                    and contact_map.get(inbound_map[row[0].message_id].contact_id)
+                    else None
+                ),
+                "phone_number": (
+                    contact_map.get(inbound_map[row[0].message_id].contact_id).normalized_phone
+                    or contact_map.get(inbound_map[row[0].message_id].contact_id).whatsapp_phone
+                    if inbound_map.get(row[0].message_id)
+                    and inbound_map[row[0].message_id].contact_id
+                    and contact_map.get(inbound_map[row[0].message_id].contact_id)
+                    else None
+                ),
+                "whatsapp_id": (
+                    contact_map.get(inbound_map[row[0].message_id].contact_id).whatsapp_id
+                    if inbound_map.get(row[0].message_id)
+                    and inbound_map[row[0].message_id].contact_id
+                    and contact_map.get(inbound_map[row[0].message_id].contact_id)
+                    else None
+                ),
                 "question": audit_map.get(str(row[0].id), {}).get("question"),
                 "intent": audit_map.get(str(row[0].id), {}).get("intent"),
                 "decision_type": row[0].decision_type,
@@ -276,6 +364,12 @@ async def recent_router_decisions(
                 "latency_ms": row[5] or 0,
                 "router_analytics": audit_map.get(str(row[0].id), {}).get("router_analytics") or {},
                 "source_diagnostics": audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {},
+                "fallback_reason": ((audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("fallback") or {}).get("reason"),
+                "identity_used": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("identity"),
+                "memory_used": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("memory"),
+                "faq_used": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("faq"),
+                "knowledge_used": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("knowledge"),
+                "project_context": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("project"),
                 "expanded_query": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("expanded_query"),
                 "topic": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("topic"),
                 "entities": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("entities") or [],
@@ -288,6 +382,8 @@ async def recent_router_decisions(
                 "selected_route": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("selected_route"),
                 "rejected_routes": (audit_map.get(str(row[0].id), {}).get("router_analytics") or {}).get("rejected_routes") or [],
                 "final_response": final_response_map.get(row[0].message_id),
+                "whatsapp_final_response": whatsapp_final_response_map.get(row[0].message_id),
+                "response_formatting": response_formatting_map.get(row[0].message_id) or {},
             }
             for row in rows
         ],
@@ -318,6 +414,9 @@ async def recent_messages(
                 "chat_type": row.chat_type,
                 "direction": row.direction,
                 "message_text": row.message_text,
+                "display_text": _display_text_for_message(row),
+                "whatsapp_formatted_text": row.message_text if row.direction == "outbound" else None,
+                "formatting": _message_formatting(row),
                 "message_type": row.message_type,
                 "created_at": row.created_at,
             }
@@ -358,12 +457,17 @@ async def test_reply(
                 .where(KnowledgeDocument.status == "active")
             )
         ).scalar_one()
+        display_reply_text = planned.raw_reply_text or planned.reply_text
         return {
             "decision_type": planned.decision_type.value,
             "source": planned.source_diagnostics.get("source"),
             "reason": planned.reason,
             "should_reply": planned.should_reply,
-            "reply_text": planned.reply_text,
+            "reply_text": display_reply_text,
+            "display_reply_text": display_reply_text,
+            "raw_reply_text": planned.raw_reply_text,
+            "whatsapp_reply_text": planned.reply_text,
+            "response_formatting": planned.source_diagnostics.get("experience", {}),
             "kb_confidence": planned.kb_confidence,
             "matched_chunks": planned.matched_chunks,
             "source_diagnostics": planned.source_diagnostics,
@@ -454,20 +558,39 @@ async def create_reply_rule(
     payload: ReplyRuleIn,
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    rule = ReplyRule(
-        keyword=payload.keyword,
-        response_text=payload.response_text,
-        match_mode=payload.match_mode,
-        chat_type_filter=payload.chat_type_filter,
-        is_enabled=payload.is_enabled,
-        priority=payload.priority,
-        updated_at=utcnow(),
+    chat_type_filter = payload.chat_type_filter if payload.chat_type_filter != "" else None
+    rule = await _find_reply_rule_by_key(db, payload.keyword, payload.match_mode, chat_type_filter)
+    created = rule is None
+    if rule is None:
+        rule = ReplyRule(
+            keyword=payload.keyword,
+            response_text=payload.response_text,
+            match_mode=payload.match_mode,
+            chat_type_filter=chat_type_filter,
+            is_enabled=payload.is_enabled,
+            priority=payload.priority,
+            updated_at=utcnow(),
+        )
+        db.add(rule)
+    else:
+        rule.keyword = payload.keyword
+        rule.response_text = payload.response_text
+        rule.match_mode = payload.match_mode
+        rule.chat_type_filter = chat_type_filter
+        rule.is_enabled = payload.is_enabled
+        rule.priority = payload.priority
+        rule.updated_at = utcnow()
+    db.add(
+        AuditLog(
+            action="reply_rule_created" if created else "reply_rule_updated",
+            entity_type="reply_rule",
+            entity_id=str(rule.id) if rule.id else None,
+            details_json=payload.model_dump(),
+        )
     )
-    db.add(rule)
-    db.add(AuditLog(action="reply_rule_created", entity_type="reply_rule", entity_id=None, details_json=payload.model_dump()))
     await db.commit()
     await db.refresh(rule)
-    return {"ok": True, "id": rule.id}
+    return {"ok": True, "id": rule.id, "created": created}
 
 
 @router.put("/reply-rules/{rule_id}")
@@ -479,6 +602,21 @@ async def update_reply_rule(
     rule = await db.get(ReplyRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="rule not found")
+    next_keyword = payload.keyword if payload.keyword is not None else rule.keyword
+    next_match_mode = payload.match_mode if payload.match_mode is not None else rule.match_mode
+    if payload.chat_type_filter is not None:
+        next_chat_type_filter = payload.chat_type_filter if payload.chat_type_filter != "" else None
+    else:
+        next_chat_type_filter = rule.chat_type_filter
+    duplicate = await _find_reply_rule_by_key(
+        db,
+        next_keyword,
+        next_match_mode,
+        next_chat_type_filter,
+        exclude_id=rule_id,
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail=f"duplicate reply rule exists: {duplicate.id}")
     if payload.keyword is not None:
         rule.keyword = payload.keyword
     if payload.response_text is not None:
@@ -517,25 +655,113 @@ async def delete_reply_rule(
 
 @router.get("/groups")
 async def list_groups(
+    q: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     stmt = select(GroupConfig).order_by(GroupConfig.updated_at.desc()).limit(limit)
+    if status == "enabled":
+        stmt = stmt.where(GroupConfig.is_enabled.is_(True))
+    elif status == "disabled":
+        stmt = stmt.where(GroupConfig.is_enabled.is_(False))
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(GroupConfig.chat_id.ilike(like), GroupConfig.display_name.ilike(like)))
     rows = (await db.execute(stmt)).scalars().all()
+    metadata_rows = (
+        await db.execute(select(GroupMetadata).where(GroupMetadata.chat_id.in_([row.chat_id for row in rows])))
+    ).scalars().all() if rows else []
+    metadata_by_chat = {row.chat_id: row for row in metadata_rows}
     return {
         "count": len(rows),
         "items": [
             {
                 "id": r.id,
                 "chat_id": r.chat_id,
+                "display_name": r.display_name or getattr(metadata_by_chat.get(r.chat_id), "group_name", None) or r.chat_id,
+                "configured_display_name": r.display_name,
+                "waha_group_name": getattr(metadata_by_chat.get(r.chat_id), "group_name", None),
                 "reply_mode": r.reply_mode,
                 "is_enabled": r.is_enabled,
+                "enabled": r.is_enabled,
                 "cooldown_seconds": r.cooldown_seconds,
+                "created_at": getattr(r, "created_at", None),
                 "updated_at": r.updated_at,
             }
             for r in rows
         ],
     }
+
+
+@router.post("/groups")
+async def create_group_config(
+    payload: GroupConfigIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    chat_id = payload.chat_id.strip()
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+    existing = (await db.execute(select(GroupConfig).where(GroupConfig.chat_id == chat_id).limit(1))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="group chat_id already exists")
+    row = GroupConfig(
+        chat_id=chat_id,
+        display_name=payload.display_name,
+        reply_mode=payload.reply_mode.value,
+        is_enabled=payload.is_enabled,
+        cooldown_seconds=payload.cooldown_seconds,
+        updated_at=utcnow(),
+    )
+    db.add(row)
+    await db.flush()
+    db.add(AuditLog(action="group_config_created", entity_type="group_config", entity_id=str(row.id), details_json=payload.model_dump(mode="json")))
+    await db.commit()
+    return {"ok": True, "id": row.id}
+
+
+@router.put("/groups/{group_id}")
+async def update_group_config(
+    group_id: int,
+    payload: GroupConfigUpdate,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = await db.get(GroupConfig, group_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="group not found")
+    updates = payload.model_dump(exclude_unset=True, mode="json")
+    new_chat_id = updates.get("chat_id")
+    if new_chat_id and new_chat_id != row.chat_id:
+        duplicate = (await db.execute(select(GroupConfig).where(GroupConfig.chat_id == new_chat_id).limit(1))).scalar_one_or_none()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="group chat_id already exists")
+        row.chat_id = new_chat_id
+    if "display_name" in updates:
+        row.display_name = updates["display_name"]
+    if "reply_mode" in updates and updates["reply_mode"] is not None:
+        row.reply_mode = str(updates["reply_mode"])
+    if "is_enabled" in updates and updates["is_enabled"] is not None:
+        row.is_enabled = updates["is_enabled"]
+    if "cooldown_seconds" in updates and updates["cooldown_seconds"] is not None:
+        row.cooldown_seconds = int(updates["cooldown_seconds"])
+    row.updated_at = utcnow()
+    db.add(AuditLog(action="group_config_updated", entity_type="group_config", entity_id=str(row.id), details_json=updates))
+    await db.commit()
+    return {"ok": True, "id": row.id}
+
+
+@router.delete("/groups/{group_id}")
+async def delete_group_config(
+    group_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = await db.get(GroupConfig, group_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="group not found")
+    await db.delete(row)
+    db.add(AuditLog(action="group_config_deleted", entity_type="group_config", entity_id=str(group_id), details_json={"group_id": group_id}))
+    await db.commit()
+    return {"ok": True, "id": group_id}
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +770,8 @@ async def list_groups(
 
 @router.get("/memory")
 async def list_memory(
+    q: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
@@ -553,6 +781,24 @@ async def list_memory(
         .order_by(UserMemory.updated_at.desc())
         .limit(limit)
     )
+    if status == "enabled":
+        stmt = stmt.where(UserMemory.is_enabled.is_(True))
+    elif status == "disabled":
+        stmt = stmt.where(UserMemory.is_enabled.is_(False))
+    if q:
+        like = f"%{q}%"
+        norm_like = f"%{normalize_text(q)}%"
+        stmt = stmt.where(
+            or_(
+                Contact.display_name.ilike(like),
+                Contact.whatsapp_id.ilike(like),
+                Contact.normalized_phone.ilike(like),
+                UserMemory.display_name.ilike(like),
+                UserMemory.user_name.ilike(like),
+                UserMemory.interests.ilike(norm_like),
+                UserMemory.projects.ilike(norm_like),
+            )
+        )
     rows = (await db.execute(stmt)).all()
     return {
         "count": len(rows),
@@ -574,6 +820,10 @@ async def list_memory(
                 "relationship": mem.relationship,
                 "relationship_type": mem.relationship_type,
                 "personality_notes": mem.personality_notes,
+                "enabled": mem.is_enabled,
+                "is_enabled": mem.is_enabled,
+                "usage_count": mem.usage_count,
+                "last_used_at": mem.last_used_at,
                 "first_seen_at": mem.first_seen_at,
                 "last_interaction_at": mem.last_interaction_at,
                 "created_at": mem.created_at,
@@ -581,6 +831,136 @@ async def list_memory(
             }
             for mem, contact in rows
         ],
+    }
+
+
+@router.get("/memory/facts")
+async def list_memory_facts(
+    q: str | None = Query(default=None),
+    contact_id: int | None = Query(default=None),
+    memory_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    min_importance: float | None = Query(default=None, ge=0.0, le=1.0),
+    limit: int = Query(default=100, ge=1, le=300),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = (
+        select(UserMemoryTimeline, Contact)
+        .join(Contact, Contact.id == UserMemoryTimeline.contact_id)
+        .order_by(UserMemoryTimeline.updated_at.desc())
+        .limit(limit)
+    )
+    if contact_id is not None:
+        stmt = stmt.where(UserMemoryTimeline.contact_id == contact_id)
+    if memory_type:
+        stmt = stmt.where(UserMemoryTimeline.memory_type == memory_type)
+    if status == "enabled":
+        stmt = stmt.where(UserMemoryTimeline.is_enabled.is_(True))
+    elif status == "disabled":
+        stmt = stmt.where(UserMemoryTimeline.is_enabled.is_(False))
+    if min_importance is not None:
+        stmt = stmt.where(UserMemoryTimeline.importance >= min_importance)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                UserMemoryTimeline.memory_text.ilike(like),
+                Contact.display_name.ilike(like),
+                Contact.whatsapp_id.ilike(like),
+                Contact.normalized_phone.ilike(like),
+            )
+        )
+    rows = (await db.execute(stmt)).all()
+    return {
+        "count": len(rows),
+        "items": [_memory_fact_payload(row, contact) for row, contact in rows],
+    }
+
+
+@router.post("/memory/facts")
+async def create_memory_fact(
+    payload: MemoryFactIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    contact = await db.get(Contact, payload.contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="contact not found")
+    normalized = normalize_text(payload.memory_text)
+    existing_rows = (
+        await db.execute(
+            select(UserMemoryTimeline)
+            .where(UserMemoryTimeline.contact_id == payload.contact_id)
+            .where(UserMemoryTimeline.is_enabled.is_(True))
+        )
+    ).scalars().all()
+    if any(normalize_text(row.memory_text) == normalized for row in existing_rows):
+        raise HTTPException(status_code=409, detail="duplicate memory fact for this user")
+    row = UserMemoryTimeline(
+        contact_id=payload.contact_id,
+        memory_text=payload.memory_text.strip(),
+        source=payload.source[:40],
+        memory_type=payload.memory_type[:40],
+        importance=payload.importance,
+        confidence=payload.confidence,
+        is_enabled=payload.is_enabled,
+        updated_at=utcnow(),
+    )
+    db.add(row)
+    await db.flush()
+    db.add(AuditLog(action="memory_fact_created", entity_type="user_memory_timeline", entity_id=str(row.id), details_json=payload.model_dump()))
+    await db.commit()
+    return {"ok": True, "item": _memory_fact_payload(row, contact)}
+
+
+@router.put("/memory/facts/{fact_id}")
+async def update_memory_fact(
+    fact_id: int,
+    payload: MemoryFactUpdate,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = await db.get(UserMemoryTimeline, fact_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="memory fact not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "memory_text" in updates and updates["memory_text"] is not None:
+        row.memory_text = str(updates["memory_text"]).strip()
+    for field in ("memory_type", "source"):
+        if field in updates and updates[field] is not None:
+            setattr(row, field, str(updates[field])[:40])
+    for field in ("importance", "confidence", "is_enabled"):
+        if field in updates and updates[field] is not None:
+            setattr(row, field, updates[field])
+    row.updated_at = utcnow()
+    contact = await db.get(Contact, row.contact_id)
+    db.add(AuditLog(action="memory_fact_updated", entity_type="user_memory_timeline", entity_id=str(row.id), details_json=updates))
+    await db.commit()
+    return {"ok": True, "item": _memory_fact_payload(row, contact)}
+
+
+@router.delete("/memory/facts/{fact_id}")
+async def delete_memory_fact(
+    fact_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = await db.get(UserMemoryTimeline, fact_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="memory fact not found")
+    contact_id = row.contact_id
+    await db.delete(row)
+    db.add(AuditLog(action="memory_fact_deleted", entity_type="user_memory_timeline", entity_id=str(fact_id), details_json={"contact_id": contact_id}))
+    await db.commit()
+    return {"ok": True, "id": fact_id, "contact_id": contact_id}
+
+
+@router.get("/memory/export")
+async def export_memory(
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    profiles = (await db.execute(select(UserMemory, Contact).join(Contact, Contact.id == UserMemory.contact_id))).all()
+    facts = (await db.execute(select(UserMemoryTimeline, Contact).join(Contact, Contact.id == UserMemoryTimeline.contact_id))).all()
+    return {
+        "profiles": [_profile_payload(mem, contact) for mem, contact in profiles],
+        "facts": [_memory_fact_payload(row, contact) for row, contact in facts],
     }
 
 
@@ -655,6 +1035,8 @@ async def update_memory(
     if payload.relationship_type is not None:
         mem.relationship_type = MemoryService.normalize_relationship_type(payload.relationship_type)
         timeline_updates.append(f"relationship_type: {mem.relationship_type}")
+    if payload.is_enabled is not None:
+        mem.is_enabled = payload.is_enabled
     mem.updated_at = utcnow()
     for fact in timeline_updates:
         db.add(
@@ -787,8 +1169,13 @@ async def get_memory_timeline(
             "summary": row.memory_text,
             "memory_text": row.memory_text,
             "source": row.source,
-            "importance_score": row.confidence,
+            "memory_type": getattr(row, "memory_type", "profile_fact"),
+            "importance_score": getattr(row, "importance", None) or row.confidence,
             "confidence": row.confidence,
+            "enabled": bool(getattr(row, "is_enabled", True)),
+            "is_enabled": bool(getattr(row, "is_enabled", True)),
+            "usage_count": int(getattr(row, "usage_count", 0) or 0),
+            "last_used_at": getattr(row, "last_used_at", None),
             "timestamp": row.created_at,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
@@ -811,12 +1198,21 @@ async def delete_conversation_timeline_entry(
 ) -> dict[str, Any]:
     svc = MemoryService(db)
     deleted = await svc.delete_timeline_entry(contact_id, timeline_id)
+    entity_type = "conversation_timeline"
+    if not deleted:
+        result = await db.execute(
+            delete(UserMemoryTimeline)
+            .where(UserMemoryTimeline.id == timeline_id)
+            .where(UserMemoryTimeline.contact_id == contact_id)
+        )
+        deleted = bool(result.rowcount)
+        entity_type = "user_memory_timeline"
     if not deleted:
         raise HTTPException(status_code=404, detail="timeline entry not found for this contact")
     db.add(
         AuditLog(
-            action="conversation_timeline_deleted",
-            entity_type="conversation_timeline",
+            action=f"{entity_type}_deleted",
+            entity_type=entity_type,
             entity_id=str(timeline_id),
             details_json={"contact_id": contact_id},
         )
@@ -886,9 +1282,9 @@ async def list_profiles(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     stmt = (
-        select(UserMemory, Contact)
-        .join(Contact, Contact.id == UserMemory.contact_id)
-        .order_by(UserMemory.updated_at.desc())
+        select(Contact, UserMemory)
+        .outerjoin(UserMemory, UserMemory.contact_id == Contact.id)
+        .order_by(Contact.last_active_at.desc().nulls_last(), Contact.updated_at.desc())
         .limit(limit)
     )
     if q:
@@ -898,6 +1294,10 @@ async def list_profiles(
             or_(
                 Contact.whatsapp_id.ilike(display_like),
                 Contact.display_name.ilike(display_like),
+                Contact.push_name.ilike(display_like),
+                Contact.contact_name.ilike(display_like),
+                Contact.normalized_phone.ilike(display_like),
+                Contact.chat_id.ilike(display_like),
                 UserMemory.display_name.ilike(display_like),
                 UserMemory.user_name.ilike(display_like),
                 UserMemory.profession.ilike(display_like),
@@ -909,9 +1309,24 @@ async def list_profiles(
             )
         )
     rows = (await db.execute(stmt)).all()
+    items = []
+    for contact, mem in rows:
+        payload = _profile_payload(mem, contact)
+        payload["message_count"] = int(
+            (await db.execute(select(func.count(Message.id)).where(Message.contact_id == contact.id))).scalar_one() or 0
+        )
+        payload["memory_count"] = int(
+            (await db.execute(select(func.count(UserMemoryTimeline.id)).where(UserMemoryTimeline.contact_id == contact.id))).scalar_one() or 0
+        )
+        session = (
+            await db.execute(select(ConversationSession).where(ConversationSession.chat_id == contact.whatsapp_id).limit(1))
+        ).scalar_one_or_none()
+        payload["current_conversation_mode"] = "global" if getattr(mem, "global_chat_enabled", False) else "standard"
+        payload["last_intent"] = getattr(session, "last_intent", None)
+        items.append(payload)
     return {
-        "count": len(rows),
-        "items": [_profile_payload(mem, contact) for mem, contact in rows],
+        "count": len(items),
+        "items": items,
     }
 
 
@@ -934,6 +1349,7 @@ async def update_profile(
     for field, value in updates.items():
         if field == "display_name":
             contact.display_name = value
+            contact.is_name_verified = True
         if field == "relationship_type":
             value = MemoryService.normalize_relationship_type(value)
         setattr(mem, field, value)
@@ -1010,10 +1426,16 @@ async def update_config(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     svc = BotConfigService(db)
-    await svc.set(payload.key, payload.value)
-    db.add(AuditLog(action="config_updated", entity_type="bot_config", entity_id=payload.key, details_json={"value": payload.value}))
+    value = payload.value
+    if payload.key == "whatsapp_message_format":
+        try:
+            value = WhatsAppMessageFormat(payload.value.strip().lower()).value
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="whatsapp_message_format must be standard, quote, or automatic") from exc
+    await svc.set(payload.key, value)
+    db.add(AuditLog(action="config_updated", entity_type="bot_config", entity_id=payload.key, details_json={"value": value}))
     await db.commit()
-    return {"ok": True, "key": payload.key, "value": payload.value}
+    return {"ok": True, "key": payload.key, "value": value}
 
 
 @router.get("/identity")
@@ -1061,6 +1483,7 @@ async def identity_status(
 ) -> dict[str, Any]:
     svc = BotConfigService(db)
     identity = await svc.get_identity_profile()
+    await IdentityRegistryService(db).ensure_defaults_from_profile(identity)
     personality = await svc.get_personality_settings()
 
     faq_count = (await db.execute(select(func.count(FAQEntry.id)).where(FAQEntry.is_enabled.is_(True)))).scalar_one()
@@ -1150,13 +1573,29 @@ async def get_faq(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     content = CORE_FAQ_PATH.read_text(encoding="utf-8") if CORE_FAQ_PATH.exists() else ""
-    rows = (await db.execute(select(FAQEntry).order_by(FAQEntry.id))).scalars().all()
-    analytics = await FAQService(db).analytics()
+    service = FAQService(db)
+    source_version = service.version_for_text(content)
+    rows = (
+        await db.execute(
+            select(FAQEntry)
+            .where(FAQEntry.source_id == "core_faq")
+            .where(FAQEntry.source_version == source_version)
+            .where(FAQEntry.is_enabled.is_(True))
+            .order_by(FAQEntry.id)
+        )
+    ).scalars().all()
+    analytics = await service.analytics()
+    preview = await service.preview_source(content)
     return {
         "path": str(CORE_FAQ_PATH),
         "content": content,
+        "source_id": "core_faq",
+        "source_version": source_version,
+        "parse_status": preview["parse_status"],
+        "sync_status": "synced" if len(rows) == preview["entry_count"] else "out_of_sync",
         "count": len(rows),
-        "items": [FAQService.serialize_entry(row) for row in rows],
+        "items": [service.serialize_entry(row) for row in rows],
+        "preview": preview,
         "analytics": analytics,
     }
 
@@ -1178,6 +1617,33 @@ async def save_faq(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     return await _save_and_sync_faq(payload.content, db, action="faq_saved", filename=None)
+
+
+@router.post("/faq/replace")
+async def replace_faq(
+    payload: FAQSaveIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    return await _save_and_sync_faq(payload.content, db, action="faq_replaced", filename=None)
+
+
+@router.post("/faq/reparse")
+async def reparse_faq(
+    payload: FAQSaveIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="FAQ content is empty")
+    preview = await FAQService(db).preview_source(payload.content)
+    return {"ok": True, **preview}
+
+
+@router.post("/faq/resync")
+async def resync_faq(
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    content = CORE_FAQ_PATH.read_text(encoding="utf-8") if CORE_FAQ_PATH.exists() else ""
+    return await _save_and_sync_faq(content, db, action="faq_resynced", filename=CORE_FAQ_PATH.name)
 
 
 @router.get("/faq/analytics")
@@ -1279,6 +1745,23 @@ async def list_commands(
     return {"count": len(items), "sections": sections, "items": items}
 
 
+@router.get("/commands/available")
+async def available_commands(
+    permission: str = Query(default="user", pattern="^(user|owner)$"),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = CommandCatalogService(db)
+    items = [
+        item
+        for item in await service.list_commands()
+        if item["enabled"] and (item["permissions"] == "user" or permission == "owner")
+    ]
+    sections: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        sections.setdefault(item["category"], []).append(item)
+    return {"count": len(items), "permission": permission, "sections": sections, "items": items}
+
+
 @router.post("/commands/toggle")
 async def toggle_command(
     payload: CommandToggleIn,
@@ -1299,6 +1782,150 @@ async def toggle_command(
     )
     await db.commit()
     return {"ok": True, "item": service.serialize(row)}
+
+
+@router.get("/admins")
+async def list_admin_accounts(
+    q: str | None = Query(default=None),
+    role: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    include_disabled: bool = Query(default=True),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = AdminManagementService(db)
+    await service.ensure_from_config()
+    rows = await service.list_admins(include_disabled=include_disabled, search=q)
+    if role:
+        rows = [row for row in rows if (row.role or "").lower() == role.lower()]
+    if status == "enabled":
+        rows = [row for row in rows if row.is_enabled]
+    if status == "disabled":
+        rows = [row for row in rows if not row.is_enabled]
+    total = len(rows)
+    rows = rows[offset : offset + limit]
+    await db.commit()
+    return {"count": total, "limit": limit, "offset": offset, "items": [service.serialize(row) for row in rows]}
+
+
+@router.post("/admins")
+async def create_admin_account(
+    payload: AdminAccountIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = AdminManagementService(db)
+    await service.ensure_from_config()
+    try:
+        row = await service.create_admin(
+            name=payload.name,
+            whatsapp_number=payload.whatsapp_number,
+            role=payload.role,
+            permission_level=payload.permission_level,
+            is_primary=payload.is_primary,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="admin_account_created",
+            entity_type="admin_account",
+            entity_id=str(row.id),
+            details_json=service.serialize(row),
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize(row)}
+
+
+@router.put("/admins/{admin_id}")
+async def update_admin_account(
+    admin_id: int,
+    payload: AdminAccountUpdate,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = AdminManagementService(db)
+    try:
+        row = await service.update_admin(admin_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="admin_account_updated",
+            entity_type="admin_account",
+            entity_id=str(row.id),
+            details_json=payload.model_dump(exclude_unset=True),
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize(row)}
+
+
+@router.post("/admins/{admin_id}/enable")
+async def set_admin_enabled(
+    admin_id: int,
+    payload: dict[str, bool],
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = AdminManagementService(db)
+    try:
+        row = await service.set_enabled(admin_id, bool(payload.get("enabled", True)))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="admin_account_enabled_changed",
+            entity_type="admin_account",
+            entity_id=str(row.id),
+            details_json={"enabled": row.is_enabled},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize(row)}
+
+
+@router.post("/admins/{admin_id}/primary")
+async def set_primary_admin(
+    admin_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = AdminManagementService(db)
+    try:
+        row = await service.set_primary(admin_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="admin_account_primary_set",
+            entity_type="admin_account",
+            entity_id=str(row.id),
+            details_json={"primary": True},
+        )
+    )
+    await db.commit()
+    return {"ok": True, "item": service.serialize(row)}
+
+
+@router.delete("/admins/{admin_id}")
+async def delete_admin_account(
+    admin_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    service = AdminManagementService(db)
+    try:
+        row = await service.delete_admin(admin_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.add(
+        AuditLog(
+            action="admin_account_deleted",
+            entity_type="admin_account",
+            entity_id=str(admin_id),
+            details_json=service.serialize(row),
+        )
+    )
+    await db.commit()
+    return {"ok": True}
 
 
 @router.get("/queue")
@@ -1773,10 +2400,22 @@ async def _save_and_sync_faq(
 ) -> dict[str, Any]:
     if not content.strip():
         raise HTTPException(status_code=400, detail="FAQ content is empty")
-    CORE_FAQ_PATH.write_text(content, encoding="utf-8")
     service = FAQService(db)
     pairs = service.parse_faq_text(content)
-    count = await service.sync_faq_in_db(pairs)
+    if not pairs:
+        raise HTTPException(status_code=400, detail="FAQ content has no parseable question and answer entries")
+    source_version = service.version_for_text(content)
+    sync_report = await service.replace_source_entries_report(
+        pairs,
+        source_id="core_faq",
+        source_name=filename or CORE_FAQ_PATH.name,
+        source_version=source_version,
+    )
+    cache_result = await db.execute(
+        delete(QACache).where(QACache.answer_mode.in_([DecisionType.FAQ_REPLY.value, DecisionType.KB_REPLY.value]))
+    )
+    cache_rows_deleted = int(cache_result.rowcount or 0)
+    CORE_FAQ_PATH.write_text(content, encoding="utf-8")
     db.add(
         AuditLog(
             action=action,
@@ -1784,14 +2423,62 @@ async def _save_and_sync_faq(
             entity_id=None,
             details_json={
                 "filename": filename,
-                "entries": count,
+                "entries": sync_report["active_entries"],
+                "sync_report": sync_report,
+                "cache_rows_deleted": cache_rows_deleted,
                 "path": str(CORE_FAQ_PATH),
+                "source_id": "core_faq",
+                "source_version": source_version,
+                "parse_status": "ok",
+                "sync_status": "synced",
                 "refresh": _knowledge_refresh_targets(),
             },
         )
     )
     await db.commit()
-    return {"ok": True, "entries": count, "path": str(CORE_FAQ_PATH), "refresh": _knowledge_refresh_targets()}
+    return {
+        "ok": True,
+        "entries": sync_report["active_entries"],
+        "sync_report": sync_report,
+        "created": sync_report["created"],
+        "updated": sync_report["updated"],
+        "superseded": sync_report["superseded"],
+        "disabled": sync_report["disabled"],
+        "duplicates": sync_report["duplicates"],
+        "active_entries": sync_report["active_entries"],
+        "cache_rows_deleted": cache_rows_deleted,
+        "path": str(CORE_FAQ_PATH),
+        "source_id": "core_faq",
+        "source_version": source_version,
+        "parse_status": "ok",
+        "save_status": "saved",
+        "sync_status": "synced",
+        "index_status": "refresh_requested",
+        "refresh": _knowledge_refresh_targets(),
+    }
+
+
+async def _find_reply_rule_by_key(
+    db: AsyncSession,
+    keyword: str,
+    match_mode: str,
+    chat_type_filter: str | None,
+    *,
+    exclude_id: int | None = None,
+) -> ReplyRule | None:
+    normalized_keyword = normalize_text(keyword)
+    rows = (await db.execute(select(ReplyRule))).scalars().all()
+    for row in rows:
+        if exclude_id is not None and row.id == exclude_id:
+            continue
+        if normalize_text(row.keyword) != normalized_keyword:
+            continue
+        if row.match_mode != match_mode:
+            continue
+        if (row.chat_type_filter or None) != (chat_type_filter or None):
+            continue
+        return row
+    return None
 
 
 def _knowledge_refresh_targets() -> list[str]:
@@ -1854,6 +2541,8 @@ def _queue_payload(row: OutboundMessage) -> dict[str, Any]:
         "id": row.id,
         "chat_id": row.chat_id,
         "message_text": row.message_text,
+        "display_text": _display_text_from_formatting(row.message_text, row.formatting_json),
+        "formatting": row.formatting_json or {},
         "status": row.status,
         "retry_count": row.retry_count,
         "max_retries": row.max_retries,
@@ -1864,26 +2553,92 @@ def _queue_payload(row: OutboundMessage) -> dict[str, Any]:
     }
 
 
-def _profile_payload(mem: UserMemory, contact: Contact) -> dict[str, Any]:
+def _message_formatting(row: Message) -> dict[str, Any]:
+    payload = row.raw_payload_json if isinstance(row.raw_payload_json, dict) else {}
+    formatting = payload.get("formatting")
+    return formatting if isinstance(formatting, dict) else {}
+
+
+def _display_text_for_message(row: Message) -> str:
+    payload = row.raw_payload_json if isinstance(row.raw_payload_json, dict) else {}
+    raw_reply_text = payload.get("raw_reply_text")
+    if row.direction == "outbound" and isinstance(raw_reply_text, str) and raw_reply_text.strip():
+        return raw_reply_text
+    return row.message_text
+
+
+def _display_text_from_formatting(final_text: str, formatting: dict[str, Any] | None) -> str:
+    if isinstance(formatting, dict):
+        raw_reply_text = formatting.get("raw_reply_text")
+        if isinstance(raw_reply_text, str) and raw_reply_text.strip():
+            return raw_reply_text
+    return final_text
+
+
+def _profile_payload(mem: UserMemory | None, contact: Contact) -> dict[str, Any]:
+    verified_display_name = contact.display_name if bool(getattr(contact, "is_name_verified", False)) else None
+    display_name = (
+        verified_display_name
+        or getattr(contact, "contact_name", None)
+        or getattr(contact, "push_name", None)
+        or getattr(mem, "display_name", None)
+        or getattr(contact, "display_name", None)
+        or getattr(contact, "normalized_phone", None)
+        or contact.whatsapp_id
+    )
     return {
-        "id": mem.id,
-        "contact_id": mem.contact_id,
+        "id": getattr(mem, "id", None),
+        "contact_id": contact.id,
         "whatsapp_id": contact.whatsapp_id,
-        "display_name": mem.display_name or contact.display_name,
-        "user_name": mem.user_name,
-        "preferences": mem.preferences,
-        "context_notes": mem.context_notes,
-        "onboarding_complete": mem.onboarding_complete,
-        "profession": mem.profession,
-        "interests": mem.interests,
-        "projects": mem.projects,
-        "goals": mem.goals,
-        "communication_style": mem.communication_style,
-        "relationship": mem.relationship,
-        "relationship_type": mem.relationship_type,
-        "personality_notes": mem.personality_notes,
-        "first_seen_at": mem.first_seen_at,
-        "last_interaction_at": mem.last_interaction_at,
-        "created_at": mem.created_at,
-        "updated_at": mem.updated_at,
+        "display_name": display_name,
+        "verified_manual_name": bool(getattr(contact, "is_name_verified", False)),
+        "whatsapp_display_name": contact.display_name,
+        "whatsapp_push_name": getattr(contact, "push_name", None),
+        "whatsapp_contact_name": getattr(contact, "contact_name", None),
+        "phone_number": getattr(contact, "whatsapp_phone", None),
+        "normalized_phone": getattr(contact, "normalized_phone", None),
+        "chat_id": getattr(contact, "chat_id", None),
+        "waha_contact_id": getattr(contact, "waha_contact_id", None),
+        "waha_participant_id": getattr(contact, "waha_participant_id", None),
+        "profile_image_url": getattr(contact, "profile_image_url", None),
+        "identity_source": getattr(contact, "identity_source", None),
+        "identity_json": getattr(contact, "identity_json", None) or {},
+        "enabled": True,
+        "user_name": getattr(mem, "user_name", None),
+        "preferences": getattr(mem, "preferences", None),
+        "context_notes": getattr(mem, "context_notes", None),
+        "onboarding_complete": bool(getattr(mem, "onboarding_complete", False)) if mem else False,
+        "profession": getattr(mem, "profession", None),
+        "interests": getattr(mem, "interests", None),
+        "projects": getattr(mem, "projects", None),
+        "goals": getattr(mem, "goals", None),
+        "communication_style": getattr(mem, "communication_style", None),
+        "relationship": getattr(mem, "relationship", None),
+        "relationship_type": getattr(mem, "relationship_type", "unknown") if mem else "unknown",
+        "personality_notes": getattr(mem, "personality_notes", None),
+        "first_seen_at": getattr(mem, "first_seen_at", None) or contact.created_at,
+        "last_interaction_at": getattr(mem, "last_interaction_at", None) or contact.last_active_at,
+        "created_at": getattr(mem, "created_at", None) or contact.created_at,
+        "updated_at": getattr(mem, "updated_at", None) or contact.updated_at,
+    }
+
+
+def _memory_fact_payload(row: UserMemoryTimeline, contact: Contact | None = None) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "contact_id": row.contact_id,
+        "user_name": getattr(contact, "display_name", None) if contact else None,
+        "whatsapp_id": getattr(contact, "whatsapp_id", None) if contact else None,
+        "normalized_phone": getattr(contact, "normalized_phone", None) if contact else None,
+        "memory_text": row.memory_text,
+        "source": row.source,
+        "memory_type": getattr(row, "memory_type", "profile_fact"),
+        "importance": float(getattr(row, "importance", 0.5) or 0.0),
+        "confidence": float(getattr(row, "confidence", 1.0) or 0.0),
+        "enabled": bool(getattr(row, "is_enabled", True)),
+        "is_enabled": bool(getattr(row, "is_enabled", True)),
+        "usage_count": int(getattr(row, "usage_count", 0) or 0),
+        "last_used_at": getattr(row, "last_used_at", None),
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
     }

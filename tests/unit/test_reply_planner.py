@@ -86,8 +86,14 @@ class FakeIdentityRegistry:
 
 
 class FakeCommandCatalog:
+    def __init__(self) -> None:
+        self.usage: list[str] = []
+
     async def is_enabled(self, _: str) -> bool:
         return True
+
+    async def record_usage(self, command: str) -> None:
+        self.usage.append(command)
 
 
 class FakeRetrieval:
@@ -198,10 +204,17 @@ class FakeInternet:
 
 
 class FakeBotConfig:
-    def __init__(self, ai_enabled: bool = False, strictness: str = "medium", threshold: str = "0.0"):
+    def __init__(
+        self,
+        ai_enabled: bool = False,
+        strictness: str = "medium",
+        threshold: str = "0.0",
+        message_format: str = "automatic",
+    ):
         self.ai_enabled = ai_enabled
         self.strictness = strictness
         self.threshold = threshold
+        self.message_format = message_format
 
     async def get_bool(self, key: str, default: bool = False) -> bool:
         if key == "ai_enabled":
@@ -213,6 +226,7 @@ class FakeBotConfig:
             "ai_strictness": self.strictness,
             "ai_escalation_threshold": self.threshold,
             "ai_hallucination_protection": "high",
+            "whatsapp_message_format": self.message_format,
         }
         return defaults.get(key, default)
 
@@ -279,6 +293,7 @@ def make_planner(
     ai_quota_allowed: bool = True,
     strictness: str = "medium",
     threshold: str = "0.0",
+    message_format: str = "automatic",
 ) -> ReplyPlanner:
     planner = ReplyPlanner.__new__(ReplyPlanner)
     planner.session = None
@@ -290,7 +305,7 @@ def make_planner(
     planner.internet_service = FakeInternet()
     planner.command_catalog = FakeCommandCatalog()
     planner.rate_limiter = FakeRateLimiter(user_allowed=user_allowed, global_allowed=global_allowed, ai_quota_allowed=ai_quota_allowed)
-    planner.bot_config = FakeBotConfig(ai_enabled, strictness=strictness, threshold=threshold)
+    planner.bot_config = FakeBotConfig(ai_enabled, strictness=strictness, threshold=threshold, message_format=message_format)
     planner.formatter = WhatsAppExperienceFormatter()
     planner.intent_classifier = IntentClassifier()
     planner._active_intent = None
@@ -369,6 +384,20 @@ async def test_faq_source_preempts_cache_kb_and_ai_for_non_identity_question() -
 
 
 @pytest.mark.asyncio
+async def test_automatic_message_format_quotes_important_faq_response() -> None:
+    planner = make_planner(
+        faq_entry=FakeFAQEntry(question="What services are offered?", answer="Fabian builds automation systems."),
+        message_format="automatic",
+    )
+
+    reply = await planner.plan(make_message("What services are offered?"), contact_id=1)
+
+    assert reply.raw_reply_text == "Fabian builds automation systems."
+    assert "\n\n> Fabian builds automation systems." in reply.reply_text
+    assert reply.source_diagnostics["experience"]["quote_applied"] is True
+
+
+@pytest.mark.asyncio
 async def test_cache_source_preempts_internet_and_ai_after_local_knowledge_misses() -> None:
     planner = make_planner(cache_hit=FakeCacheHit(), memory_reply="Memory.", ai_enabled=True)
 
@@ -433,6 +462,28 @@ async def test_memory_continuation_preempts_ai() -> None:
 
 
 @pytest.mark.asyncio
+async def test_follow_up_expands_pronoun_from_active_topic() -> None:
+    package = MemoryContextPackage(
+        contact_id=1,
+        profile={"display_name": "Kingsley"},
+        timeline_entries=[{"topic": "Datacube AU", "summary": "Asked about Datacube AU ownership"}],
+        context_text="Recent Topics:\n- Datacube AU",
+        retrieved_item_count=1,
+        used_sections=["Timeline Entry"],
+    )
+    planner = make_planner(memory_context=package)
+
+    reply = await planner.plan(make_message("Who owns it?"), contact_id=1)
+
+    assert reply.decision_type == DecisionType.STATIC_REPLY
+    assert reply.source_diagnostics["source"] == "Identity"
+    assert reply.source_diagnostics["context"]["used"] is True
+    assert reply.source_diagnostics["context"]["expanded_question"] == "Who owns Datacube AU?"
+    assert reply.source_diagnostics["router_analytics"]["expanded_query"] == "Who owns Datacube AU?"
+    assert reply.source_diagnostics["router_analytics"]["entities"] == ["Datacube AU"]
+
+
+@pytest.mark.asyncio
 async def test_ai_used_only_after_earlier_sources_fail(monkeypatch, mock_openrouter) -> None:
     monkeypatch.setattr("app.core.reply_planner.OpenRouterClient", mock_openrouter)
     monkeypatch.setattr(settings, "ai_enabled", True)
@@ -447,6 +498,7 @@ async def test_ai_used_only_after_earlier_sources_fail(monkeypatch, mock_openrou
     assert reply.ai_used is True
     assert reply.source_diagnostics["source"] == "AI"
     assert mock_openrouter.calls == 1
+    assert planner.command_catalog.usage == ["!ask"]
 
 
 @pytest.mark.asyncio
@@ -461,6 +513,18 @@ async def test_global_chat_commands_toggle_contact_mode() -> None:
     assert enabled.reply_text.startswith("*Zina*")
     assert disabled.source_diagnostics["global_chat"]["active"] is False
     assert planner.memory_service.global_chat_updates == [(1, True), (1, False)]
+    assert planner.command_catalog.usage == ["/global", "/global"]
+
+
+@pytest.mark.asyncio
+async def test_quote_message_format_does_not_quote_command_response() -> None:
+    planner = make_planner(message_format="quote")
+
+    reply = await planner.plan(make_message("/global on"), contact_id=1)
+
+    assert reply.source_diagnostics["source"] == "Command"
+    assert reply.source_diagnostics["experience"]["quote_rendered"] is False
+    assert "> Global Chat is on" not in reply.reply_text
 
 
 @pytest.mark.asyncio
@@ -495,6 +559,12 @@ async def test_general_knowledge_routes_to_ai_after_local_sources_miss(monkeypat
     assert reply.decision_type == DecisionType.AI_REPLY_LIGHT
     assert reply.source_diagnostics["source"] == "AI"
     assert "general knowledge requires synthesis" in reply.source_diagnostics["ai"]["invocation_reason"]
+    analytics = reply.source_diagnostics["router_analytics"]
+    assert analytics["selected_route"] == "AI"
+    assert analytics["intent"] == "general_knowledge"
+    assert analytics["scores"]["ai"] == 1.0
+    assert any(route["source"] == "FAQ" for route in analytics["rejected_routes"])
+    assert any(route["source"] == "Knowledge" for route in analytics["rejected_routes"])
     assert mock_openrouter.calls == 1
 
 
@@ -526,18 +596,18 @@ async def test_global_ai_limit_falls_back_without_calling_openrouter(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_high_strictness_escalates_before_ai_call(monkeypatch, mock_openrouter) -> None:
+async def test_high_strictness_does_not_escalate_answerable_ai_question(monkeypatch, mock_openrouter) -> None:
     monkeypatch.setattr("app.core.reply_planner.OpenRouterClient", mock_openrouter)
     monkeypatch.setattr(settings, "ai_enabled", True)
     planner = make_planner(ai_enabled=True, strictness="high", threshold="0.9")
 
     reply = await planner.plan(make_message("!ask low confidence question"), contact_id=1)
 
-    assert reply.decision_type == DecisionType.ESCALATED
-    assert reply.raw_reply_text == "Fabian may need to answer this personally."
+    assert reply.decision_type == DecisionType.AI_REPLY_LIGHT
+    assert reply.raw_reply_text == "AI answer from Zina."
     assert reply.source_diagnostics["source"] == "AI"
-    assert reply.source_diagnostics["ai"]["escalated"] is True
-    assert mock_openrouter.calls == 0
+    assert reply.source_diagnostics["ai"]["used"] is True
+    assert mock_openrouter.calls == 1
 
 
 @pytest.mark.asyncio
@@ -548,9 +618,23 @@ async def test_fallback_used_when_ai_disabled_and_no_sources(monkeypatch) -> Non
     reply = await planner.plan(make_message("unknown question"), contact_id=None)
 
     assert reply.decision_type == DecisionType.NO_MATCH
-    assert reply.raw_reply_text == "Fabian may need to answer this personally."
+    assert "Fabian may need to answer this personally" not in reply.raw_reply_text
+    assert "approved information" in reply.raw_reply_text
     assert reply.reply_text.startswith("*Zina*")
     assert reply.source_diagnostics["source"] == "Fallback"
+    assert reply.source_diagnostics["fallback"]["human_escalation"] is False
+
+
+@pytest.mark.asyncio
+async def test_private_decision_can_escalate_to_fabian(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ai_enabled", False)
+    planner = make_planner(ai_enabled=False)
+
+    reply = await planner.plan(make_message("Can Fabian approve this?"), contact_id=None)
+
+    assert reply.decision_type == DecisionType.ESCALATED
+    assert reply.raw_reply_text == "Fabian may need to answer this personally."
+    assert reply.source_diagnostics["fallback"]["human_escalation"] is True
 
 
 @pytest.mark.asyncio

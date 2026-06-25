@@ -56,7 +56,7 @@ class IdentityRegistryService:
         def repl(match: re.Match[str]) -> str:
             key = match.group(1).strip()
             entry = entries.get(key)
-            return entry.answer if entry else match.group(0)
+            return entry.answer if entry else f"I do not have an active identity record for {key.replace('_', ' ')}."
 
         return re.sub(r"\{\{\s*identity:([a-zA-Z0-9_\-]+)\s*\}\}", repl, text_value)
 
@@ -97,6 +97,61 @@ class IdentityRegistryService:
                 "entities": [owner_name, "Datacube AU", assistant_name],
                 "answer": profile.get("services") or "Fabian focuses on AI-assisted systems, automation tools, WhatsApp assistant systems, and productivity-focused projects.",
                 "facts_json": {"services": profile.get("services") or ""},
+            },
+            {
+                "registry_key": "datacube_au",
+                "category": "Datacube AU",
+                "name": "Datacube AU",
+                "description": "Datacube AU is part of Fabian's AI assistant and automation ecosystem.",
+                "aliases": ["Datacube", "Datacube AU"],
+                "keywords": ["datacube", "project", "assistant", "automation", "knowledge"],
+                "entities": ["Datacube AU", owner_name],
+                "answer": f"Datacube AU is an AI-powered assistant and knowledge automation project created by {owner_name}.",
+                "facts_json": {"owner": owner_name, "project": True},
+            },
+            {
+                "registry_key": "zinax",
+                "category": "ZinaX",
+                "name": "ZinaX",
+                "description": "ZinaX is a project in Fabian's AI assistant ecosystem.",
+                "aliases": ["ZinaX"],
+                "keywords": ["zinax", "project", "assistant", "automation"],
+                "entities": ["ZinaX", owner_name],
+                "answer": f"ZinaX is part of {owner_name}'s AI assistant and automation ecosystem.",
+                "facts_json": {"owner": owner_name, "project": True},
+            },
+            {
+                "registry_key": "moxiz_gateway",
+                "category": "Projects",
+                "name": "Moxiz Gateway",
+                "description": "Moxiz Gateway is part of Fabian's broader product and automation ecosystem.",
+                "aliases": ["Moxiz", "Moxiz Gateway"],
+                "keywords": ["moxiz", "gateway", "project", "automation"],
+                "entities": ["Moxiz Gateway", owner_name],
+                "answer": f"Moxiz Gateway is part of {owner_name}'s broader product and automation ecosystem.",
+                "facts_json": {"owner": owner_name, "project": True},
+            },
+            {
+                "registry_key": "projects",
+                "category": "Projects",
+                "name": "Fabian Projects",
+                "description": profile.get("projects") or f"{owner_name}'s active ecosystem includes Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway.",
+                "aliases": ["projects", "Fabian projects", "what Fabian is building"],
+                "keywords": ["projects", "building", "datacube", "zina", "zinax", "moxiz"],
+                "entities": [owner_name, "Datacube AU", assistant_name, "ZinaX", "Moxiz Gateway"],
+                "answer": profile.get("projects") or f"{owner_name}'s core projects include Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway.",
+                "facts_json": {"projects": profile.get("projects") or ""},
+            },
+            {
+                "registry_key": "skills",
+                "category": "Skills",
+                "name": "Fabian Skills",
+                "description": profile.get("skills") or f"{owner_name} works across AI systems, automation, Python, FastAPI, TypeScript, Docker, cybersecurity, and workflow tooling.",
+                "aliases": ["skills", "Fabian skills", "what Fabian can do"],
+                "keywords": ["skills", "ai", "python", "fastapi", "typescript", "docker", "cybersecurity", "automation"],
+                "entities": [owner_name],
+                "answer": profile.get("skills") or f"{owner_name} works with AI systems, Python, FastAPI, TypeScript, Node.js, Docker, cybersecurity, and workflow automation.",
+                "facts_json": {"skills": profile.get("skills") or ""},
             },
         ]
         for item in defaults:

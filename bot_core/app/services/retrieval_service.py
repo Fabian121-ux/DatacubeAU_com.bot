@@ -165,7 +165,8 @@ class RetrievalService:
         snippet = top.content.strip().replace("\n", " ")
         if len(snippet) > settings.kb_reply_max_chars:
             snippet = snippet[: settings.kb_reply_max_chars].rstrip() + "..."
-        if top.heading:
+        heading = (top.heading or "").strip()
+        if heading and not heading.endswith("?") and not snippet.lower().startswith(heading.lower()):
             return f"{top.heading}: {snippet}"
         return snippet
 

@@ -17,73 +17,87 @@
   --green:#00cec9;--red:#ff6b6b;--orange:#fdcb6e;--blue:#74b9ff;
   --radius:10px;--radius-sm:6px;
 }
-html{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:14px;color:var(--text);background:var(--bg)}
-body{min-height:100vh;display:flex;flex-direction:column}
+html{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:14px;color:var(--text);background:var(--bg);overflow-x:hidden;-webkit-text-size-adjust:100%}
+body{min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
 a{color:var(--accent-light);text-decoration:none}
-button{font-family:inherit;cursor:pointer;border:none;border-radius:var(--radius-sm);font-size:.85rem;padding:.5rem 1rem;transition:all .2s}
-input,textarea,select{font-family:inherit;font-size:.85rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.5rem .7rem;outline:none;transition:border .2s}
+button{font-family:inherit;cursor:pointer;border:none;border-radius:var(--radius-sm);font-size:.85rem;padding:.5rem 1rem;transition:all .2s;min-height:36px;line-height:1.2}
+input,textarea,select{font-family:inherit;font-size:.85rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.55rem .7rem;outline:none;transition:border .2s;width:100%;max-width:100%;line-height:1.35}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent-light);outline-offset:2px}
 input:focus,textarea:focus,select:focus{border-color:var(--accent)}
 textarea{resize:vertical;min-height:60px}
+code,pre,.mono{overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap}
+small{overflow-wrap:anywhere}
+em{color:var(--text-muted);line-height:1.5}
 
 /* Layout */
-.app{display:flex;min-height:100vh}
-.sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);padding:1.2rem 0;display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:10;overflow-y:auto}
+.app{display:block;min-height:100vh;width:100%;max-width:100vw}
+.sidebar{width:240px;background:var(--surface);border-right:1px solid var(--border);padding:1.2rem 0;display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:40;overflow-y:auto;overflow-x:hidden}
 .sidebar .logo{padding:0 1.2rem .8rem;font-weight:700;font-size:1.05rem;color:var(--accent-light);border-bottom:1px solid var(--border);margin-bottom:.6rem;display:flex;align-items:center;gap:.5rem}
 .sidebar .logo span{font-size:1.3rem}
 .sidebar nav{flex:1;display:flex;flex-direction:column;gap:2px;padding:0 .6rem}
-.sidebar nav button{text-align:left;background:transparent;color:var(--text-muted);padding:.55rem .8rem;border-radius:var(--radius-sm);font-weight:500;width:100%;display:flex;align-items:center;gap:.6rem;font-size:.82rem}
+.sidebar nav button{text-align:left;background:transparent;color:var(--text-muted);padding:.6rem .8rem;border-radius:var(--radius-sm);font-weight:500;width:100%;display:flex;align-items:center;justify-content:flex-start;gap:.6rem;font-size:.82rem;min-width:0}
 .sidebar nav button:hover{background:var(--surface2);color:var(--text)}
 .sidebar nav button.active{background:var(--accent-dim);color:#fff}
-.sidebar nav button .icon{font-size:1.05rem;width:20px;text-align:center}
+.sidebar nav button .icon{font-size:.72rem;width:28px;min-width:28px;text-align:center;border:1px solid var(--border);border-radius:4px;padding:.18rem .1rem;color:inherit}
+.sidebar nav button span:not(.icon){min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sidebar .auth{padding:.8rem 1rem;border-top:1px solid var(--border);margin-top:auto}
 .sidebar .auth label{font-size:.7rem;color:var(--text-dim);margin-bottom:.3rem;display:block}
 .sidebar .auth .user{font-size:.8rem;color:var(--text);word-break:break-word}
 .sidebar .auth .last{font-size:.68rem;color:var(--text-dim);line-height:1.35;margin:.35rem 0 .65rem}
+.nav-toggle{display:none;position:fixed;top:.75rem;left:.75rem;z-index:60;background:var(--surface2);color:var(--text);border:1px solid var(--border);box-shadow:0 10px 28px rgba(0,0,0,.28);align-items:center;gap:.5rem}
+.nav-toggle .icon{font-size:.8rem;border:1px solid var(--border);border-radius:4px;padding:.12rem .28rem}
+.nav-overlay{display:none}
 
-.main{margin-left:220px;flex:1;padding:1.5rem 2rem;max-width:1100px}
-.main h2{font-size:1.3rem;margin-bottom:1rem;font-weight:600;display:flex;align-items:center;gap:.5rem}
+.main{margin-left:240px;width:auto;min-width:0;max-width:none;padding:clamp(1rem,2vw,2rem);overflow-x:hidden}
+.main h2{font-size:clamp(1.15rem,1.1rem + .55vw,1.55rem);line-height:1.25;margin-bottom:1rem;font-weight:600;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;min-width:0}
 
 /* Cards */
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem;margin-bottom:1rem;backdrop-filter:blur(10px)}
-.card h3{font-size:.9rem;font-weight:600;margin-bottom:.6rem;color:var(--text-muted)}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.8rem;margin-bottom:1.2rem}
-.stat{background:linear-gradient(135deg,var(--surface2),var(--surface3));border:1px solid var(--border);border-radius:var(--radius);padding:1rem;text-align:center}
-.stat .val{font-size:1.6rem;font-weight:700;color:var(--accent-light)}
+.panel{display:none;width:100%;max-width:1440px;margin:0 auto;min-width:0}.panel.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:clamp(.9rem,1.6vw,1.25rem);margin-bottom:1rem;backdrop-filter:blur(10px);min-width:0;max-width:100%;overflow-wrap:anywhere}
+.card h3{font-size:.95rem;line-height:1.35;font-weight:600;margin-bottom:.7rem;color:var(--text-muted)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:.8rem;margin-bottom:1.2rem;min-width:0}
+.stat{background:linear-gradient(135deg,var(--surface2),var(--surface3));border:1px solid var(--border);border-radius:var(--radius);padding:1rem;text-align:center;min-width:0}
+.stat .val{font-size:clamp(1.15rem,1rem + 1vw,1.6rem);font-weight:700;color:var(--accent-light);overflow-wrap:anywhere}
 .stat .lbl{font-size:.72rem;color:var(--text-muted);margin-top:.2rem;text-transform:uppercase;letter-spacing:.5px}
 
 /* Table */
-.tbl-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:.8rem}
-th{text-align:left;padding:.55rem .6rem;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.72rem;text-transform:uppercase;letter-spacing:.5px}
-td{padding:.5rem .6rem;border-bottom:1px solid var(--border);color:var(--text);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbl-wrap{width:100%;max-width:100%;overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);background:rgba(19,23,32,.42)}
+table{width:100%;border-collapse:collapse;font-size:.8rem;table-layout:auto}
+th{text-align:left;padding:.6rem .65rem;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);white-space:normal;font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;vertical-align:top}
+td{padding:.6rem .65rem;border-bottom:1px solid var(--border);color:var(--text);max-width:none;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;vertical-align:top;line-height:1.4}
+td[style*="white-space"],th[style*="white-space"]{white-space:normal!important}
 tr:hover td{background:var(--surface2)}
 
 /* Buttons */
-.btn{padding:.45rem .9rem;border-radius:var(--radius-sm);font-weight:500;font-size:.8rem}
+.btn{padding:.5rem .9rem;border-radius:var(--radius-sm);font-weight:500;font-size:.8rem;display:inline-flex;align-items:center;justify-content:center;gap:.35rem;line-height:1.2;max-width:100%;white-space:normal}
 .btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--accent-dim)}
 .btn-danger{background:var(--red);color:#fff;opacity:.85}.btn-danger:hover{opacity:1}
 .btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border)}.btn-ghost:hover{border-color:var(--accent);color:var(--text)}
 .btn-sm{padding:.3rem .6rem;font-size:.72rem}
-.btn-group{display:flex;gap:.4rem;flex-wrap:wrap}
+.btn-group{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;min-width:0}
 
 /* Forms */
-.form-row{display:flex;gap:.7rem;margin-bottom:.7rem;align-items:flex-end;flex-wrap:wrap}
-.form-row>div{display:flex;flex-direction:column;gap:.25rem}
+.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:.75rem;margin-bottom:.75rem;align-items:end;min-width:0}
+.form-row>div{display:flex;flex-direction:column;gap:.25rem;min-width:0}
 .form-row label{font-size:.72rem;color:var(--text-muted);font-weight:500}
-.form-row input,.form-row select,.form-row textarea{min-width:140px}
+.form-row input,.form-row select,.form-row textarea{min-width:0;width:100%}
+.form-row input[style*="width"],.form-row select[style*="width"],.form-row textarea[style*="width"]{width:100%!important}
+.form-row button{align-self:end}
 .form-wide textarea{width:100%;min-height:100px}
-.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.7rem}
-.detail{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem}
+.form-wide label{display:block;font-size:.72rem;color:var(--text-muted);font-weight:500;margin-bottom:.35rem}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.7rem;min-width:0}
+.detail{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem;min-width:0;overflow-wrap:anywhere}
 .detail .k{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:.25rem}
 .detail .v{font-size:.85rem;color:var(--text);line-height:1.35;white-space:pre-wrap}
-.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.8rem}
-.profile-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem}
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:.9rem;min-width:0}
+.profile-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;min-width:0;overflow-wrap:anywhere}
 .profile-card input,.profile-card textarea{width:100%;margin-top:.25rem}
 .profile-card label{display:block;font-size:.68rem;color:var(--text-muted);margin-top:.5rem}
 .debug-json{background:#070a10;border:1px solid var(--border);border-radius:var(--radius-sm);padding:.7rem;max-height:220px;overflow:auto;font-size:.72rem;line-height:1.45;white-space:pre-wrap}
+.flow-sep{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.45px}
 
 /* Badges */
-.badge{display:inline-block;padding:.15rem .45rem;border-radius:3px;font-size:.68rem;font-weight:600}
+.badge{display:inline-flex;align-items:center;max-width:100%;padding:.15rem .45rem;border-radius:3px;font-size:.68rem;font-weight:600;line-height:1.25;white-space:normal;overflow-wrap:anywhere}
 .badge-green{background:rgba(0,206,201,.15);color:var(--green)}
 .badge-red{background:rgba(255,107,107,.15);color:var(--red)}
 .badge-orange{background:rgba(253,203,110,.15);color:var(--orange)}
@@ -96,16 +110,40 @@ tr:hover td{background:var(--surface2)}
 .toast.show{opacity:1;transform:translateY(0);pointer-events:auto}
 .toast.error{border-color:var(--red)}
 
-/* Tab panels */
-.panel{display:none}.panel.active{display:block}
-
 /* Responsive */
-@media(max-width:768px){
-  .sidebar{width:56px;overflow:hidden}.sidebar .logo span,.sidebar nav button span:not(.icon),.sidebar .auth{display:none}
-  .main{margin-left:56px;padding:1rem}
-  .form-row{flex-direction:column}
-  .form-row>div{width:100%}
-  .form-row input,.form-row select,.form-row textarea{min-width:auto;width:100%}
+@media(max-width:900px){
+  body.nav-open{overflow:hidden}
+  .app{display:block}
+  .nav-toggle{display:inline-flex}
+  .nav-overlay{display:block;position:fixed;inset:0;background:rgba(0,0,0,.58);z-index:35;opacity:0;pointer-events:none;transition:opacity .2s}
+  body.nav-open .nav-overlay{opacity:1;pointer-events:auto}
+  .sidebar{width:min(84vw,320px);max-width:320px;transform:translateX(-105%);transition:transform .22s ease;box-shadow:20px 0 45px rgba(0,0,0,.38)}
+  body.nav-open .sidebar{transform:translateX(0)}
+  .sidebar .logo span,.sidebar nav button span:not(.icon),.sidebar .auth{display:block}
+  .main{margin-left:0;width:100%;padding:4.5rem clamp(.75rem,3vw,1.25rem) 1.25rem}
+}
+@media(max-width:760px){
+  .tbl-wrap{border:0;background:transparent;overflow:visible}
+  .tbl-wrap table,.tbl-wrap thead,.tbl-wrap tbody,.tbl-wrap tr,.tbl-wrap th,.tbl-wrap td{display:block;width:100%}
+  .tbl-wrap thead{display:none}
+  .tbl-wrap tr{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:.75rem;margin-bottom:.75rem}
+  .tbl-wrap td{display:grid;grid-template-columns:minmax(88px,34%) minmax(0,1fr);gap:.65rem;border-bottom:1px solid rgba(42,48,64,.65);padding:.45rem 0;min-width:0}
+  .tbl-wrap td:last-child{border-bottom:0}
+  .tbl-wrap td::before{content:attr(data-label);font-size:.68rem;text-transform:uppercase;letter-spacing:.45px;color:var(--text-dim);font-weight:700;overflow-wrap:anywhere}
+  .tbl-wrap td[data-label="Actions"]{grid-template-columns:1fr}
+  .tbl-wrap td[data-label="Actions"]::before{margin-bottom:.15rem}
+  tr:hover td{background:transparent}
+}
+@media(max-width:520px){
+  html{font-size:13.5px}
+  .card{padding:.85rem;border-radius:8px}
+  .main h2{font-size:1.14rem}
+  .form-row{grid-template-columns:1fr}
+  .btn{min-height:44px}
+  .btn-sm{min-height:38px}
+  .btn-group{gap:.45rem}
+  .btn-group .btn{flex:1 1 min(100%,150px)}
+  .toast{left:.75rem;right:.75rem;bottom:.75rem}
 }
 
 /* Loading spinner */
@@ -114,30 +152,35 @@ tr:hover td{background:var(--surface2)}
 </style>
 </head>
 <body>
+<button class="nav-toggle" id="navToggle" type="button" aria-controls="adminSidebar" aria-expanded="false" aria-label="Open admin navigation">
+  <span class="icon" aria-hidden="true">NV</span><span>Menu</span>
+</button>
+<div class="nav-overlay" id="navOverlay" aria-hidden="true"></div>
 <div class="app">
   <!-- Sidebar -->
-  <aside class="sidebar">
-    <div class="logo"><span>⚡</span> Datacube AU</div>
+  <aside class="sidebar" id="adminSidebar">
+    <div class="logo"><span class="icon">DC</span> Datacube AU</div>
     <nav id="nav">
-      <button data-tab="status" class="active"><span class="icon">📊</span><span>Overview</span></button>
-      <button data-tab="identity"><span class="icon">👤</span><span>Identity</span></button>
-      <button data-tab="knowledge"><span class="icon">📚</span><span>Knowledge Base</span></button>
-      <button data-tab="faq"><span class="icon">❓</span><span>FAQ Manager</span></button>
-      <button data-tab="commands"><span class="icon">⌘</span><span>Commands</span></button>
-      <button data-tab="groups"><span class="icon">👥</span><span>Groups</span></button>
-      <button data-tab="rules"><span class="icon">📋</span><span>Reply Rules</span></button>
-      <button data-tab="decisions"><span class="icon">🐞</span><span>Debugger</span></button>
-      <button data-tab="inspector"><span class="icon">🔎</span><span>Inspector</span></button>
-      <button data-tab="waha"><span class="icon">📱</span><span>WAHA</span></button>
-      <button data-tab="queue"><span class="icon">📬</span><span>Queue</span></button>
-      <button data-tab="aiusage"><span class="icon">🤖</span><span>AI Usage</span></button>
-      <button data-tab="internet"><span class="icon">🌐</span><span>Internet</span></button>
-      <button data-tab="memory"><span class="icon">🧠</span><span>Memory</span></button>
-      <button data-tab="profiles"><span class="icon">🪪</span><span>Profiles</span></button>
-      <button data-tab="cache"><span class="icon">💾</span><span>Cache</span></button>
-      <button data-tab="logs"><span class="icon">📝</span><span>Logs</span></button>
-      <button data-tab="test"><span class="icon">🧪</span><span>Test Bot</span></button>
-      <button data-tab="config"><span class="icon">⚙️</span><span>AI Behavior</span></button>
+      <button data-tab="status" class="active"><span class="icon">OV</span><span>Overview</span></button>
+      <button data-tab="identity"><span class="icon">ID</span><span>Identity</span></button>
+      <button data-tab="knowledge"><span class="icon">KB</span><span>Knowledge Base</span></button>
+      <button data-tab="faq"><span class="icon">FQ</span><span>FAQ Manager</span></button>
+      <button data-tab="commands"><span class="icon">CM</span><span>Commands</span></button>
+      <button data-tab="admins"><span class="icon">AD</span><span>Admins</span></button>
+      <button data-tab="groups"><span class="icon">GR</span><span>Groups</span></button>
+      <button data-tab="rules"><span class="icon">RR</span><span>Reply Rules</span></button>
+      <button data-tab="decisions"><span class="icon">DB</span><span>Debugger</span></button>
+      <button data-tab="inspector"><span class="icon">CI</span><span>Inspector</span></button>
+      <button data-tab="waha"><span class="icon">WA</span><span>WAHA</span></button>
+      <button data-tab="queue"><span class="icon">QU</span><span>Queue</span></button>
+      <button data-tab="aiusage"><span class="icon">AI</span><span>AI Usage</span></button>
+      <button data-tab="internet"><span class="icon">IN</span><span>Internet</span></button>
+      <button data-tab="memory"><span class="icon">ME</span><span>Memory</span></button>
+      <button data-tab="profiles"><span class="icon">PR</span><span>Profiles</span></button>
+      <button data-tab="cache"><span class="icon">CA</span><span>Cache</span></button>
+      <button data-tab="logs"><span class="icon">LG</span><span>Logs</span></button>
+      <button data-tab="test"><span class="icon">TB</span><span>Test Bot</span></button>
+      <button data-tab="config"><span class="icon">CF</span><span>AI Behavior</span></button>
     </nav>
     <div class="auth">
       <label>Logged in as</label>
@@ -152,20 +195,20 @@ tr:hover td{background:var(--surface2)}
 
     <!-- STATUS / OVERVIEW -->
     <div id="tab-status" class="panel active">
-      <h2>📊 System Overview</h2>
+      <h2>System Overview</h2>
       
       <div class="card" style="background:var(--surface2); border-color:var(--accent-dim); margin-bottom:1.5rem">
         <h3 style="color:var(--accent-light)">Bot Architecture Flow</h3>
         <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; font-family:monospace; font-size:0.8rem; margin-top:0.5rem">
-          <span class="badge badge-green">WhatsApp</span> →
-          <span class="badge badge-blue">WAHA</span> →
-          <span class="badge badge-purple">Webhook</span> →
-          <span class="badge badge-orange">Rules</span> →
-          <span class="badge badge-purple">FAQ</span> →
-          <span class="badge badge-orange">KB</span> →
-          <span class="badge badge-blue">Memory</span> →
-          <span class="badge badge-purple">AI</span> →
-          <span class="badge badge-gray">Queue</span> →
+          <span class="badge badge-green">WhatsApp</span> <span class="flow-sep">to</span>
+          <span class="badge badge-blue">WAHA</span> <span class="flow-sep">to</span>
+          <span class="badge badge-purple">Webhook</span> <span class="flow-sep">to</span>
+          <span class="badge badge-orange">Rules</span> <span class="flow-sep">to</span>
+          <span class="badge badge-purple">FAQ</span> <span class="flow-sep">to</span>
+          <span class="badge badge-orange">KB</span> <span class="flow-sep">to</span>
+          <span class="badge badge-blue">Memory</span> <span class="flow-sep">to</span>
+          <span class="badge badge-purple">AI</span> <span class="flow-sep">to</span>
+          <span class="badge badge-gray">Queue</span> <span class="flow-sep">to</span>
           <span class="badge badge-green">WAHA</span>
         </div>
       </div>
@@ -193,7 +236,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- IDENTITY -->
     <div id="tab-identity" class="panel">
-      <h2>👤 Identity & Profile Editor</h2>
+      <h2>Identity & Profile Editor</h2>
       <div class="card">
         <div id="identityPanel">Loading...</div>
       </div>
@@ -201,7 +244,13 @@ tr:hover td{background:var(--surface2)}
 
     <!-- FAQ MANAGER -->
     <div id="tab-faq" class="panel">
-      <h2>❓ FAQ Knowledge Layer</h2>
+      <h2>FAQ Knowledge Layer</h2>
+      <div class="card" style="border-left:3px solid var(--accent)">
+        <strong>Purpose:</strong> Manage the Core FAQ source used by the FAQ retrieval layer.
+        <br><strong>Controls:</strong> source text, parsing, replacement, synchronization, and parsed entries.
+        <br><strong>Used by:</strong> FAQ Manager, Router, Conversation Inspector, and AI context assembly.
+        <br><strong>Authority:</strong> FAQ can reference Identity Registry but must not own protected identity facts.
+      </div>
       <div class="stats" id="faqStats"></div>
       <div class="card">
         <div class="form-row">
@@ -215,6 +264,9 @@ tr:hover td{background:var(--surface2)}
         </div>
         <div class="btn-group" style="margin-top:.8rem">
           <button class="btn btn-primary" onclick="saveFaq()">Save & Sync</button>
+          <button class="btn btn-ghost" onclick="replaceFaq()">Replace Current FAQ</button>
+          <button class="btn btn-ghost" onclick="reparseFaq()">Reparse</button>
+          <button class="btn btn-ghost" onclick="resyncFaq()">Resync</button>
         </div>
       </div>
       <div class="card">
@@ -242,7 +294,16 @@ tr:hover td{background:var(--surface2)}
 
     <!-- COMMANDS -->
     <div id="tab-commands" class="panel">
-      <h2>⌘ Command Center</h2>
+      <h2>Command Center</h2>
+      <div class="card" style="border-left:3px solid var(--accent)">
+        <strong>Purpose:</strong> Manage real command metadata and availability from the authoritative command catalog.
+        <br><strong>Controls:</strong> command status, syntax, permissions, handlers, usage count, and last-used time.
+        <br><strong>Used by:</strong> WhatsApp command handling, router diagnostics, and owner/admin workflows.
+      </div>
+      <div class="card">
+        <h3>Available Commands</h3>
+        <div id="availableCommandsPanel">Loading…</div>
+      </div>
       <div class="card">
         <div class="btn-group" style="margin-bottom:.8rem">
           <button class="btn btn-ghost btn-sm" onclick="loadCommands()">Refresh</button>
@@ -251,9 +312,38 @@ tr:hover td{background:var(--surface2)}
       </div>
     </div>
 
+    <!-- ADMINS -->
+    <div id="tab-admins" class="panel">
+      <h2>Admin Management</h2>
+      <div class="card" style="border-left:3px solid var(--accent)">
+        <strong>Purpose:</strong> Manage WhatsApp administrators allowed to run protected commands.
+        <br><strong>Controls:</strong> admin numbers, normalized IDs, roles, permissions, primary status, and enablement.
+        <br><strong>Used by:</strong> owner-command authentication, /whoami, and administrative audit logs.
+      </div>
+      <div class="card">
+        <div class="form-row">
+          <div><label>Name</label><input id="adminName" placeholder="Fabian"></div>
+          <div><label>WhatsApp Number</label><input id="adminNumber" placeholder="+234..."></div>
+          <div><label>Role</label><input id="adminRole" placeholder="admin" value="admin"></div>
+          <div><label>Permission</label><select id="adminPermission"><option value="owner">Owner</option><option value="admin">Admin</option><option value="viewer">Viewer</option></select></div>
+          <div><button class="btn btn-primary" onclick="createAdmin()">Add Admin</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="form-row">
+          <div><label>Search</label><input id="adminSearch" placeholder="Name or WhatsApp" oninput="debouncedLoadAdmins()"></div>
+          <div><label>Role</label><input id="adminRoleFilter" placeholder="Any" oninput="debouncedLoadAdmins()"></div>
+          <div><label>Status</label><select id="adminStatusFilter" onchange="loadAdmins()"><option value="">All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></div>
+          <div><label>Page Size</label><select id="adminLimit" onchange="loadAdmins()"><option>25</option><option selected>50</option><option>100</option></select></div>
+          <div><button class="btn btn-ghost btn-sm" onclick="loadAdmins()">Refresh</button></div>
+        </div>
+        <div id="adminsPanel">Loading…</div>
+      </div>
+    </div>
+
     <!-- KNOWLEDGE -->
     <div id="tab-knowledge" class="panel">
-      <h2>📚 Knowledge Base</h2>
+      <h2>Knowledge Base</h2>
       <div class="card">
         <h3>Add Text Document</h3>
         <div class="form-row">
@@ -284,10 +374,16 @@ tr:hover td{background:var(--surface2)}
 
     <!-- GROUPS -->
     <div id="tab-groups" class="panel">
-      <h2>👥 Group Configuration</h2>
+      <h2>Group Configuration</h2>
+      <div class="card" style="border-left:3px solid var(--accent)">
+        <strong>Purpose:</strong> Configure how Zina responds inside WhatsApp groups.
+        <br><strong>Controls:</strong> group display names, chat IDs, reply modes, enablement, cooldowns, and deletion.
+        <br><strong>Used by:</strong> group routing, command handling, and WAHA group metadata.
+      </div>
       <div class="card">
-        <h3>Update Group Settings</h3>
+        <h3>Add Group</h3>
         <div class="form-row">
+          <div><label>Display Name</label><input type="text" id="grpName" placeholder="Datacube AU Team"></div>
           <div><label>Chat ID</label><input type="text" id="grpId" placeholder="123@g.us"></div>
           <div><label>Reply Mode</label>
             <select id="grpMode"><option value="mention_only">Mention Only</option><option value="off">Off</option></select>
@@ -296,18 +392,23 @@ tr:hover td{background:var(--surface2)}
             <select id="grpEnabled"><option value="true">Yes</option><option value="false">No</option></select>
           </div>
           <div><label>Cooldown (sec)</label><input type="number" id="grpCooldown" value="45" style="width:60px"></div>
-          <div><button class="btn btn-primary" onclick="updateGroup()">Update</button></div>
+          <div><button class="btn btn-primary" onclick="createGroup()">Add Group</button></div>
         </div>
       </div>
       <div class="card">
         <h3>Configured Groups</h3>
+        <div class="form-row">
+          <div style="flex:1"><label>Search</label><input id="groupSearch" placeholder="Name or chat ID" oninput="debouncedLoadGroups()"></div>
+          <div><label>Status</label><select id="groupStatus" onchange="loadGroups()"><option value="">All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></div>
+          <div><button class="btn btn-ghost btn-sm" onclick="loadGroups()">Refresh</button></div>
+        </div>
         <div class="tbl-wrap" id="groupsTable">Loading…</div>
       </div>
     </div>
 
     <!-- TEST BOT -->
     <div id="tab-test" class="panel">
-      <h2>🧪 Test Bot</h2>
+      <h2>Test Bot</h2>
       <div class="card">
         <h3>Send a test message</h3>
         <div class="form-row">
@@ -323,7 +424,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- REPLY RULES -->
     <div id="tab-rules" class="panel">
-      <h2>📋 Reply Rules</h2>
+      <h2>Reply Rules</h2>
       <div class="card">
         <h3>Add Rule</h3>
         <div class="form-row">
@@ -344,7 +445,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- DECISIONS -->
     <div id="tab-decisions" class="panel">
-      <h2>🤔 Router Decisions</h2>
+      <h2>Router Decisions</h2>
       <div class="card">
         <div class="btn-group" style="margin-bottom:.8rem">
           <button class="btn btn-ghost btn-sm" onclick="loadDecisions()">Refresh</button>
@@ -355,7 +456,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- CONVERSATION INSPECTOR -->
     <div id="tab-inspector" class="panel">
-      <h2>🔎 Conversation Inspector</h2>
+      <h2>Conversation Inspector</h2>
       <div class="card">
         <div class="btn-group" style="margin-bottom:.8rem">
           <button class="btn btn-ghost btn-sm" onclick="loadConversationInspector()">Refresh</button>
@@ -366,7 +467,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- WAHA -->
     <div id="tab-waha" class="panel">
-      <h2>📱 WAHA Session Control</h2>
+      <h2>WAHA Session Control</h2>
       <div class="card">
         <div class="form-row">
           <div><button class="btn btn-primary" onclick="wahaAction('start')">Start Session</button></div>
@@ -385,7 +486,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- QUEUE -->
     <div id="tab-queue" class="panel">
-      <h2>📬 Outbound Queue</h2>
+      <h2>Outbound Queue</h2>
       <div class="card">
         <div class="form-row">
           <div><label>Status</label>
@@ -406,7 +507,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- MEMORY -->
     <div id="tab-aiusage" class="panel">
-      <h2>🤖 AI Usage</h2>
+      <h2>AI Usage</h2>
       <div class="stats" id="aiUsageStats"></div>
       <div class="card">
         <h3>Top Users This Month</h3>
@@ -426,7 +527,7 @@ tr:hover td{background:var(--surface2)}
     </div>
 
     <div id="tab-internet" class="panel">
-      <h2>🌐 Internet Services</h2>
+      <h2>Internet Services</h2>
       <div class="stats" id="internetUsageStats"></div>
       <div class="card">
         <h3>Services This Month</h3>
@@ -447,13 +548,37 @@ tr:hover td{background:var(--surface2)}
 
     <!-- MEMORY -->
     <div id="tab-memory" class="panel">
-      <h2>🧠 User Memory</h2>
+      <h2>User Memory</h2>
+      <div class="card" style="border-left:3px solid var(--accent)">
+        <strong>Purpose:</strong> Manage user-specific facts and profile memory used by Zina during conversations.
+        <br><strong>Controls:</strong> profile memory, individual facts, status, importance, source, search, export, and deletion.
+        <br><strong>Authority:</strong> Memory is user-scoped and must not override protected Identity Registry records.
+      </div>
+      <div class="card">
+        <div class="form-row">
+          <div><label>Contact ID</label><input id="memoryContactId" type="number" placeholder="Contact ID"></div>
+          <div style="flex:2"><label>Memory</label><input id="memoryFactText" placeholder="Fabian prefers concise replies."></div>
+          <div><label>Type</label><input id="memoryFactType" value="profile_fact"></div>
+          <div><label>Importance</label><input id="memoryFactImportance" type="number" min="0" max="1" step=".1" value=".5"></div>
+          <div><button class="btn btn-primary" onclick="createMemoryFact()">Add Memory</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Memory Facts</h3>
+        <div class="form-row">
+          <div style="flex:1"><label>Search</label><input id="memorySearch" placeholder="Name, number, or memory" oninput="debouncedLoadMemoryFacts()"></div>
+          <div><label>Status</label><select id="memoryStatus" onchange="loadMemoryFacts()"><option value="">All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></div>
+          <div><label>Type</label><input id="memoryTypeFilter" placeholder="Any" oninput="debouncedLoadMemoryFacts()"></div>
+          <div><button class="btn btn-ghost" onclick="exportMemory()">Export</button></div>
+        </div>
+        <div class="tbl-wrap" id="memoryFactsTable">Loading…</div>
+      </div>
       <div class="card"><h3>All Users</h3><div class="tbl-wrap" id="memoryTable">Loading…</div></div>
     </div>
 
     <!-- PROFILES -->
     <div id="tab-profiles" class="panel">
-      <h2>🪪 User Profiles</h2>
+      <h2>User Profiles</h2>
       <div class="card">
         <div class="form-row">
           <div style="flex:1"><label>Search</label><input id="profileSearch" type="text" placeholder="Name, WhatsApp, project, interest…" style="width:100%"></div>
@@ -474,7 +599,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- CACHE -->
     <div id="tab-cache" class="panel">
-      <h2>💾 Cached Responses</h2>
+      <h2>Cached Responses</h2>
       <div class="card">
         <div class="btn-group" style="margin-bottom:.8rem">
           <button class="btn btn-danger btn-sm" onclick="clearCache()">Clear All Cache</button>
@@ -486,7 +611,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- LOGS -->
     <div id="tab-logs" class="panel">
-      <h2>📝 Recent Audit Logs & Messages</h2>
+      <h2>Recent Audit Logs & Messages</h2>
       <div class="card">
         <h3>Audit Logs</h3>
         <div class="btn-group" style="margin-bottom:.8rem">
@@ -505,7 +630,7 @@ tr:hover td{background:var(--surface2)}
 
     <!-- CONFIG -->
     <div id="tab-config" class="panel">
-      <h2>⚙️ Configuration</h2>
+      <h2>Configuration</h2>
       <div class="card" id="configPanel">Loading…</div>
     </div>
 
@@ -565,22 +690,57 @@ async function loadSession() {
   document.getElementById('sessionLastLogin').textContent = `Last login: ${login}`;
 }
 
+// Mobile navigation drawer
+const navToggle = document.getElementById('navToggle');
+const navOverlay = document.getElementById('navOverlay');
+function setMobileNav(open) {
+  document.body.classList.toggle('nav-open', open);
+  if (navToggle) {
+    navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    navToggle.setAttribute('aria-label', open ? 'Close admin navigation' : 'Open admin navigation');
+  }
+}
+if (navToggle) navToggle.addEventListener('click', () => setMobileNav(!document.body.classList.contains('nav-open')));
+if (navOverlay) navOverlay.addEventListener('click', () => setMobileNav(false));
+window.addEventListener('keydown', e => { if (e.key === 'Escape') setMobileNav(false); });
+window.addEventListener('resize', () => { if (window.innerWidth > 900) setMobileNav(false); });
+
 // Tab switching
 document.getElementById('nav').addEventListener('click', e => {
   const btn = e.target.closest('button[data-tab]');
   if (!btn) return;
+  activateTab(btn.dataset.tab, { push: true });
+  if (window.innerWidth <= 900) setMobileNav(false);
+});
+
+function validTab(tab) {
+  return !!document.querySelector(`#nav button[data-tab="${CSS.escape(tab)}"]`) && !!document.getElementById('tab-' + tab);
+}
+function activateTab(tab, opts = {}) {
+  const safeTab = validTab(tab) ? tab : 'status';
   document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-  loadTab(btn.dataset.tab);
-});
+  const btn = document.querySelector(`#nav button[data-tab="${CSS.escape(safeTab)}"]`);
+  const panel = document.getElementById('tab-' + safeTab);
+  if (btn) btn.classList.add('active');
+  if (panel) panel.classList.add('active');
+  localStorage.setItem('zinaAdminActiveTab', safeTab);
+  if (opts.push && location.hash !== '#' + safeTab) history.pushState({ tab: safeTab }, '', '#' + safeTab);
+  loadTab(safeTab);
+}
+function tabFromLocation() {
+  const hashTab = decodeURIComponent((location.hash || '').replace(/^#/, '')).trim();
+  if (hashTab) return hashTab;
+  return localStorage.getItem('zinaAdminActiveTab') || 'status';
+}
+window.addEventListener('popstate', () => activateTab(tabFromLocation()));
+window.addEventListener('hashchange', () => activateTab(tabFromLocation()));
 
 function loadTab(tab) {
   const loaders = {
     status: loadStatus, rules: loadRules, memory: loadMemory,
     cache: loadCache, logs: loadLogsCombined, config: loadConfig,
-    knowledge: loadKnowledge, commands: loadCommands, groups: loadGroups, decisions: loadDecisions, inspector: loadConversationInspector,
+    knowledge: loadKnowledge, commands: loadCommands, admins: loadAdmins, groups: loadGroups, decisions: loadDecisions, inspector: loadConversationInspector,
     identity: loadIdentity, faq: loadFaq, queue: loadQueue, aiusage: loadAIUsage, internet: loadInternetUsage, profiles: loadProfiles, waha: loadWaha
   };
   if (loaders[tab]) loaders[tab]();
@@ -597,9 +757,9 @@ async function loadStatus() {
     const db = health.database || 'unknown';
     const waha = typeof health.waha === 'object' ? (health.waha.status || 'unknown') : health.waha;
     stats.innerHTML = `
-      <div class="stat"><div class="val">${waha === 'WORKING' || waha === 'SCAN_QR_CODE' ? '🟢' : '🔴'}</div><div class="lbl">WAHA</div></div>
-      <div class="stat"><div class="val">${db === 'ok' ? '🟢' : '🔴'}</div><div class="lbl">Database</div></div>
-      <div class="stat"><div class="val">${health.ai_enabled ? '🟢' : '⚪'}</div><div class="lbl">AI</div></div>
+      <div class="stat"><div class="val"><span class="badge ${waha === 'WORKING' || waha === 'SCAN_QR_CODE' ? 'badge-green' : 'badge-red'}">${waha === 'WORKING' || waha === 'SCAN_QR_CODE' ? 'online' : 'offline'}</span></div><div class="lbl">WAHA</div></div>
+      <div class="stat"><div class="val"><span class="badge ${db === 'ok' ? 'badge-green' : 'badge-red'}">${db === 'ok' ? 'ok' : 'down'}</span></div><div class="lbl">Database</div></div>
+      <div class="stat"><div class="val"><span class="badge ${health.ai_enabled ? 'badge-green' : 'badge-gray'}">${health.ai_enabled ? 'on' : 'off'}</span></div><div class="lbl">AI</div></div>
       <div class="stat"><div class="val">${usage.today.messages}</div><div class="lbl">Msgs Today</div></div>
       <div class="stat"><div class="val">${usage.today.ai_calls}</div><div class="lbl">AI Calls Today</div></div>
       <div class="stat"><div class="val">${usage.today.total_tokens}</div><div class="lbl">Tokens Today</div></div>
@@ -658,7 +818,7 @@ async function runCleanup() {
   div.innerHTML = '<span class="spinner"></span> Cleaning up...';
   try {
     const r = await api(`/admin/storage/cleanup?days_to_keep=${days}`, { method: 'POST' });
-    div.innerHTML = `<span style="color:var(--green)">✓ Cleanup complete!</span> Deleted: ${r.deleted.messages} msgs, ${r.deleted.decisions} decisions, ${r.deleted.audit_logs} logs, ${r.deleted.ai_calls} AI calls.`;
+    div.innerHTML = `<span style="color:var(--green)">Cleanup complete.</span> Deleted: ${r.deleted.messages} msgs, ${r.deleted.decisions} decisions, ${r.deleted.audit_logs} logs, ${r.deleted.ai_calls} AI calls.`;
     loadStorage();
     loadStatus();
   } catch (e) {
@@ -667,18 +827,22 @@ async function runCleanup() {
 }
 
 // ---- FAQ MANAGER ----
+let lastFaqSyncReport = null;
 async function loadFaq() {
   try {
     const d = await api('/admin/faq');
     document.getElementById('faqEditor').value = d.content || '';
-    renderFaqStats(d.analytics || {});
+    renderFaqStats(d.analytics || {}, d);
     renderFaqAnalytics(d.analytics || {});
     const entries = document.getElementById('faqEntries');
     if (!d.items.length) { entries.innerHTML = '<em>No FAQ entries parsed.</em>'; loadFaqCandidates(); return; }
     entries.innerHTML = `<table>
-      <thead><tr><th>ID</th><th>Category</th><th>Intent</th><th>Question</th><th>Answer</th><th>Usage</th><th>Success</th><th>Enabled</th></tr></thead>
+      <thead><tr><th>ID</th><th>Source</th><th>Version</th><th>Status</th><th>Category</th><th>Intent</th><th>Question</th><th>Answer</th><th>Usage</th><th>Success</th><th>Enabled</th></tr></thead>
       <tbody>${d.items.map(f => `<tr>
         <td>${f.id}</td>
+        <td>${esc(f.source_id || '')}</td>
+        <td><code>${esc(f.source_version || '')}</code></td>
+        <td><span class="badge badge-blue">${esc(f.sync_status || 'synced')}</span></td>
         <td><span class="badge badge-blue">${esc(f.category || 'General')}</span></td>
         <td><span class="badge badge-purple">${esc(f.intent || 'custom')}</span></td>
         <td title="${esc(f.question)}">${esc((f.question||'').substring(0,70))}</td>
@@ -693,7 +857,29 @@ async function loadFaq() {
 async function saveFaq() {
   const content = document.getElementById('faqEditor').value;
   const r = await api('/admin/faq/save', { method: 'POST', body: JSON.stringify({ content }) });
-  toast(`FAQ synced: ${r.entries} entries`);
+  lastFaqSyncReport = r;
+  toast(`FAQ synced: ${r.entries} active, ${r.superseded || 0} superseded`);
+  loadFaq();
+  loadIdentityStatus();
+}
+async function replaceFaq() {
+  if (!confirm('Replace the current Core FAQ source and supersede obsolete parsed entries?')) return;
+  const content = document.getElementById('faqEditor').value;
+  const r = await api('/admin/faq/replace', { method: 'POST', body: JSON.stringify({ content }) });
+  lastFaqSyncReport = r;
+  toast(`FAQ replaced: ${r.entries} active, ${r.superseded || 0} superseded`);
+  loadFaq();
+  loadIdentityStatus();
+}
+async function reparseFaq() {
+  const content = document.getElementById('faqEditor').value;
+  const r = await api('/admin/faq/reparse', { method: 'POST', body: JSON.stringify({ content }) });
+  toast(`Parsed ${r.entry_count} entries; duplicates: ${r.duplicates.length}`);
+}
+async function resyncFaq() {
+  const r = await api('/admin/faq/resync', { method: 'POST' });
+  lastFaqSyncReport = r;
+  toast(`FAQ resynced: ${r.entries} active, ${r.superseded || 0} superseded`);
   loadFaq();
   loadIdentityStatus();
 }
@@ -703,7 +889,8 @@ async function uploadFaq() {
   const fd = new FormData();
   fd.append('file', input.files[0]);
   const r = await api('/admin/faq/upload', { method: 'POST', body: fd });
-  toast(`FAQ uploaded: ${r.entries} entries`);
+  lastFaqSyncReport = r;
+  toast(`FAQ uploaded: ${r.entries} active, ${r.superseded || 0} superseded`);
   input.value = '';
   loadFaq();
   loadIdentityStatus();
@@ -752,11 +939,19 @@ async function rejectFaqCandidate(id) {
   toast('FAQ candidate rejected');
   loadFaqCandidates();
 }
-function renderFaqStats(a) {
+function renderFaqStats(a, d = {}) {
   const stats = document.getElementById('faqStats');
   if (!stats) return;
+  const report = d.sync_report || lastFaqSyncReport || {};
   stats.innerHTML = `
     <div class="stat"><div class="val">${a.enabled_count || 0}</div><div class="lbl">Published</div></div>
+    <div class="stat"><div class="val">${esc(d.source_version || 'none')}</div><div class="lbl">Source Version</div></div>
+    <div class="stat"><div class="val">${esc(d.sync_status || 'unknown')}</div><div class="lbl">Sync Status</div></div>
+    <div class="stat"><div class="val">${report.created || 0}</div><div class="lbl">Created</div></div>
+    <div class="stat"><div class="val">${report.updated || 0}</div><div class="lbl">Updated</div></div>
+    <div class="stat"><div class="val">${report.superseded || 0}</div><div class="lbl">Superseded</div></div>
+    <div class="stat"><div class="val">${report.duplicates || 0}</div><div class="lbl">Skipped Duplicates</div></div>
+    <div class="stat"><div class="val">${lastFaqSyncReport?.cache_rows_deleted || 0}</div><div class="lbl">Cache Cleared</div></div>
     <div class="stat"><div class="val">${a.pending_candidates || 0}</div><div class="lbl">Pending</div></div>
     <div class="stat"><div class="val">${(a.duplicate_candidates || []).length}</div><div class="lbl">Duplicates</div></div>
     <div class="stat"><div class="val">${Math.round((a.overall_success_rate || 0) * 100)}%</div><div class="lbl">Success</div></div>
@@ -784,18 +979,23 @@ function renderFaqAnalytics(a) {
 async function loadCommands() {
   try {
     const d = await api('/admin/commands');
+    const available = await api('/admin/commands/available?permission=owner');
+    document.getElementById('availableCommandsPanel').innerHTML = renderCommandList(available.items || []);
     const panel = document.getElementById('commandsPanel');
     const sections = d.sections || {};
-    const order = ['User Commands', 'Owner Commands', 'Internet Commands', 'Media Commands', 'Memory Commands'];
+    const order = ['User Commands', 'Admin Commands', 'Internet Commands', 'Memory Commands', 'Media Commands', 'Experimental Commands'];
     panel.innerHTML = order.filter(name => sections[name]?.length).map(name => `
       <div class="card" style="background:var(--surface2);margin-bottom:1rem">
         <h3>${esc(name)}</h3>
         <div class="tbl-wrap"><table>
-          <thead><tr><th>Name</th><th>Description</th><th>Example</th><th>Permissions</th><th>Enabled</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Syntax</th><th>Description</th><th>Handler</th><th>Usage</th><th>Last Used</th><th>Permissions</th><th>Enabled</th><th></th></tr></thead>
           <tbody>${sections[name].map(cmd => `<tr>
             <td><strong>${esc(cmd.name)}</strong></td>
+            <td><code>${esc(cmd.trigger_syntax || cmd.name)}</code></td>
             <td>${esc(cmd.description)}</td>
-            <td title="${esc(cmd.example)}">${esc((cmd.example || '').substring(0,70))}</td>
+            <td title="${esc(cmd.example)}">${esc((cmd.handler_target || '').substring(0,80))}</td>
+            <td>${esc(String(cmd.usage_count || 0))}</td>
+            <td>${cmd.last_used_at ? esc(fmtDate(cmd.last_used_at)) : 'Never'}</td>
             <td><span class="badge ${cmd.permissions === 'owner' ? 'badge-orange' : 'badge-blue'}">${esc(cmd.permissions)}</span></td>
             <td><span class="badge ${cmd.enabled ? 'badge-green' : 'badge-gray'}">${cmd.enabled ? 'yes' : 'no'}</span></td>
             <td><button class="btn btn-ghost btn-sm" onclick="toggleCommand('${esc(cmd.name)}', ${!cmd.enabled})">${cmd.enabled ? 'Disable' : 'Enable'}</button></td>
@@ -804,10 +1004,113 @@ async function loadCommands() {
     `).join('') || '<em>No commands found.</em>';
   } catch (_) {}
 }
+function renderCommandList(items) {
+  if (!items.length) return '<em>No enabled commands available.</em>';
+  return `<div class="detail-grid">${items.map(cmd => `
+    <div class="detail">
+      <div class="k"><code>${esc(cmd.name)}</code> <span class="badge ${cmd.permissions === 'owner' ? 'badge-orange' : 'badge-blue'}">${esc(cmd.permissions)}</span></div>
+      <div class="v">${esc(cmd.description)}<br><small>${esc(cmd.example || cmd.trigger_syntax || '')}</small></div>
+    </div>`).join('')}</div>`;
+}
 async function toggleCommand(name, enabled) {
   await api('/admin/commands/toggle', { method: 'POST', body: JSON.stringify({ name, enabled }) });
   toast(enabled ? 'Command enabled' : 'Command disabled');
   loadCommands();
+}
+
+// ---- ADMINS ----
+let adminSearchTimer = null;
+let adminItemsById = {};
+function debouncedLoadAdmins() {
+  clearTimeout(adminSearchTimer);
+  adminSearchTimer = setTimeout(loadAdmins, 250);
+}
+async function loadAdmins() {
+  try {
+    const params = new URLSearchParams();
+    const q = document.getElementById('adminSearch')?.value.trim();
+    const role = document.getElementById('adminRoleFilter')?.value.trim();
+    const status = document.getElementById('adminStatusFilter')?.value;
+    const limit = document.getElementById('adminLimit')?.value || '50';
+    if (q) params.set('q', q);
+    if (role) params.set('role', role);
+    if (status) params.set('status', status);
+    params.set('limit', limit);
+    const d = await api('/admin/admins?' + params.toString());
+    const panel = document.getElementById('adminsPanel');
+    if (!d.items.length) { panel.innerHTML = '<em>No administrators configured.</em>'; return; }
+    adminItemsById = Object.fromEntries(d.items.map(item => [item.id, item]));
+    panel.innerHTML = `<table><thead><tr>
+      <th>Name</th><th>WhatsApp</th><th>Normalized</th><th>Role</th><th>Permission</th><th>Primary</th><th>Enabled</th><th>Last Active</th><th>Actions</th>
+    </tr></thead><tbody>${d.items.map(item => `<tr>
+      <td>${esc(item.name)}</td>
+      <td>${esc(item.whatsapp_number)}</td>
+      <td><code>${esc(item.normalized_whatsapp_id)}</code></td>
+      <td>${esc(item.role)}</td>
+      <td>${esc(item.permission_level)}</td>
+      <td><span class="badge ${item.primary ? 'badge-green' : 'badge-gray'}">${item.primary ? 'yes' : 'no'}</span></td>
+      <td><span class="badge ${item.enabled ? 'badge-green' : 'badge-gray'}">${item.enabled ? 'yes' : 'no'}</span></td>
+      <td>${item.last_active_at ? esc(fmtDate(item.last_active_at)) : 'Never'}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="editAdmin(${item.id})">Edit</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleAdmin(${item.id}, ${!item.enabled})">${item.enabled ? 'Disable' : 'Enable'}</button>
+        <button class="btn btn-ghost btn-sm" onclick="setPrimaryAdmin(${item.id})">Set Primary</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteAdmin(${item.id})">Remove</button>
+      </td>
+    </tr>`).join('')}</tbody></table>`;
+  } catch (err) {
+    document.getElementById('adminsPanel').innerHTML = `<em>${esc(err.message || 'Failed to load admins')}</em>`;
+  }
+}
+async function createAdmin() {
+  const payload = {
+    name: document.getElementById('adminName').value,
+    whatsapp_number: document.getElementById('adminNumber').value,
+    role: document.getElementById('adminRole').value || 'admin',
+    permission_level: document.getElementById('adminPermission').value,
+  };
+  await api('/admin/admins', { method: 'POST', body: JSON.stringify(payload) });
+  toast('Admin added');
+  document.getElementById('adminName').value = '';
+  document.getElementById('adminNumber').value = '';
+  loadAdmins();
+}
+async function editAdmin(id) {
+  const item = adminItemsById[id];
+  if (!item) return toast('Admin row not loaded', true);
+  const name = prompt('Admin name', item.name || '');
+  if (name === null) return;
+  const number = prompt('WhatsApp number', item.whatsapp_number || '');
+  if (number === null) return;
+  const role = prompt('Role', item.role || 'admin');
+  if (role === null) return;
+  const permission = prompt('Permission level: owner, admin, or viewer', item.permission_level || 'owner');
+  if (permission === null) return;
+  if (!confirm('Save administrator changes?')) return;
+  await api(`/admin/admins/${item.id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name, whatsapp_number: number, role, permission_level: permission })
+  });
+  toast('Admin saved');
+  loadAdmins();
+}
+async function toggleAdmin(id, enabled) {
+  if (!confirm(`${enabled ? 'Enable' : 'Disable'} this administrator?`)) return;
+  await api(`/admin/admins/${id}/enable`, { method: 'POST', body: JSON.stringify({ enabled }) });
+  toast('Admin updated');
+  loadAdmins();
+}
+async function setPrimaryAdmin(id) {
+  if (!confirm('Set this administrator as primary?')) return;
+  await api(`/admin/admins/${id}/primary`, { method: 'POST' });
+  toast('Primary admin updated');
+  loadAdmins();
+}
+async function deleteAdmin(id) {
+  if (!confirm('Remove this secondary administrator?')) return;
+  await api(`/admin/admins/${id}`, { method: 'DELETE' });
+  toast('Admin removed');
+  loadAdmins();
 }
 
 // ---- KNOWLEDGE ----
@@ -869,34 +1172,84 @@ async function searchKnowledge() {
 }
 
 // ---- GROUPS ----
+let groupSearchTimer = null;
+let groupsById = {};
+function debouncedLoadGroups() {
+  clearTimeout(groupSearchTimer);
+  groupSearchTimer = setTimeout(loadGroups, 250);
+}
 async function loadGroups() {
   try {
-    const d = await api('/admin/groups');
+    const params = new URLSearchParams();
+    const q = document.getElementById('groupSearch')?.value.trim();
+    const status = document.getElementById('groupStatus')?.value;
+    if (q) params.set('q', q);
+    if (status) params.set('status', status);
+    const d = await api('/admin/groups?' + params.toString());
     if (!d.items.length) { document.getElementById('groupsTable').innerHTML = '<em>No groups configured.</em>'; return; }
+    groupsById = Object.fromEntries(d.items.map(item => [item.id, item]));
     document.getElementById('groupsTable').innerHTML = `<table>
-      <thead><tr><th>ID</th><th>Chat ID</th><th>Reply Mode</th><th>Enabled</th><th>Cooldown</th></tr></thead>
+      <thead><tr><th>Group</th><th>Chat ID</th><th>WAHA Name</th><th>Reply Mode</th><th>Enabled</th><th>Cooldown</th><th>Actions</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
-        <td>${m.id}</td>
-        <td>${esc(m.chat_id)}</td>
+        <td><strong>${esc(m.display_name || m.chat_id)}</strong><br><small>ID ${m.id}</small></td>
+        <td><code>${esc(m.chat_id)}</code></td>
+        <td>${esc(m.waha_group_name || '—')}</td>
         <td><span class="badge badge-purple">${m.reply_mode}</span></td>
         <td><span class="badge ${m.is_enabled?'badge-green':'badge-red'}">${m.is_enabled?'yes':'no'}</span></td>
         <td>${m.cooldown_seconds}s</td>
+        <td>
+          <button class="btn btn-ghost btn-sm" onclick="editGroup(${m.id})">Edit</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleGroup(${m.id}, ${!m.is_enabled})">${m.is_enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteGroup(${m.id})">Delete</button>
+        </td>
       </tr>`).join('')}</tbody></table>`;
   } catch (_) {}
 }
-async function updateGroup() {
+async function createGroup() {
   const cid = document.getElementById('grpId').value.trim();
   if (!cid) return toast('Chat ID required', true);
-  await api('/admin/group-mode', {
+  await api('/admin/groups', {
     method: 'POST',
     body: JSON.stringify({
       chat_id: cid,
+      display_name: document.getElementById('grpName').value.trim() || null,
       reply_mode: document.getElementById('grpMode').value,
       is_enabled: document.getElementById('grpEnabled').value === 'true',
       cooldown_seconds: parseInt(document.getElementById('grpCooldown').value) || 45
     })
   });
-  toast('Group updated');
+  document.getElementById('grpName').value = '';
+  document.getElementById('grpId').value = '';
+  toast('Group added');
+  loadGroups();
+}
+async function editGroup(id) {
+  const item = groupsById[id];
+  if (!item) return toast('Group row not loaded', true);
+  const display_name = prompt('Group display name', item.configured_display_name || item.display_name || '');
+  if (display_name === null) return;
+  const chat_id = prompt('Chat ID', item.chat_id || '');
+  if (chat_id === null) return;
+  const reply_mode = prompt('Reply mode: mention_only or off', item.reply_mode || 'mention_only');
+  if (reply_mode === null) return;
+  const cooldown_seconds = Number(prompt('Cooldown seconds', item.cooldown_seconds || 45));
+  if (!confirm('Save group changes?')) return;
+  await api(`/admin/groups/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ display_name, chat_id, reply_mode, cooldown_seconds })
+  });
+  toast('Group saved');
+  loadGroups();
+}
+async function toggleGroup(id, is_enabled) {
+  await api(`/admin/groups/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled }) });
+  toast(is_enabled ? 'Group enabled' : 'Group disabled');
+  loadGroups();
+}
+async function deleteGroup(id) {
+  if (!confirm('Delete this group configuration?')) return;
+  await api(`/admin/groups/${id}`, { method: 'DELETE' });
+  toast('Group deleted');
   loadGroups();
 }
 
@@ -933,16 +1286,19 @@ async function loadConversationInspector() {
     const table = document.getElementById('conversationInspectorTable');
     if (!d.items.length) { table.innerHTML = '<em>No conversations inspected yet.</em>'; return; }
     table.innerHTML = `<table>
-      <thead><tr><th>Time</th><th>Message</th><th>Intent</th><th>Expanded Query</th><th>Topic</th><th>Entities</th><th>Hits</th><th>Selected Source</th><th>Reason</th><th>Final Response</th></tr></thead>
+      <thead><tr><th>Time</th><th>User</th><th>Message</th><th>Intent</th><th>Route</th><th>Sources Used</th><th>Hits</th><th>Fallback</th><th>Reason</th><th>Final Response</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
+        <td><strong>${esc(m.user_name || 'Unknown')}</strong><br><small>${esc(m.phone_number || m.whatsapp_id || '—')}</small></td>
         <td title="${esc(m.message || m.question || '')}">${esc((m.message || m.question || '').substring(0,70))}</td>
         <td><span class="badge badge-gray">${esc(m.intent || m.router_analytics?.intent || 'unknown')}</span></td>
-        <td title="${esc(m.expanded_query || '')}">${esc((m.expanded_query || '—').substring(0,70))}</td>
-        <td>${esc(m.topic || '—')}</td>
-        <td title="${esc((m.entities || []).join(', '))}">${esc((m.entities || []).join(', ').substring(0,50)) || '—'}</td>
+        <td><span class="badge badge-purple">${esc(m.selected_source || m.selected_route || m.decision_type || '—')}</span><br><small>${esc(m.topic || '—')}</small></td>
+        <td class="mono">
+          I:${m.identity_used ? '1' : '0'} M:${m.memory_used ? '1' : '0'} F:${m.faq_used ? '1' : '0'}<br>
+          K:${m.knowledge_used ? '1' : '0'} P:${m.project_context ? '1' : '0'}
+        </td>
         <td class="mono">M:${m.memory_hits || 0}<br>F:${m.faq_hits || 0}<br>K:${m.knowledge_hits || 0}<br>I:${m.internet_hits || 0}<br>AI:${m.ai_hits || 0}</td>
-        <td><span class="badge badge-purple">${esc(m.selected_source || m.selected_route || '—')}</span></td>
+        <td title="${esc(m.fallback_reason || '')}">${esc((m.fallback_reason || '—').substring(0,50))}</td>
         <td title="${esc(m.reason || '')}">${esc((m.reason || '').substring(0,70))}</td>
         <td title="${esc(m.final_response || '')}">${esc((m.final_response || '—').substring(0,90))}</td>
       </tr>`).join('')}</tbody></table>`;
@@ -991,7 +1347,7 @@ async function loadQueue() {
         <td>${q.id}</td>
         <td><span class="badge ${queueBadge(q.status)}">${q.status}</span></td>
         <td title="${esc(q.chat_id)}">${esc(q.chat_id.substring(0,22))}</td>
-        <td title="${esc(q.message_text)}">${esc(q.message_text.substring(0,70))}</td>
+        <td title="${esc(q.display_text || q.message_text)}">${esc((q.display_text || q.message_text).substring(0,70))}</td>
         <td>${q.retry_count}/${q.max_retries}</td>
         <td style="white-space:nowrap">${q.next_attempt_at ? new Date(q.next_attempt_at).toLocaleString() : '—'}</td>
         <td title="${esc(q.error_message||'')}">${esc((q.error_message||'—').substring(0,36))}</td>
@@ -1117,9 +1473,9 @@ async function testReply() {
     });
     div.innerHTML = `
       <div class="card" style="background:var(--surface2)">
-        <div style="margin-bottom:.5rem"><span class="badge badge-purple">${r.decision_type}</span> <span class="badge badge-blue">Source: ${esc(r.source || 'unknown')}</span> <span class="badge badge-blue">${r.ai_used ? 'AI' : 'No AI'}</span></div>
-        <div style="font-size:.9rem;line-height:1.5;color:var(--text)">${r.reply_text || '<em>No reply</em>'}</div>
-        <div style="margin-top:.4rem;font-size:.72rem;color:var(--text-dim)">Reason: ${r.reason} | KB confidence: ${(r.kb_confidence||0).toFixed(2)}</div>
+        <div style="margin-bottom:.5rem"><span class="badge badge-purple">${esc(r.decision_type)}</span> <span class="badge badge-blue">Source: ${esc(r.source || 'unknown')}</span> <span class="badge badge-blue">${r.ai_used ? 'AI' : 'No AI'}</span> <span class="badge badge-gray">Format: ${esc(r.response_formatting?.whatsapp_message_format || 'standard')}</span></div>
+        <div style="font-size:.9rem;line-height:1.5;color:var(--text)">${r.display_reply_text ? textHtml(r.display_reply_text) : '<em>No reply</em>'}</div>
+        <div style="margin-top:.4rem;font-size:.72rem;color:var(--text-dim)">Reason: ${esc(r.reason)} | KB confidence: ${(r.kb_confidence||0).toFixed(2)}</div>
         <div class="debug-json" style="margin-top:.7rem">${esc(JSON.stringify(r.debugger || {}, null, 2))}</div>
         <div class="debug-json" style="margin-top:.7rem">${esc(JSON.stringify(r.source_diagnostics || {}, null, 2))}</div>
       </div>
@@ -1176,12 +1532,19 @@ async function deleteRule(id) {
 }
 
 // ---- MEMORY ----
+let memorySearchTimer = null;
+let memoryFactsById = {};
+function debouncedLoadMemoryFacts() {
+  clearTimeout(memorySearchTimer);
+  memorySearchTimer = setTimeout(loadMemoryFacts, 250);
+}
 async function loadMemory() {
   try {
+    loadMemoryFacts();
     const d = await api('/admin/memory');
     if (!d.items.length) { document.getElementById('memoryTable').innerHTML = '<em>No user memories yet.</em>'; return; }
     document.getElementById('memoryTable').innerHTML = `<table>
-      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Relationship</th><th>Interests</th><th>Projects</th><th>Last Seen</th><th>Onboarded</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Contact</th><th>WhatsApp</th><th>Name</th><th>Relationship</th><th>Interests</th><th>Projects</th><th>Last Seen</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td>${m.display_name||'—'}</td><td>${esc(m.whatsapp_id)}</td>
         <td>${esc(m.user_name||'—')}</td>
@@ -1189,8 +1552,9 @@ async function loadMemory() {
         <td title="${esc(m.interests||'')}">${esc((m.interests||'—').substring(0,34))}</td>
         <td title="${esc(m.projects||'')}">${esc((m.projects||'—').substring(0,34))}</td>
         <td style="white-space:nowrap">${m.last_interaction_at ? new Date(m.last_interaction_at).toLocaleString() : '—'}</td>
-        <td><span class="badge ${m.onboarding_complete?'badge-green':'badge-orange'}">${m.onboarding_complete?'yes':'no'}</span></td>
+        <td><span class="badge ${m.enabled?'badge-green':'badge-gray'}">${m.enabled?'enabled':'disabled'}</span></td>
         <td>
+          <button class="btn btn-ghost btn-sm" onclick="toggleMemoryProfile(${m.contact_id}, ${!m.enabled})">${m.enabled ? 'Disable' : 'Enable'}</button>
           <select onchange="if(this.value){deleteMemory(${m.contact_id}, this.value); this.value='';}">
             <option value="">Clean...</option>
             <option value="low">Low (Notes)</option>
@@ -1201,6 +1565,83 @@ async function loadMemory() {
         </td>
       </tr>`).join('')}</tbody></table>`;
   } catch (_) {}
+}
+async function loadMemoryFacts() {
+  const params = new URLSearchParams();
+  const q = document.getElementById('memorySearch')?.value.trim();
+  const status = document.getElementById('memoryStatus')?.value;
+  const type = document.getElementById('memoryTypeFilter')?.value.trim();
+  if (q) params.set('q', q);
+  if (status) params.set('status', status);
+  if (type) params.set('memory_type', type);
+  const d = await api('/admin/memory/facts?' + params.toString());
+  const table = document.getElementById('memoryFactsTable');
+  if (!d.items.length) { table.innerHTML = '<em>No memory facts found.</em>'; return; }
+  memoryFactsById = Object.fromEntries(d.items.map(item => [item.id, item]));
+  table.innerHTML = `<table>
+    <thead><tr><th>User</th><th>Phone</th><th>Memory</th><th>Type</th><th>Source</th><th>Importance</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+    <tbody>${d.items.map(m => `<tr>
+      <td>${esc(m.user_name || '—')}<br><small>ID ${m.contact_id}</small></td>
+      <td>${esc(m.normalized_phone || m.whatsapp_id || '—')}</td>
+      <td>${esc((m.memory_text || '').substring(0,120))}</td>
+      <td><span class="badge badge-blue">${esc(m.memory_type || 'profile_fact')}</span></td>
+      <td>${esc(m.source || 'admin')}</td>
+      <td>${Number(m.importance || 0).toFixed(2)}</td>
+      <td><span class="badge ${m.enabled?'badge-green':'badge-gray'}">${m.enabled?'enabled':'disabled'}</span></td>
+      <td>${m.updated_at ? esc(fmtDate(m.updated_at)) : '—'}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="editMemoryFact(${m.id})">Edit</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleMemoryFact(${m.id}, ${!m.enabled})">${m.enabled ? 'Disable' : 'Enable'}</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteMemoryFact(${m.id})">Delete</button>
+      </td>
+    </tr>`).join('')}</tbody></table>`;
+}
+async function createMemoryFact() {
+  const payload = {
+    contact_id: Number(document.getElementById('memoryContactId').value),
+    memory_text: document.getElementById('memoryFactText').value.trim(),
+    memory_type: document.getElementById('memoryFactType').value.trim() || 'profile_fact',
+    importance: Number(document.getElementById('memoryFactImportance').value || 0.5),
+  };
+  if (!payload.contact_id || !payload.memory_text) return toast('Contact ID and memory text are required', true);
+  await api('/admin/memory/facts', { method: 'POST', body: JSON.stringify(payload) });
+  document.getElementById('memoryFactText').value = '';
+  toast('Memory added');
+  loadMemoryFacts();
+}
+async function editMemoryFact(id) {
+  const item = memoryFactsById[id];
+  const memory_text = prompt('Memory text', item?.memory_text || '');
+  if (memory_text === null) return;
+  await api(`/admin/memory/facts/${id}`, { method: 'PUT', body: JSON.stringify({ memory_text }) });
+  toast('Memory updated');
+  loadMemoryFacts();
+}
+async function toggleMemoryFact(id, enabled) {
+  await api(`/admin/memory/facts/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled: enabled }) });
+  toast(enabled ? 'Memory enabled' : 'Memory disabled');
+  loadMemoryFacts();
+}
+async function deleteMemoryFact(id) {
+  if (!confirm('Delete this memory fact?')) return;
+  await api(`/admin/memory/facts/${id}`, { method: 'DELETE' });
+  toast('Memory deleted');
+  loadMemoryFacts();
+}
+async function toggleMemoryProfile(cid, enabled) {
+  await api(`/admin/memory/${cid}`, { method: 'PUT', body: JSON.stringify({ is_enabled: enabled }) });
+  toast(enabled ? 'Memory profile enabled' : 'Memory profile disabled');
+  loadMemory();
+}
+async function exportMemory() {
+  const d = await api('/admin/memory/export');
+  const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'zina-memory-export.json';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 async function deleteMemory(cid, risk) {
   const msgs = {
@@ -1227,9 +1668,13 @@ async function loadProfiles() {
         <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start">
           <div>
             <strong>${esc(p.display_name || p.user_name || p.whatsapp_id)}</strong>
-            <div style="font-size:.72rem;color:var(--text-muted)">${esc(p.whatsapp_id)}</div>
+            <div style="font-size:.72rem;color:var(--text-muted)">${esc(p.normalized_phone || p.phone_number || p.whatsapp_id)}</div>
           </div>
-          <span class="badge ${p.onboarding_complete?'badge-green':'badge-orange'}">${p.onboarding_complete?'onboarded':'open'}</span>
+          <span class="badge ${p.verified_manual_name?'badge-green':'badge-blue'}">${p.verified_manual_name?'verified':'WAHA'}</span>
+        </div>
+        <div class="detail-grid" style="margin:.7rem 0">
+          <div class="detail"><div class="k">WhatsApp Names</div><div class="v">Contact: ${esc(p.whatsapp_contact_name || '—')}<br>Push: ${esc(p.whatsapp_push_name || '—')}<br>Profile: ${esc(p.whatsapp_display_name || '—')}</div></div>
+          <div class="detail"><div class="k">Activity</div><div class="v">Messages: ${p.message_count || 0}<br>Memory: ${p.memory_count || 0}<br>Mode: ${esc(p.current_conversation_mode || 'standard')}</div></div>
         </div>
         ${profileInput(p.contact_id,'display_name','Display Name',p.display_name)}
         ${profileInput(p.contact_id,'user_name','Name',p.user_name)}
@@ -1241,6 +1686,13 @@ async function loadProfiles() {
         ${profileInput(p.contact_id,'communication_style','Style',p.communication_style)}
         ${profileInput(p.contact_id,'relationship','Relationship Note',p.relationship)}
         ${profileText(p.contact_id,'personality_notes','Personality Notes',p.personality_notes)}
+        <details style="margin-top:.7rem">
+          <summary>Technical identifiers</summary>
+          <div class="detail" style="margin-top:.5rem">
+            <div class="k">IDs</div>
+            <div class="v">WhatsApp: <code>${esc(p.whatsapp_id || '')}</code><br>Chat: <code>${esc(p.chat_id || '')}</code><br>Contact: <code>${esc(p.waha_contact_id || '')}</code><br>Participant: <code>${esc(p.waha_participant_id || '')}</code></div>
+          </div>
+        </details>
         <div class="btn-group" style="margin-top:.7rem">
           <button class="btn btn-primary btn-sm" onclick="saveProfile(${p.contact_id})">Save</button>
           <button class="btn btn-ghost btn-sm" onclick="loadMemoryDetails(${p.contact_id})">Timeline</button>
@@ -1380,7 +1832,7 @@ async function loadLogs() {
         <td title="${esc(m.chat_id)}">${esc(m.chat_id.substring(0,18))}</td>
         <td><span class="badge badge-blue">${m.chat_type}</span></td>
         <td><span class="badge ${m.direction==='inbound'?'badge-green':'badge-purple'}">${m.direction}</span></td>
-        <td title="${esc(m.message_text)}">${esc(m.message_text.substring(0,80))}</td>
+        <td title="${esc(m.display_text || m.message_text)}">${esc((m.display_text || m.message_text).substring(0,80))}</td>
       </tr>`).join('')}</tbody></table>`;
   } catch (_) {}
 }
@@ -1538,6 +1990,13 @@ async function loadConfig() {
             <option value="false" ${cfg.enable_signature_style==='false'?'selected':''}>Off</option>
           </select>
         </div>
+        <div><label>Message Format</label>
+          <select onchange="saveConfig('whatsapp_message_format',this.value)">
+            <option value="automatic" ${(cfg.whatsapp_message_format || 'automatic')==='automatic'?'selected':''}>Automatic (Recommended)</option>
+            <option value="standard" ${cfg.whatsapp_message_format==='standard'?'selected':''}>Standard</option>
+            <option value="quote" ${cfg.whatsapp_message_format==='quote'?'selected':''}>Quote</option>
+          </select>
+        </div>
         <div><label>Source Badges</label>
           <select onchange="saveConfig('show_source_badges',this.value)">
             <option value="true" ${cfg.show_source_badges!=='false'?'selected':''}>On</option>
@@ -1618,10 +2077,58 @@ async function saveConfig(key, value) {
 
 // ---- Utilities ----
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function textHtml(s) { return esc(s).replace(/\n/g, '<br>'); }
+
+function enhanceResponsiveTables(root = document) {
+  root.querySelectorAll('.tbl-wrap table').forEach(table => {
+    const headers = Array.from(table.querySelectorAll('thead th')).map((th, index) => {
+      const text = th.textContent.trim();
+      return text || (index === table.querySelectorAll('thead th').length - 1 ? 'Actions' : 'Details');
+    });
+    table.querySelectorAll('tbody tr').forEach(row => {
+      Array.from(row.children).forEach((cell, index) => {
+        if (!cell.dataset.label) cell.dataset.label = headers[index] || 'Details';
+        const text = cell.textContent.trim();
+        if (text && text.length > 20 && !cell.title) cell.title = text.slice(0, 500);
+      });
+    });
+  });
+}
+
+function responsiveOverflowReport() {
+  const viewport = document.documentElement.clientWidth;
+  const offenders = Array.from(document.body.querySelectorAll('*')).filter(el => {
+    if (!document.body.classList.contains('nav-open') && el.closest && el.closest('#adminSidebar')) return false;
+    if (el.id === 'navOverlay') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && (rect.right > viewport + 1 || rect.left < -1);
+  }).slice(0, 25).map(el => ({
+    tag: el.tagName.toLowerCase(),
+    id: el.id || '',
+    className: String(el.className || '').slice(0, 90),
+    right: Math.round(el.getBoundingClientRect().right),
+    width: Math.round(el.getBoundingClientRect().width)
+  }));
+  return {
+    viewport,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+    hasHorizontalOverflow: document.documentElement.scrollWidth > viewport + 1,
+    offenders
+  };
+}
+window.zinaAdminResponsiveCheck = responsiveOverflowReport;
+
+const mainRoot = document.querySelector('.main');
+if (mainRoot) {
+  const tableObserver = new MutationObserver(() => requestAnimationFrame(() => enhanceResponsiveTables(mainRoot)));
+  tableObserver.observe(mainRoot, { childList: true, subtree: true });
+}
 
 // Initial load
 loadSession().catch(() => {});
-loadStatus();
+activateTab(tabFromLocation());
+requestAnimationFrame(() => enhanceResponsiveTables(document));
 </script>
 </body>
 </html>

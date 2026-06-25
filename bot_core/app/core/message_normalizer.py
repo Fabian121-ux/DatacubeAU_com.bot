@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from app.config import settings
@@ -20,6 +21,7 @@ class NormalizedMessage:
     is_bot_mentioned: bool
     payload: dict[str, Any]
     sender_alternate_ids: list[str] = field(default_factory=list)
+    sender_identity: dict[str, Any] = field(default_factory=dict)
 
 
 class MessageNormalizer:
@@ -35,15 +37,25 @@ class MessageNormalizer:
         chat_id = str(payload.get("chatId") or payload.get("chat", {}).get("id") or sender_id or "unknown-chat")
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
         contact = payload.get("contact") if isinstance(payload.get("contact"), dict) else {}
-        sender_name = (
-            payload.get("notifyName")
-            or payload.get("pushName")
-            or sender.get("pushName")
-            or sender.get("name")
-            or contact.get("pushName")
-            or contact.get("name")
-            or contact.get("shortName")
-        )
+        contact_name = contact.get("name") or contact.get("shortName") or payload.get("contactName")
+        push_name = sender.get("pushName") or payload.get("pushName") or contact.get("pushName") or payload.get("notifyName")
+        profile_name = sender.get("name") or payload.get("notifyName")
+        phone = sender.get("phone") or contact.get("phone") or payload.get("phone")
+        sender_name = contact_name or push_name or profile_name or self._temporary_phone_name(phone or sender_id)
+        sender_identity = {
+            "display_name": sender_name,
+            "contact_name": contact_name,
+            "push_name": push_name,
+            "profile_name": profile_name,
+            "phone": phone,
+            "normalized_phone": self._normalize_phone(phone or sender_id),
+            "chat_id": chat_id,
+            "sender_id": sender_id,
+            "alternate_ids": alternate_ids,
+            "waha_contact_id": contact.get("id") or contact.get("_serialized"),
+            "waha_participant_id": payload.get("participant") or payload.get("participantId") or payload.get("author"),
+            "profile_image_url": sender.get("profilePicUrl") or contact.get("profilePicUrl") or payload.get("profilePicUrl"),
+        }
 
         message_text = self._extract_text(payload)
         normalized = normalize_text(message_text)
@@ -62,6 +74,7 @@ class MessageNormalizer:
             is_bot_mentioned=self._is_mentioned(message_text, mentions),
             payload=payload,
             sender_alternate_ids=alternate_ids,
+            sender_identity=sender_identity,
         )
 
     @classmethod
@@ -94,6 +107,18 @@ class MessageNormalizer:
             if value not in candidates:
                 candidates.append(value)
         return candidates
+
+    @staticmethod
+    def _normalize_phone(value: Any) -> str | None:
+        text = str(value or "")
+        left = text.split("@", 1)[0]
+        digits = re.sub(r"\D+", "", left)
+        return digits or None
+
+    @classmethod
+    def _temporary_phone_name(cls, value: Any) -> str | None:
+        digits = cls._normalize_phone(value)
+        return digits if digits and len(digits) >= 7 else None
 
     @staticmethod
     def _is_group(payload: dict[str, Any], chat_id: str) -> bool:

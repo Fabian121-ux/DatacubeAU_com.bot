@@ -554,6 +554,8 @@ async def test_onboarding_complete_user_returns_no_reply() -> None:
         ("call me grace", "Grace"),
         ("Backend automation", None),
         ("I am a developer", None),
+        ("I am your AI bot tester", None),
+        ("My goal is to test you", None),
         ("kk", None),
         ("yes", None),
         ("wow", None),

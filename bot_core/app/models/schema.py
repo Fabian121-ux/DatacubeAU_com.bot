@@ -37,6 +37,18 @@ class Contact(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     whatsapp_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     display_name: Mapped[str | None] = mapped_column(String(180))
+    whatsapp_phone: Mapped[str | None] = mapped_column(String(80))
+    normalized_phone: Mapped[str | None] = mapped_column(String(80))
+    chat_id: Mapped[str | None] = mapped_column(String(120))
+    waha_contact_id: Mapped[str | None] = mapped_column(String(120))
+    waha_participant_id: Mapped[str | None] = mapped_column(String(120))
+    push_name: Mapped[str | None] = mapped_column(String(180))
+    contact_name: Mapped[str | None] = mapped_column(String(180))
+    profile_image_url: Mapped[str | None] = mapped_column(Text)
+    identity_source: Mapped[str | None] = mapped_column(String(40))
+    identity_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    is_name_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -62,9 +74,11 @@ class GroupConfig(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    display_name: Mapped[str | None] = mapped_column(String(220))
     reply_mode: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'mention_only'"))
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("45"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
@@ -320,6 +334,9 @@ class UserMemory(Base):
     relationship_type: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'unknown'"))
     personality_notes: Mapped[str | None] = mapped_column(Text)
     global_chat_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
@@ -333,7 +350,12 @@ class UserMemoryTimeline(Base):
     contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
     memory_text: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(40), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'profile_fact'"))
+    importance: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.5"))
     confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -370,6 +392,11 @@ class FAQEntry(Base):
     __tablename__ = "faq_entries"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(String(120), nullable=False, server_default=text("'core_faq'"))
+    source_name: Mapped[str | None] = mapped_column(String(220))
+    source_version: Mapped[str] = mapped_column(String(80), nullable=False, server_default=text("'legacy'"))
+    source_hash: Mapped[str | None] = mapped_column(String(80))
+    sync_status: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'synced'"))
     category: Mapped[str] = mapped_column(String(80), nullable=False, server_default=text("'General'"))
     intent: Mapped[str] = mapped_column(String(120), nullable=False, server_default=text("'custom'"))
     question: Mapped[str] = mapped_column(Text, nullable=False)
@@ -384,6 +411,7 @@ class FAQEntry(Base):
     success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_synchronized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
@@ -442,11 +470,31 @@ class CommandCatalogEntry(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    trigger_syntax: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     category: Mapped[str] = mapped_column(String(80), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     example: Mapped[str] = mapped_column(Text, nullable=False)
     permissions: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'user'"))
+    handler_target: Mapped[str] = mapped_column(String(160), nullable=False, server_default=text("''"))
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class AdminAccount(Base):
+    __tablename__ = "admin_accounts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    whatsapp_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    normalized_whatsapp_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    role: Mapped[str] = mapped_column(String(80), nullable=False, server_default=text("'admin'"))
+    permission_level: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'owner'"))
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -460,6 +508,7 @@ class OutboundMessage(Base):
     media_url: Mapped[str | None] = mapped_column(Text)
     media_type: Mapped[str | None] = mapped_column(String(40))
     media_caption: Mapped[str | None] = mapped_column(Text)
+    formatting_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))

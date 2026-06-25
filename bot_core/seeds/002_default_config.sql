@@ -4,6 +4,7 @@ INSERT INTO bot_config (config_key, config_value) VALUES
   ('ai_enabled',           'false'),
   ('ai_model_light',       'openai/gpt-4o-mini'),
   ('ai_model_deep',        'openai/gpt-4o'),
+  ('whatsapp_message_format', 'automatic'),
   ('rate_limit_per_user_daily', '50'),
   ('rate_limit_cooldown_seconds', '6'),
   ('rate_limit_global_daily',    '500'),

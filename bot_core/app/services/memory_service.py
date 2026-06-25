@@ -66,8 +66,10 @@ class MemoryService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_memory(self, contact_id: int) -> UserMemory | None:
+    async def get_memory(self, contact_id: int, *, include_disabled: bool = False) -> UserMemory | None:
         stmt = select(UserMemory).where(UserMemory.contact_id == contact_id).limit(1)
+        if not include_disabled:
+            stmt = stmt.where(UserMemory.is_enabled.is_(True))
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def upsert_memory(
@@ -93,7 +95,10 @@ class MemoryService:
         normalized_relationship_type = (
             self.normalize_relationship_type(relationship_type) if relationship_type is not None else None
         )
-        memory = await self.get_memory(contact_id)
+        try:
+            memory = await self.get_memory(contact_id, include_disabled=True)
+        except TypeError:
+            memory = await self.get_memory(contact_id)
         if memory:
             if display_name is not None:
                 memory.display_name = display_name
@@ -148,6 +153,7 @@ class MemoryService:
                 or RelationshipType.UNKNOWN.value,
                 personality_notes=personality_notes,
                 global_chat_enabled=global_chat_enabled or False,
+                is_enabled=True,
                 first_seen_at=utcnow(),
                 last_interaction_at=last_interaction_at,
                 updated_at=utcnow(),
@@ -186,7 +192,10 @@ class MemoryService:
             contact_id=contact_id,
             memory_text=memory_text[:1200],
             source=source[:40],
+            memory_type="profile_fact",
+            importance=max(0.0, min(confidence, 1.0)),
             confidence=max(0.0, min(confidence, 1.0)),
+            is_enabled=True,
             updated_at=utcnow(),
         )
         self.session.add(entry)
