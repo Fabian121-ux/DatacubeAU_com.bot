@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from app.core.router import InboundRouter
 from app.db import SessionLocal
+from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.logging_service import log_event
 
@@ -53,6 +54,19 @@ async def waha_webhook(
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
     if _is_from_me(payload):
+        chat_id = _resolve_chat_id(payload)
+        if chat_id and not _is_group_chat(chat_id):
+            async with SessionLocal() as db:
+                cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
+                await db.commit()
+            log_event(
+                logger,
+                logging.INFO,
+                "conversation_owner_activity",
+                request_id=request_id,
+                chat_id=chat_id,
+                takeover_cancelled=cancelled,
+            )
         log_event(
             logger,
             logging.INFO,
@@ -118,6 +132,7 @@ async def _process_event_async(
         inbound_router = InboundRouter(db)
         result: dict[str, Any] | None = None
         error_text: str | None = None
+        takeover_scheduled = False
         try:
             result = await inbound_router.process_event(event)
         except Exception as exc:  # noqa: BLE001
@@ -128,8 +143,19 @@ async def _process_event_async(
             log_event(logger, logging.ERROR, "webhook_processing_failed", request_id=request_id, error=error_text)
             logger.exception("WAHA inbound processing failed")
         else:
+            payload = _resolve_payload(event)
+            chat_id = _resolve_chat_id(payload)
+            if chat_id and not _is_group_chat(chat_id):
+                takeover_scheduled = await ConversationTakeoverService(db).schedule_if_eligible(
+                    chat_id=chat_id,
+                    chat_type=str(result.get("chat_type") or ""),
+                    message_id=_resolve_message_id(payload),
+                    router_replied=bool(result.get("outbound_message_id") or result.get("outbound_queue_id")),
+                )
             if idempotency_key:
                 await InboundIdempotencyService(db).mark_completed(idempotency_key)
+            else:
+                await db.commit()
         finally:
             await inbound_router.close()
 
@@ -144,6 +170,7 @@ async def _process_event_async(
             outbound_message_id=result.get("outbound_message_id") if result else None,
             error=error_text,
             idempotency_key=idempotency_key,
+            takeover_scheduled=takeover_scheduled,
         )
 
 
@@ -207,3 +234,7 @@ def _is_from_me(payload: dict[str, Any]) -> bool:
     if isinstance(raw_value, str):
         return raw_value.strip().lower() in {"1", "true", "yes"}
     return False
+
+
+def _is_group_chat(chat_id: str) -> bool:
+    return chat_id.endswith("@g.us")
