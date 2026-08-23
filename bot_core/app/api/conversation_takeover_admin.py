@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,26 @@ async def get_conversation_handback(
 ) -> dict[str, Any]:
     summary = await ConversationHandbackService(db).get_latest(chat_id=chat_id)
     return {"chat_id": chat_id, "handback": summary}
+
+
+@router.get("/{chat_id}/action-queue")
+async def get_conversation_action_queue(
+    chat_id: str,
+    action: Literal["reply_now", "review_today", "informational"] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Expose Fabian's latest private evidence-backed action queue for one chat."""
+    summary = await ConversationHandbackService(db).get_latest(chat_id=chat_id)
+    queue = list((summary or {}).get("fabian_action_queue") or [])
+    if action is not None:
+        queue = [item for item in queue if item.get("recommended_action") == action]
+    return {
+        "chat_id": chat_id,
+        "action_filter": action,
+        "generated_at": (summary or {}).get("generated_at"),
+        "items": queue,
+        "count": len(queue),
+    }
 
 
 @router.put("/{chat_id}")
