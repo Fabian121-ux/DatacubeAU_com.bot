@@ -75,7 +75,8 @@ async def test_identity_guard_escalates_fabian_impersonation(bad_reply: str) -> 
     guarded = await planner._apply_identity_guard(reply)
 
     assert guarded.decision_type == DecisionType.ESCALATED
-    assert guarded.reply_text == "Fabian may need to answer this personally."
+    assert guarded.raw_reply_text == "Fabian may need to answer this personally."
+    assert guarded.reply_text == "> Fabian may need to answer this personally."
     assert guarded.ai_used is False
     assert guarded.source_diagnostics["identity_guard"] == {"triggered": True}
     assert "identity boundary guard" in guarded.reason
