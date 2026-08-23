@@ -110,10 +110,19 @@ async def test_owner_resume_generates_private_handback_once(db_session):
     assert summary["prioritized_attention_items"][0]["source_id"] is not None
     assert summary["prioritized_attention_items"][0]["evidence"] == "Can Fabian confirm the meeting time?"
     assert "unresolved_question" in summary["prioritized_attention_items"][0]["reason_codes"]
+
+    action_queue = summary["fabian_action_queue"]
+    assert action_queue[0]["recommended_action"] == "reply_now"
+    assert action_queue[0]["source_id"] == summary["prioritized_attention_items"][0]["source_id"]
+    assert action_queue[0]["evidence"] == "Can Fabian confirm the meeting time?"
+    assert "unresolved_question_with_time_or_urgency_evidence" in action_queue[0]["action_reason_codes"]
+    assert any(item["recommended_action"] == "review_today" for item in action_queue)
+
     assert "2 contact message(s)" in summary["summary_text"]
     assert "Zina sent 2 WhatsApp message(s)" in summary["summary_text"]
     assert "What the contact wanted" in summary["summary_text"]
     assert "High-priority evidence-backed items" in summary["summary_text"]
+    assert "Suggested action queue" in summary["summary_text"]
 
     stored = await handback_service.get_latest(chat_id=chat_id)
     assert stored == summary
@@ -132,6 +141,7 @@ async def test_owner_resume_generates_private_handback_once(db_session):
     assert audit_rows[0].details_json["time_reference_count"] == 1
     assert audit_rows[0].details_json["commitment_evidence_count"] == 1
     assert audit_rows[0].details_json["prioritized_attention_items"][0]["source_id"] is not None
+    assert audit_rows[0].details_json["fabian_action_queue"][0]["recommended_action"] == "reply_now"
 
 
 @pytest.mark.asyncio
@@ -263,6 +273,20 @@ async def test_handback_includes_message_that_started_waiting_window(db_session)
         and "failed_or_cancelled_zina_delivery" in item["reason_codes"]
         for item in prioritized
     )
+
+    action_queue = summary["fabian_action_queue"]
+    assert action_queue[0]["recommended_action"] == "reply_now"
+    assert action_queue[0]["evidence"] == "Can Fabian send the proposal today?"
+    assert "unresolved_question_with_time_or_urgency_evidence" in action_queue[0]["action_reason_codes"]
+    assert any(
+        item["recommended_action"] == "review_today"
+        and item["source_type"] == "zina_outbound"
+        and item.get("delivery_status") == "cancelled"
+        and "zina_delivery_not_completed" in item["action_reason_codes"]
+        for item in action_queue
+    )
+    assert all(item["source_id"] is not None for item in action_queue)
+    assert all(item["evidence"] for item in action_queue)
 
 
 @pytest.mark.asyncio
