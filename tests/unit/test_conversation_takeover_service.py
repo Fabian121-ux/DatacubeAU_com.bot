@@ -191,3 +191,185 @@ async def test_chat_control_reenable_preserves_custom_threshold(db_session):
     ).scalar_one()
     assert row.inactivity_seconds == 45
     assert row.takeover_due_at >= row.pending_since + timedelta(seconds=44)
+
+
+@pytest.mark.asyncio
+async def test_human_first_policy_is_persisted_and_exposed(db_session):
+    await db_session.execute(delete(ConversationTakeover))
+    await db_session.commit()
+
+    service = ConversationTakeoverService(db_session)
+    control = await service.set_chat_control(
+        chat_id="15550001006@c.us",
+        auto_assist_enabled=True,
+        inactivity_seconds=75,
+        wait_for_fabian_first=True,
+    )
+    await db_session.commit()
+
+    assert control["wait_for_fabian_first"] is True
+    assert control["inactivity_seconds"] == 75
+    assert await service.should_wait_for_fabian_first(chat_id="15550001006@c.us") is True
+
+    fetched = await service.get_chat_control(chat_id="15550001006@c.us")
+    assert fetched["wait_for_fabian_first"] is True
+
+
+@pytest.mark.asyncio
+async def test_owner_reply_cancels_prepared_human_first_reply(db_session):
+    await db_session.execute(delete(ConversationTakeover))
+    await db_session.execute(delete(OutboundMessage))
+    await db_session.commit()
+
+    service = ConversationTakeoverService(db_session)
+    await service.set_chat_control(
+        chat_id="15550001007@c.us",
+        auto_assist_enabled=True,
+        inactivity_seconds=60,
+        wait_for_fabian_first=True,
+    )
+    prepared = OutboundMessage(
+        chat_id="15550001007@c.us",
+        message_text="Prepared Zina answer",
+        status="deferred",
+        next_attempt_at=utcnow(),
+        formatting_json={"delivery_policy": "wait_for_fabian_first"},
+    )
+    db_session.add(prepared)
+    await db_session.flush()
+
+    scheduled = await service.schedule_if_eligible(
+        chat_id="15550001007@c.us",
+        chat_type="dm",
+        message_id="msg-7",
+        router_replied=True,
+        reply_deferred=True,
+        outbound_queue_id=prepared.id,
+    )
+    assert scheduled is True
+    assert prepared.status == "deferred"
+
+    cancelled = await service.record_owner_reply(chat_id="15550001007@c.us")
+    await db_session.commit()
+
+    assert cancelled is True
+    assert prepared.status == "cancelled"
+    assert prepared.error_message == "owner_message_detected"
+    assert await service.claim_due() == 0
+
+
+@pytest.mark.asyncio
+async def test_due_human_first_takeover_releases_handoff_before_prepared_reply(db_session):
+    await db_session.execute(delete(ConversationTakeover))
+    await db_session.execute(delete(OutboundMessage))
+    await db_session.commit()
+
+    service = ConversationTakeoverService(db_session)
+    await service.set_chat_control(
+        chat_id="15550001008@c.us",
+        auto_assist_enabled=True,
+        inactivity_seconds=30,
+        wait_for_fabian_first=True,
+    )
+    prepared = OutboundMessage(
+        chat_id="15550001008@c.us",
+        message_text="Prepared intelligent response",
+        status="deferred",
+        next_attempt_at=utcnow(),
+        formatting_json={"delivery_policy": "wait_for_fabian_first"},
+    )
+    db_session.add(prepared)
+    await db_session.flush()
+
+    assert await service.schedule_if_eligible(
+        chat_id="15550001008@c.us",
+        chat_type="dm",
+        message_id="msg-8",
+        router_replied=True,
+        reply_deferred=True,
+        outbound_queue_id=prepared.id,
+    ) is True
+    takeover = (
+        await db_session.execute(
+            select(ConversationTakeover).where(ConversationTakeover.chat_id == "15550001008@c.us")
+        )
+    ).scalar_one()
+    takeover.takeover_due_at = utcnow() - timedelta(seconds=1)
+    await db_session.commit()
+
+    assert await service.claim_due() == 1
+    await db_session.commit()
+
+    queued = (
+        await db_session.execute(
+            select(OutboundMessage)
+            .where(OutboundMessage.chat_id == "15550001008@c.us")
+            .order_by(OutboundMessage.next_attempt_at, OutboundMessage.id)
+        )
+    ).scalars().all()
+    assert len(queued) == 2
+    assert queued[0].formatting_json["transparent_assistant_handoff"] is True
+    assert queued[1].id == prepared.id
+    assert queued[1].status == "pending"
+    assert queued[1].formatting_json["released_by_conversation_takeover"] is True
+    assert queued[1].next_attempt_at > queued[0].next_attempt_at
+
+
+@pytest.mark.asyncio
+async def test_newer_deferred_reply_supersedes_older_prepared_reply(db_session):
+    await db_session.execute(delete(ConversationTakeover))
+    await db_session.execute(delete(OutboundMessage))
+    await db_session.commit()
+
+    service = ConversationTakeoverService(db_session)
+    await service.set_chat_control(
+        chat_id="15550001009@c.us",
+        auto_assist_enabled=True,
+        inactivity_seconds=30,
+        wait_for_fabian_first=True,
+    )
+    first = OutboundMessage(
+        chat_id="15550001009@c.us",
+        message_text="Older prepared answer",
+        status="deferred",
+        next_attempt_at=utcnow(),
+    )
+    db_session.add(first)
+    await db_session.flush()
+    assert await service.schedule_if_eligible(
+        chat_id="15550001009@c.us",
+        chat_type="dm",
+        message_id="msg-9a",
+        router_replied=True,
+        reply_deferred=True,
+        outbound_queue_id=first.id,
+    ) is True
+
+    second = OutboundMessage(
+        chat_id="15550001009@c.us",
+        message_text="Latest prepared answer",
+        status="deferred",
+        next_attempt_at=utcnow(),
+    )
+    db_session.add(second)
+    await db_session.flush()
+    assert await service.schedule_if_eligible(
+        chat_id="15550001009@c.us",
+        chat_type="dm",
+        message_id="msg-9b",
+        router_replied=True,
+        reply_deferred=True,
+        outbound_queue_id=second.id,
+    ) is True
+    await db_session.commit()
+
+    assert first.status == "cancelled"
+    assert first.error_message == "superseded_by_newer_inbound"
+    assert second.status == "deferred"
+    takeover = (
+        await db_session.execute(
+            select(ConversationTakeover).where(ConversationTakeover.chat_id == "15550001009@c.us")
+        )
+    ).scalar_one()
+    assert takeover.last_inbound_message_id == "msg-9b"
+    assert takeover.metadata_json["deferred_outbound_queue_id"] == second.id
