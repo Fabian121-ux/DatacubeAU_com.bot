@@ -105,9 +105,15 @@ async def test_owner_resume_generates_private_handback_once(db_session):
         }
     ]
     assert "Can Fabian confirm the meeting time?" in summary["needs_fabian_attention"]
+    assert summary["prioritized_attention_items"][0]["priority"] == "high"
+    assert summary["prioritized_attention_items"][0]["source_type"] == "contact_message"
+    assert summary["prioritized_attention_items"][0]["source_id"] is not None
+    assert summary["prioritized_attention_items"][0]["evidence"] == "Can Fabian confirm the meeting time?"
+    assert "unresolved_question" in summary["prioritized_attention_items"][0]["reason_codes"]
     assert "2 contact message(s)" in summary["summary_text"]
     assert "Zina sent 2 WhatsApp message(s)" in summary["summary_text"]
     assert "What the contact wanted" in summary["summary_text"]
+    assert "High-priority evidence-backed items" in summary["summary_text"]
 
     stored = await handback_service.get_latest(chat_id=chat_id)
     assert stored == summary
@@ -125,6 +131,7 @@ async def test_owner_resume_generates_private_handback_once(db_session):
     assert audit_rows[0].details_json["contact_requests"] == ["Can Fabian confirm the meeting time?"]
     assert audit_rows[0].details_json["time_reference_count"] == 1
     assert audit_rows[0].details_json["commitment_evidence_count"] == 1
+    assert audit_rows[0].details_json["prioritized_attention_items"][0]["source_id"] is not None
 
 
 @pytest.mark.asyncio
@@ -240,6 +247,22 @@ async def test_handback_includes_message_that_started_waiting_window(db_session)
     assert summary["zina_messages_failed_or_cancelled"] == 1
     assert "Please let him know it is urgent." in summary["needs_fabian_attention"]
     assert "1 Zina message(s) failed or were cancelled." in summary["needs_fabian_attention"]
+
+    prioritized = summary["prioritized_attention_items"]
+    assert prioritized[0]["priority"] == "high"
+    assert prioritized[0]["evidence"] == "Can Fabian send the proposal today?"
+    assert prioritized[0]["score"] >= 6
+    assert prioritized[0]["source_type"] == "contact_message"
+    assert prioritized[0]["source_id"] is not None
+    assert "unresolved_question" in prioritized[0]["reason_codes"]
+    assert "urgency_or_decision_language" in prioritized[0]["reason_codes"]
+    assert "explicit_time_reference" in prioritized[0]["reason_codes"]
+    assert any(
+        item["source_type"] == "zina_outbound"
+        and item.get("delivery_status") == "cancelled"
+        and "failed_or_cancelled_zina_delivery" in item["reason_codes"]
+        for item in prioritized
+    )
 
 
 @pytest.mark.asyncio
