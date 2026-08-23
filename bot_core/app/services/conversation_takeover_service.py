@@ -19,6 +19,69 @@ class ConversationTakeoverService:
         self.session = session
         self.config = BotConfigService(session)
 
+    async def get_chat_control(self, *, chat_id: str) -> dict[str, object]:
+        row = await self._get_locked(chat_id)
+        if row is None:
+            threshold = max(5, await self.config.get_int("auto_assist_inactivity_seconds", 120))
+            return {
+                "chat_id": chat_id,
+                "state": "fabian_active",
+                "auto_assist_enabled": True,
+                "inactivity_seconds": threshold,
+                "takeover_due_at": None,
+                "assisting_since": None,
+                "last_transition_reason": None,
+            }
+        return self._serialize_control(row)
+
+    async def set_chat_control(
+        self,
+        *,
+        chat_id: str,
+        auto_assist_enabled: bool,
+        inactivity_seconds: int | None = None,
+    ) -> dict[str, object]:
+        now = utcnow()
+        threshold = max(5, inactivity_seconds or await self.config.get_int("auto_assist_inactivity_seconds", 120))
+        row = await self._get_locked(chat_id)
+        if row is None:
+            row = ConversationTakeover(
+                chat_id=chat_id,
+                state="fabian_active" if auto_assist_enabled else "do_not_auto_assist",
+                auto_assist_enabled=auto_assist_enabled,
+                inactivity_seconds=threshold,
+                updated_at=now,
+            )
+            self.session.add(row)
+        else:
+            row.auto_assist_enabled = auto_assist_enabled
+            row.inactivity_seconds = threshold
+            if not auto_assist_enabled:
+                row.state = "do_not_auto_assist"
+                row.pending_since = None
+                row.takeover_due_at = None
+                row.assisting_since = None
+                row.handoff_sent_at = None
+                row.last_transition_reason = "admin_auto_assist_disabled"
+            elif row.state == "do_not_auto_assist":
+                row.state = "fabian_active"
+                row.last_transition_reason = "admin_auto_assist_enabled"
+            row.updated_at = now
+        self.session.add(
+            AuditLog(
+                action="conversation_takeover_control_updated",
+                entity_type="conversation_takeover",
+                entity_id=chat_id,
+                details_json={
+                    "chat_id": chat_id,
+                    "auto_assist_enabled": auto_assist_enabled,
+                    "inactivity_seconds": threshold,
+                },
+            )
+        )
+        await self.session.flush()
+        return self._serialize_control(row)
+
     async def schedule_if_eligible(
         self,
         *,
@@ -53,6 +116,7 @@ class ConversationTakeoverService:
             await self.session.flush()
             return False
 
+        threshold = max(5, row.inactivity_seconds or threshold)
         row.state = "waiting_for_fabian"
         row.inactivity_seconds = threshold
         row.pending_since = now
@@ -84,6 +148,8 @@ class ConversationTakeoverService:
         now = utcnow()
         previous_state = row.state
         row.state = "fabian_resumed" if previous_state in {"waiting_for_fabian", "zina_assisting"} else "fabian_active"
+        if not row.auto_assist_enabled:
+            row.state = "do_not_auto_assist"
         row.last_owner_message_at = now
         row.takeover_due_at = None
         row.pending_since = None
@@ -161,6 +227,18 @@ class ConversationTakeoverService:
 
         await self.session.flush()
         return claimed
+
+    @staticmethod
+    def _serialize_control(row: ConversationTakeover) -> dict[str, object]:
+        return {
+            "chat_id": row.chat_id,
+            "state": row.state,
+            "auto_assist_enabled": row.auto_assist_enabled,
+            "inactivity_seconds": row.inactivity_seconds,
+            "takeover_due_at": row.takeover_due_at,
+            "assisting_since": row.assisting_since,
+            "last_transition_reason": row.last_transition_reason,
+        }
 
     async def _get_locked(self, chat_id: str) -> ConversationTakeover | None:
         stmt = (
