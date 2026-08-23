@@ -108,6 +108,74 @@ async def test_owner_resume_generates_private_handback_once(db_session):
 
 
 @pytest.mark.asyncio
+async def test_handback_includes_message_that_started_waiting_window(db_session):
+    await db_session.execute(delete(ConversationTakeover))
+    await db_session.execute(delete(OutboundMessage))
+    await db_session.execute(delete(Message))
+    await db_session.execute(delete(AuditLog))
+    await db_session.commit()
+
+    now = utcnow()
+    chat_id = "15550001103@c.us"
+    waiting_started = now - timedelta(minutes=4)
+    assisting_started = now - timedelta(minutes=2)
+    db_session.add(
+        ConversationTakeover(
+            chat_id=chat_id,
+            state="zina_assisting",
+            auto_assist_enabled=True,
+            inactivity_seconds=120,
+            pending_since=waiting_started,
+            assisting_since=assisting_started,
+            handoff_sent_at=assisting_started,
+            updated_at=assisting_started,
+        )
+    )
+    db_session.add(
+        AuditLog(
+            action="conversation_takeover_waiting",
+            entity_type="conversation_takeover",
+            entity_id=chat_id,
+            details_json={"chat_id": chat_id, "inactivity_seconds": 120},
+            created_at=waiting_started,
+        )
+    )
+    db_session.add_all(
+        [
+            Message(
+                chat_id=chat_id,
+                chat_type="dm",
+                direction="inbound",
+                message_text="Can Fabian send the proposal today?",
+                normalized_text="can fabian send the proposal today",
+                message_type="text",
+                created_at=waiting_started + timedelta(seconds=1),
+            ),
+            Message(
+                chat_id=chat_id,
+                chat_type="dm",
+                direction="inbound",
+                message_text="Please let him know it is urgent.",
+                normalized_text="please let him know it is urgent",
+                message_type="text",
+                created_at=assisting_started + timedelta(seconds=20),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    assert await ConversationTakeoverService(db_session).record_owner_reply(chat_id=chat_id) is True
+    summary = await ConversationHandbackService(db_session).generate_if_needed(chat_id=chat_id)
+    await db_session.commit()
+
+    assert summary is not None
+    assert summary["contact_messages"] == 2
+    assert summary["window_start"] == waiting_started.isoformat()
+    assert summary["recent_questions_to_review"] == ["Can Fabian send the proposal today?"]
+    assert summary["latest_contact_message"] == "Please let him know it is urgent."
+
+
+@pytest.mark.asyncio
 async def test_owner_reply_without_zina_assistance_does_not_generate_handback(db_session):
     await db_session.execute(delete(ConversationTakeover))
     await db_session.execute(delete(AuditLog))
