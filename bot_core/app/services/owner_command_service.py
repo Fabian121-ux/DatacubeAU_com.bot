@@ -37,7 +37,7 @@ from app.services.command_catalog_service import CommandCatalogService
 from app.services.faq_service import FAQService
 from app.services.retrieval_service import RetrievalService
 from app.services.waha_client import WAHAClient, WahaClientError
-from app.utils.text import normalize_text
+from app.utils.text import escape_like, normalize_text
 from app.utils.time import utcnow
 
 
@@ -192,8 +192,15 @@ class OwnerCommandService:
         return command, rest.strip()
 
     async def is_owner_id(self, sender_id: str) -> bool:
-        configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
-        return self.is_owner_id_static(sender_id, configured)
+        from app.models.schema import AdminAccount
+        has_admin = (await self.session.execute(select(AdminAccount).limit(1))).scalar_one_or_none()
+        if not has_admin:
+            configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
+            return self.is_owner_id_static(sender_id, configured)
+            
+        normalized_id = AdminManagementService.normalize_whatsapp_id(sender_id)
+        stmt = select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == normalized_id)
+        return bool((await self.session.execute(stmt)).scalar_one_or_none())
 
     async def is_owner_message(self, message) -> bool:
         try:
@@ -201,8 +208,14 @@ class OwnerCommandService:
                 return True
         except Exception:
             pass
-        configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
-        return bool(self.identity_keys_for_message(message) & self.identity_keys_for_config(configured))
+            
+        from app.models.schema import AdminAccount
+        has_admin = (await self.session.execute(select(AdminAccount).limit(1))).scalar_one_or_none()
+        if not has_admin:
+            configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
+            return bool(self.identity_keys_for_message(message) & self.identity_keys_for_config(configured))
+            
+        return False
 
     @staticmethod
     def is_owner_id_static(sender_id: str, configured_ids: str) -> bool:
@@ -373,7 +386,7 @@ class OwnerCommandService:
             is_owner = False
         is_owner = is_owner or bool(set(sender_keys) & self.identity_keys_for_config(configured))
         configured_count = len([item for item in re.split(r"[\s,;]+", configured or "") if item.strip()])
-        normalized = self.normalized_whatsapp_id(sender_id)
+        normalized = AdminManagementService.normalize_whatsapp_id(sender_id)
         owner_text = "Yes" if is_owner else "No"
         permissions = "Full" if is_owner else "None"
         return (
@@ -455,12 +468,12 @@ class OwnerCommandService:
         doc_result = await self.session.execute(
             delete(KnowledgeDocument)
             .where(KnowledgeDocument.source_type == SourceType.ADMIN_NOTE.value)
-            .where(KnowledgeDocument.raw_text.ilike(f"%{query}%"))
+            .where(KnowledgeDocument.raw_text.ilike(f"%{escape_like(query)}%", escape="\\"))
         )
         timeline_result = await self.session.execute(
             delete(UserMemoryTimeline)
             .where(UserMemoryTimeline.source == "owner_command")
-            .where(UserMemoryTimeline.memory_text.ilike(f"%{query}%"))
+            .where(UserMemoryTimeline.memory_text.ilike(f"%{escape_like(query)}%", escape="\\"))
         )
         deleted = (doc_result.rowcount or 0) + (timeline_result.rowcount or 0)
         return f"*Forget Complete*\n\nRemoved:\n{deleted} matching memory item(s)"
@@ -473,7 +486,7 @@ class OwnerCommandService:
             await self.session.execute(
                 select(KnowledgeDocument)
                 .where(KnowledgeDocument.source_type == SourceType.ADMIN_NOTE.value)
-                .where(KnowledgeDocument.raw_text.ilike(f"%{query}%"))
+                .where(KnowledgeDocument.raw_text.ilike(f"%{escape_like(query)}%", escape="\\"))
                 .order_by(KnowledgeDocument.created_at.desc())
                 .limit(5)
             )
@@ -481,7 +494,7 @@ class OwnerCommandService:
         facts = (
             await self.session.execute(
                 select(UserMemoryTimeline)
-                .where(UserMemoryTimeline.memory_text.ilike(f"%{query}%"))
+                .where(UserMemoryTimeline.memory_text.ilike(f"%{escape_like(query)}%", escape="\\"))
                 .order_by(UserMemoryTimeline.created_at.desc())
                 .limit(5)
             )
@@ -881,7 +894,7 @@ class OwnerCommandService:
         bot_enabled = await self.config.get_bool("bot_enabled", True)
         maintenance = await self.config.get_bool("maintenance_mode", False)
         ai_enabled = await self.config.get_bool("ai_enabled", settings.ai_enabled)
-        queue_pending = await self._count(OutboundMessage, OutboundMessage.status == "pending")
+        queue_pending = await self._count(OutboundMessage, OutboundMessage.status.in_(("queued", "failed_retryable")))
         memory_count = await self._count(UserMemory)
         waha_status = await self._waha_status()
         return (
@@ -922,7 +935,7 @@ class OwnerCommandService:
         failed_queue = (
             await self.session.execute(
                 select(OutboundMessage)
-                .where(OutboundMessage.status == "failed")
+                .where(OutboundMessage.status == "failed_final")
                 .order_by(OutboundMessage.updated_at.desc())
                 .limit(5)
             )
@@ -1286,10 +1299,10 @@ class OwnerCommandService:
         if not clean:
             return None
         keys = self._identity_keys(clean)
-        conditions = [Contact.display_name.ilike(f"%{clean.lstrip('@')}%")]
+        conditions = [Contact.display_name.ilike(f"%{escape_like(clean.lstrip('@'))}%", escape="\\")]
         for key in keys:
             conditions.append(Contact.whatsapp_id == key)
-            conditions.append(Contact.whatsapp_id.ilike(f"%{key}%"))
+            conditions.append(Contact.whatsapp_id.ilike(f"%{escape_like(key)}%", escape="\\"))
         return (
             await self.session.execute(select(Contact).where(or_(*conditions)).order_by(Contact.updated_at.desc()).limit(1))
         ).scalar_one_or_none()

@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.message_normalizer import MessageNormalizer, NormalizedMessage
 from app.core.reply_planner import PlannedReply, ReplyPlanner
-from app.models.enums import DecisionType, Direction
-from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
+from app.models.enums import ChatType, DecisionType, Direction
+from app.models.schema import AuditLog, Contact, ContactAlias, GroupConfig, Message, OutboundMessage, RouterDecision
 from app.services.logging_service import log_event
 from app.services.owner_command_service import OwnerCommandService
 from app.services.waha_client import WAHAClient, WahaClientError
@@ -44,9 +44,53 @@ class InboundRouter:
         self.reply_planner = ReplyPlanner(session)
 
     async def process_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        chat_id = None
+        try:
+            payload = event.get("payload", {})
+            if isinstance(payload, dict):
+                chat_id = payload.get("from")
+            return await self._process_event_inner(event)
+        except Exception:
+            await self.session.rollback()
+            raise
+        finally:
+            if chat_id:
+                try:
+                    await self._maybe_stop_typing(chat_id)
+                except Exception:
+                    pass
+
+    def _is_system_or_bot_sender(self, sender_id: str) -> bool:
+        if not sender_id:
+            return True
+        if sender_id in {"server", "status@broadcast", "system"}:
+            return True
+        return False
+
+    async def _process_event_inner(self, event: dict[str, Any]) -> dict[str, Any]:
         normalized = self.normalizer.normalize(event)
+        
+        if self._is_system_or_bot_sender(normalized.sender_id):
+            log_event(logger, logging.INFO, "ignored_system_sender", sender_id=normalized.sender_id)
+            return {"status": "ignored", "reason": "system_sender"}
+            
+        if normalized.chat_type == ChatType.GROUP:
+            if not await self._check_group_policy(normalized.chat_id, normalized.is_bot_mentioned):
+                log_event(logger, logging.INFO, "ignored_group_unmentioned", chat_id=normalized.chat_id)
+                return asdict(RouteResult(
+                    status="ok",
+                    chat_type="group",
+                    action="ignored",
+                    decision_type="group_policy",
+                    reason="unmentioned_in_group",
+                    kb_confidence=0.0,
+                    inbound_message_id=0,
+                    outbound_message_id=None,
+                ))
+
         contact = await self._get_or_create_contact(normalized)
         inbound = await self._save_inbound_message(normalized, contact.id)
+
         await self.reply_planner.memory_service.ensure_relationship_profile(
             contact.id,
             normalized.sender_name or contact.display_name,
@@ -81,7 +125,7 @@ class InboundRouter:
                     reply_text=owner_command.reply_text,
                     source_diagnostics=owner_command.source_diagnostics,
                 )
-        )
+            )
         else:
             profile_facts = await self.reply_planner.memory_service.extract_profile_from_message(
                 contact.id,
@@ -96,9 +140,12 @@ class InboundRouter:
                 )
 
             typing_started = await self._maybe_start_typing(normalized.chat_id)
-            planned = await self.reply_planner.plan(normalized, contact.id)
-            if typing_started:
-                await self._maybe_stop_typing(normalized.chat_id)
+            try:
+                planned = await self.reply_planner.plan(normalized, contact.id)
+            finally:
+                if typing_started:
+                    await self._maybe_stop_typing(normalized.chat_id)
+
         self._attach_thinking_diagnostics(planned)
         decision = await self._save_router_decision(
             message_id=inbound.id,
@@ -270,22 +317,59 @@ class InboundRouter:
 
     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
         whatsapp_id = normalized.sender_id
+        alternate_ids = normalized.sender_alternate_ids
         identity = normalized.sender_identity or {}
         display_name = self._resolved_display_name(identity, normalized.sender_name)
-        stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1)
+        
+        # 1. Search by primary whatsapp_id
+        stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id)
         model = (await self.session.execute(stmt)).scalar_one_or_none()
+        
+        if not model:
+            # 2. Search by verified aliases if primary not found
+            stmt_alias = select(ContactAlias).where(
+                ContactAlias.raw_identifier == whatsapp_id,
+                ContactAlias.is_verified == True
+            )
+            alias = (await self.session.execute(stmt_alias)).scalar_one_or_none()
+            if alias:
+                stmt_canon = select(Contact).where(Contact.id == alias.contact_id)
+                model = (await self.session.execute(stmt_canon)).scalar_one_or_none()
+
         if model:
             if display_name and display_name != model.display_name and not getattr(model, "is_name_verified", False):
                 model.display_name = display_name
             self._apply_contact_identity(model, normalized, identity)
             model.updated_at = utcnow()
-            return model
+        else:
+            model = Contact(whatsapp_id=whatsapp_id or "unknown@local", display_name=display_name, updated_at=utcnow())
+            self._apply_contact_identity(model, normalized, identity)
+            self.session.add(model)
+            await self.session.flush()
 
-        model = Contact(whatsapp_id=whatsapp_id or "unknown@local", display_name=display_name, updated_at=utcnow())
-        self._apply_contact_identity(model, normalized, identity)
-        self.session.add(model)
+        # 3. Add unverified aliases from alternate IDs without merging existing records
+        stmt_existing_aliases = select(ContactAlias).where(ContactAlias.contact_id == model.id)
+        existing_aliases = (await self.session.execute(stmt_existing_aliases)).scalars().all()
+        existing_raw_ids = {a.raw_identifier for a in existing_aliases}
+        
+        for alias_id in alternate_ids:
+            if alias_id and alias_id not in existing_raw_ids and alias_id != model.whatsapp_id:
+                new_alias = ContactAlias(contact_id=model.id, alias_type="auto", raw_identifier=alias_id, is_verified=False)
+                self.session.add(new_alias)
+                existing_raw_ids.add(alias_id)
+
         await self.session.flush()
         return model
+
+    async def _check_group_policy(self, chat_id: str, is_mentioned: bool) -> bool:
+        stmt = select(GroupConfig).where(GroupConfig.chat_id == chat_id)
+        config = (await self.session.execute(stmt)).scalar_one_or_none()
+        mode = config.reply_mode if config else settings.group_default_reply_mode
+        if mode == "off":
+            return False
+        if mode == "mention_only" and not is_mentioned:
+            return False
+        return True
 
     @staticmethod
     def _resolved_display_name(identity: dict[str, Any], fallback: str | None) -> str | None:
@@ -382,7 +466,7 @@ class InboundRouter:
             media_type=media_type,
             media_caption=media_caption,
             formatting_json=formatting_json,
-            status="pending",
+            status="queued",
             retry_count=0,
             max_retries=3,
             next_attempt_at=utcnow(),
@@ -401,9 +485,8 @@ class InboundRouter:
             "raw_reply_text": planned.raw_reply_text or planned.reply_text,
             "final_reply_text": planned.reply_text,
             "whatsapp_message_format": experience.get("whatsapp_message_format", "standard"),
-            "quote_rendered": bool(experience.get("quote_rendered")),
-            "quote_applied": bool(experience.get("quote_applied")),
-            "quote_reason": experience.get("quote_reason"),
+            "mode": experience.get("applied_formatting_mode", "standard"),
+            "formatter_version": experience.get("formatter_version", "2.0"),
         }
 
     async def _save_router_decision(

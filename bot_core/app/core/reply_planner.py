@@ -11,7 +11,6 @@ from app.config import settings
 from app.core.experience_formatter import (
     WhatsAppExperienceFormatter,
     WhatsAppMessageFormat,
-    is_whatsapp_quoted,
     memory_context_indicators,
 )
 from app.core.intent_classifier import IntentClassifier, IntentResult, MessageIntent
@@ -772,8 +771,10 @@ class ReplyPlanner:
         message_format = self._normalize_whatsapp_message_format(
             await self.bot_config.get("whatsapp_message_format", settings.whatsapp_message_format)
         )
-        quote_body, quote_reason = self._should_quote_whatsapp_body(reply, source, message_format)
-        raw_already_quoted = is_whatsapp_quoted(reply.raw_reply_text or "")
+        
+        from app.core.whatsapp_formatter import get_applied_format_mode
+        applied_mode = get_applied_format_mode(reply.raw_reply_text or "", message_format.value)
+        
         reply.reply_text = self.formatter.format_reply(
             reply.raw_reply_text or "",
             source=source,
@@ -782,7 +783,7 @@ class ReplyPlanner:
             show_context=show_context,
             enable_signature_style=signature_style,
             mode=reply_mode,
-            quote_body=quote_body,
+            whatsapp_format_mode=message_format.value,
         )
         if isinstance(experience_info, dict):
             experience_info["formatted"] = True
@@ -791,9 +792,8 @@ class ReplyPlanner:
             experience_info["signature_style"] = signature_style
             experience_info["reply_mode"] = reply_mode
             experience_info["whatsapp_message_format"] = message_format.value
-            experience_info["quote_rendered"] = quote_body
-            experience_info["quote_applied"] = quote_body and not raw_already_quoted
-            experience_info["quote_reason"] = quote_reason
+            experience_info["applied_formatting_mode"] = applied_mode
+            experience_info["formatter_version"] = "2.0"
             experience_info["raw_reply_text_stored"] = bool(reply.raw_reply_text)
         return reply
 
@@ -908,120 +908,6 @@ class ReplyPlanner:
             return WhatsAppMessageFormat(str(value or "").strip().lower())
         except ValueError:
             return WhatsAppMessageFormat.AUTOMATIC
-
-    def _should_quote_whatsapp_body(
-        self,
-        reply: PlannedReply,
-        source: str,
-        mode: WhatsAppMessageFormat,
-    ) -> tuple[bool, str]:
-        if mode == WhatsAppMessageFormat.STANDARD:
-            return False, "standard mode"
-        text = (reply.raw_reply_text or reply.reply_text or "").strip()
-        if not text:
-            return False, "empty response"
-        if is_whatsapp_quoted(text):
-            return True, "already quoted"
-        blocked_reason = self._whatsapp_quote_block_reason(reply, source, text)
-        if blocked_reason:
-            return False, blocked_reason
-        if mode == WhatsAppMessageFormat.QUOTE:
-            if self._quote_mode_candidate(reply, source, text):
-                return True, "quote mode eligible"
-            return False, "not an eligible Zina response"
-        if self._automatic_quote_candidate(reply, source, text):
-            return True, "automatic highlight"
-        return False, "automatic mode left as standard text"
-
-    @staticmethod
-    def _whatsapp_quote_block_reason(reply: PlannedReply, source: str, text: str) -> str | None:
-        diagnostics = reply.source_diagnostics or {}
-        if source in {"Command", "Internet", "Giphy"}:
-            return f"{source.lower()} output"
-        if any(key in diagnostics for key in ("owner_command", "user_command")):
-            return "command output"
-        if isinstance(diagnostics.get("internet"), dict):
-            return "internet output"
-
-        normalized = normalize_text(text)
-        if re.search(r"https?://|www\.", text, flags=re.IGNORECASE):
-            return "contains url"
-        if "`" in text or "```" in text:
-            return "technical or command markup"
-        if re.search(r"(^|\n)\s*(traceback|error|exception):", text, flags=re.IGNORECASE):
-            return "technical output"
-        if re.search(r"(^|\n)\s*[{[]", text) or re.search(r"\b[A-Z][A-Z0-9_]{3,}\b[:=]", text):
-            return "raw technical output"
-        if normalized.startswith(("available commands", "usage:", "command:", "/help", "!help")):
-            return "command help"
-
-        nonblank_lines = [line for line in text.splitlines() if line.strip()]
-        paragraphs = [paragraph for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
-        if len(text) > 900 or len(nonblank_lines) > 10 or len(paragraphs) > 5:
-            return "long response"
-        if getattr(reply, "intent", "") == MessageIntent.GREETING.value and len(text) < 160:
-            return "ordinary greeting"
-        if normalized.startswith(("hi ", "hi.", "hello", "good morning", "good afternoon", "good evening")) and len(text) < 160:
-            return "ordinary greeting"
-        return None
-
-    @staticmethod
-    def _quote_mode_candidate(reply: PlannedReply, source: str, text: str) -> bool:
-        if reply.decision_type in {
-            DecisionType.FAQ_REPLY,
-            DecisionType.KB_REPLY,
-            DecisionType.MEMORY_REPLY,
-            DecisionType.AI_REPLY_LIGHT,
-            DecisionType.AI_REPLY_DEEP,
-            DecisionType.ESCALATED,
-            DecisionType.NO_MATCH,
-            DecisionType.RATE_LIMITED,
-        }:
-            return True
-        if source in {"FAQ", "KB", "Knowledge", "Memory", "Memory + Timeline", "Identity", "AI", "Global Chat", "Fallback", "Cache"}:
-            return True
-        return ReplyPlanner._looks_like_highlight_content(text)
-
-    @staticmethod
-    def _automatic_quote_candidate(reply: PlannedReply, source: str, text: str) -> bool:
-        if reply.decision_type in {
-            DecisionType.FAQ_REPLY,
-            DecisionType.KB_REPLY,
-            DecisionType.AI_REPLY_LIGHT,
-            DecisionType.AI_REPLY_DEEP,
-            DecisionType.ESCALATED,
-            DecisionType.NO_MATCH,
-            DecisionType.RATE_LIMITED,
-        }:
-            return True
-        if reply.decision_type == DecisionType.MEMORY_REPLY:
-            memory_info = reply.source_diagnostics.get("memory")
-            return isinstance(memory_info, dict) and bool(memory_info.get("context_used") or memory_info.get("timeline_entries"))
-        if source in {"Identity", "Cache"} and ReplyPlanner._looks_like_highlight_content(text):
-            return True
-        return ReplyPlanner._looks_like_highlight_content(text) and 40 <= len(text) <= 700
-
-    @staticmethod
-    def _looks_like_highlight_content(text: str) -> bool:
-        normalized = normalize_text(text)
-        markers = (
-            " is ",
-            " are ",
-            " means ",
-            " designed ",
-            " focused ",
-            " important",
-            " warning",
-            " summary",
-            " key ",
-            " should ",
-            " need ",
-            " must ",
-            " use ",
-            " steps",
-            " instruction",
-        )
-        return any(marker in f" {normalized} " for marker in markers)
 
     async def _handle_global_chat_command(
         self,

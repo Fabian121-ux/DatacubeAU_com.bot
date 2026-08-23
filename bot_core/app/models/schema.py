@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -53,6 +53,19 @@ class Contact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
+class ContactAlias(Base):
+    __tablename__ = "contact_aliases"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    alias_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    raw_identifier: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    normalized_identifier: Mapped[str | None] = mapped_column(String(120))
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
 class Message(Base):
     __tablename__ = "messages"
 
@@ -67,6 +80,29 @@ class Message(Base):
     message_type: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'text'"))
     raw_payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class InboundEvent(Base):
+    __tablename__ = "inbound_events"
+
+    __table_args__ = (
+        UniqueConstraint("provider", "session_name", "event_type", "provider_message_id", name="uq_inbound_event"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'waha'"))
+    session_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_message_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    chat_id: Mapped[str | None] = mapped_column(String(120))
+    sender_id: Mapped[str | None] = mapped_column(String(120))
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    processing_status: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'received'"))
+    processing_error: Mapped[str | None] = mapped_column(Text)
+    related_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
+    first_received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    last_received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class GroupConfig(Base):
@@ -509,11 +545,13 @@ class OutboundMessage(Base):
     media_type: Mapped[str | None] = mapped_column(String(40))
     media_caption: Mapped[str | None] = mapped_column(Text)
     formatting_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
+    status: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'queued'"))
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     error_message: Mapped[str | None] = mapped_column(Text)
+    waha_message_id: Mapped[str | None] = mapped_column(String(120))
+    payload_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 

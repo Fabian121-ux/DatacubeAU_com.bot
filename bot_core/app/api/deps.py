@@ -13,7 +13,22 @@ def require_admin_token(x_admin_token: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail="invalid admin token")
 
 
-def require_admin_session(
+def require_admin_session_api(
+    request: Request,
+    x_admin_token: str | None = Header(default=None),
+) -> AdminPrincipal:
+    auth = AdminAuthService()
+    token_principal = auth.token_principal(x_admin_token)
+    if token_principal:
+        return token_principal
+
+    principal = auth.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
+    if principal:
+        return principal
+
+    raise HTTPException(status_code=401, detail="admin login required")
+
+def require_admin_session_html(
     request: Request,
     x_admin_token: str | None = Header(default=None),
 ) -> AdminPrincipal:

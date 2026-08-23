@@ -6,9 +6,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
-from app.api.deps import require_admin_session
+from app.api.deps import require_admin_session_html
 
-router = APIRouter(tags=["admin-ui"], dependencies=[Depends(require_admin_session)])
+router = APIRouter(tags=["admin-ui"], dependencies=[Depends(require_admin_session_html)])
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 

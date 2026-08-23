@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     waha_request_timeout_seconds: int = Field(default=15, alias="WAHA_REQUEST_TIMEOUT_SECONDS")
     waha_request_retry_count: int = Field(default=2, alias="WAHA_REQUEST_RETRY_COUNT")
     waha_request_retry_backoff_seconds: float = Field(default=1.0, alias="WAHA_REQUEST_RETRY_BACKOFF_SECONDS")
+    whatsapp_hook_hmac_key: str = Field(default="", alias="WHATSAPP_HOOK_HMAC_KEY")
 
     bot_wa_number: str = Field(default="", alias="BOT_WA_NUMBER")
     owner_whatsapp_ids: str = Field(default="", alias="OWNER_WHATSAPP_IDS")
@@ -103,15 +104,18 @@ class Settings(BaseSettings):
             errors.append("WAHA_SESSION_NAME is required.")
         if not self.admin_username:
             errors.append("ADMIN_USERNAME is required.")
-        if not self.admin_password:
+        if self.admin_password:
+            if len(self.admin_password) < 12 or self.admin_password.startswith("replace-with-"):
+                errors.append("ADMIN_PASSWORD must be at least 12 characters and must not be the example placeholder.")
+        else:
             errors.append("ADMIN_PASSWORD is required.")
-        elif len(self.admin_password) < 12 or self.admin_password.startswith("replace-with-"):
-            errors.append("ADMIN_PASSWORD must be at least 12 characters and must not be the example placeholder.")
         if self.admin_session_secret:
             if len(self.admin_session_secret) < 32 or self.admin_session_secret.startswith("replace-with-"):
                 errors.append("ADMIN_SESSION_SECRET must be at least 32 characters and must not be the example placeholder.")
-        elif self.environment == "production":
-            errors.append("ADMIN_SESSION_SECRET is required in production.")
+        else:
+            errors.append("ADMIN_SESSION_SECRET is required and cannot be empty.")
+        if self.environment == "production":
+            self.admin_cookie_secure = True
         if self.admin_session_ttl_seconds <= 0:
             errors.append("ADMIN_SESSION_TTL_SECONDS must be greater than 0.")
         if self.admin_login_max_failures <= 0:

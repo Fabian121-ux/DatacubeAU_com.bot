@@ -217,9 +217,10 @@ class AdminManagementService:
         normalized = cls.normalize_whatsapp_id(raw)
         if normalized:
             keys.add(normalized)
-            digits = cls.digits_only(normalized)
-            if digits:
-                keys.update({digits, f"{digits}@c.us", f"{digits}@s.whatsapp.net", f"{digits}@lid"})
+            if "@lid" not in normalized:
+                digits = cls.digits_only(normalized)
+                if digits:
+                    keys.update({digits, f"{digits}@c.us", f"{digits}@s.whatsapp.net"})
         return keys
 
     @classmethod

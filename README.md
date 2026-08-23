@@ -1,396 +1,420 @@
-# Datacube AU WhatsApp Bot Backend
+# Gitleaks
 
-Local-first V1 backend for a WhatsApp bot using WAHA Core, FastAPI, and PostgreSQL. The current build supports rules-based routing, debug/admin inspection, knowledge ingestion with text-search fallback, and optional OpenRouter fallback that is disabled by default.
-
-## Backend Scope
-
-- inbound WAHA webhook handling
-- DM replies
-- group mention-only replies
-- cooldown enforcement
-- router decision logging
-- audit log inspection
-- knowledge document ingestion
-- retrieval-based replies
-- optional AI fallback behind env flags
-
-## Folder Structure
-
-```text
-Dockerfile
-docker-compose.yml
-requirements.txt
-.env.production.example
-deploy/
-  nginx/
-    default.conf
-  scripts/
-    backup-postgres.sh
-    run-migrations.sh
-    smoke-test.sh
-bot_core/
-  app/
-    main.py
-    config.py
-    db.py
-    api/
-      admin.py
-      health.py
-      inbound.py
-      knowledge.py
-    core/
-      message_normalizer.py
-      reply_planner.py
-      router.py
-      rules_engine.py
-    models/
-      enums.py
-      schema.py
-    services/
-      chunking_service.py
-      logging_service.py
-      openrouter_client.py
-      retrieval_service.py
-      waha_client.py
-    utils/
-      hashing.py
-      text.py
-      time.py
-  migrations/
-    001_init.sql
-  seeds/
-    001_local_seed.sql
-  examples/
-    dm_webhook.json
-    group_mention_webhook.json
-    sample-knowledge.md
-  scripts/
-    test-dm-webhook.ps1
-    test-group-webhook.ps1
+```
+┌─○───┐
+│ │╲  │
+│ │ ○ │
+│ ○ ░ │
+└─░───┘
 ```
 
-## Project Setup
+<p align="left">
+  <p align="left">
+	  <a href="https://github.com/zricethezav/gitleaks/actions/workflows/test.yml">
+		  <img alt="Github Test" src="https://github.com/zricethezav/gitleaks/actions/workflows/test.yml/badge.svg">
+	  </a>
+	  <a href="https://hub.docker.com/r/zricethezav/gitleaks">
+		  <img src="https://img.shields.io/docker/pulls/zricethezav/gitleaks.svg" />
+	  </a>
+	  <a href="https://github.com/zricethezav/gitleaks-action">
+        	<img alt="gitleaks badge" src="https://img.shields.io/badge/protected%20by-gitleaks-blue">
+    	 </a>
+	  <a href="https://twitter.com/intent/follow?screen_name=zricethezav">
+		  <img src="https://img.shields.io/twitter/follow/zricethezav?label=Follow%20zricethezav&style=social&color=blue" alt="Follow @zricethezav" />
+	  </a>
+  </p>
+</p>
 
-1. Install dependencies:
+### Join our Discord! [![Discord](https://img.shields.io/discord/1102689410522284044.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/8Hzbrnkr7E)
+
+Gitleaks is a SAST tool for **detecting** and **preventing** hardcoded secrets like passwords, api keys, and tokens in git repos. Gitleaks is an **easy-to-use, all-in-one solution** for detecting secrets, past or present, in your code.
+
+```
+➜  ~/code(master) gitleaks detect --source . -v
+
+    ○
+    │╲
+    │ ○
+    ○ ░
+    ░    gitleaks
+
+
+Finding:     "export BUNDLE_ENTERPRISE__CONTRIBSYS__COM=cafebabe:deadbeef",
+Secret:      cafebabe:deadbeef
+RuleID:      sidekiq-secret
+Entropy:     2.609850
+File:        cmd/generate/config/rules/sidekiq.go
+Line:        23
+Commit:      cd5226711335c68be1e720b318b7bc3135a30eb2
+Author:      John
+Email:       john@users.noreply.github.com
+Date:        2022-08-03T12:31:40Z
+Fingerprint: cd5226711335c68be1e720b318b7bc3135a30eb2:cmd/generate/config/rules/sidekiq.go:sidekiq-secret:23
+```
+
+## Getting Started
+
+Gitleaks can be installed using Homebrew, Docker, or Go. Gitleaks is also available in binary form for many popular platforms and OS types on the [releases page](https://github.com/zricethezav/gitleaks/releases). In addition, Gitleaks can be implemented as a pre-commit hook directly in your repo or as a GitHub action using [Gitleaks-Action](https://github.com/gitleaks/gitleaks-action).
+
+### Installing
 
 ```bash
-uv sync
+# MacOS
+brew install gitleaks
+
+# Docker (DockerHub)
+docker pull zricethezav/gitleaks:latest
+docker run -v ${path_to_host_folder_to_scan}:/path zricethezav/gitleaks:latest [COMMAND] --source="/path" [OPTIONS]
+
+# Docker (ghcr.io)
+docker pull ghcr.io/gitleaks/gitleaks:latest
+docker run -v ${path_to_host_folder_to_scan}:/path ghcr.io/gitleaks/gitleaks:latest [COMMAND] --source="/path" [OPTIONS]
+
+# From Source
+git clone https://github.com/gitleaks/gitleaks.git
+cd gitleaks
+make build
 ```
 
-2. Copy `.env.example` to `.env` and adjust values.
+### GitHub Action
 
-3. Create PostgreSQL database:
+Check out the official [Gitleaks GitHub Action](https://github.com/gitleaks/gitleaks-action)
 
-```bash
-createdb datacube_bot
+```
+name: gitleaks
+on: [pull_request, push, workflow_dispatch]
+jobs:
+  scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE}} # Only required for Organizations, not personal accounts.
 ```
 
-4. Run the schema migrations and default seed data:
+### Pre-Commit
 
-```bash
-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/001_init.sql
-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/002_expand_v1.sql
-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/003_assistant_layer.sql
-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/004_nextgen_intelligence.sql
-psql "$DATABASE_URL_SYNC" -f bot_core/seeds/001_local_seed.sql
-psql "$DATABASE_URL_SYNC" -f bot_core/seeds/002_default_config.sql
+1. Install pre-commit from https://pre-commit.com/#install
+2. Create a `.pre-commit-config.yaml` file at the root of your repository with the following content:
+
+   ```
+   repos:
+     - repo: https://github.com/gitleaks/gitleaks
+       rev: v8.16.1
+       hooks:
+         - id: gitleaks
+   ```
+
+   for a [native execution of GitLeaks](https://github.com/zricethezav/gitleaks/releases) or use the [`gitleaks-docker` pre-commit ID](https://github.com/zricethezav/gitleaks/blob/master/.pre-commit-hooks.yaml) for executing GitLeaks using the [official Docker images](#docker)
+
+3. Auto-update the config to the latest repos' versions by executing `pre-commit autoupdate`
+4. Install with `pre-commit install`
+5. Now you're all set!
+
+```
+➜ git commit -m "this commit contains a secret"
+Detect hardcoded secrets.................................................Failed
 ```
 
-## Environment Setup
+Note: to disable the gitleaks pre-commit hook you can prepend `SKIP=gitleaks` to the commit command
+and it will skip running gitleaks
 
-Important env vars:
-
-- `DATABASE_URL`
-- `DATABASE_URL_SYNC`
-- `WAHA_SERVICE_URL`
-- `WAHA_SESSION_NAME`
-- `ADMIN_USERNAME`
-- `ADMIN_PASSWORD`
-- `ADMIN_SESSION_SECRET`
-- `ADMIN_API_TOKEN` for scripted admin API access
-- `ENABLE_AUTO_REPLY`
-- `GROUP_DEFAULT_REPLY_MODE`
-- `GROUP_DEFAULT_COOLDOWN_SECONDS`
-- `DM_DEFAULT_COOLDOWN_SECONDS`
-- `KB_MIN_SCORE`
-- `AI_ENABLED`
-
-Startup validation will fail fast if required config is invalid. If `AI_ENABLED=true`, OpenRouter credentials and model names must be present.
-
-For Docker deployments, keep these two WAHA URLs distinct:
-
-- `WAHA_SERVICE_URL` is how this FastAPI app reaches the WAHA container, usually `http://waha:3000`.
-- `WAHA_BASE_URL` is WAHA's own advertised base URL for dashboard, swagger, webhooks, and generated file URLs, usually `http://localhost:3000` or your public domain.
-
-## Running Locally
-
-Start FastAPI from the `bot_core` directory:
-
-```bash
-cd bot_core
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+➜ SKIP=gitleaks git commit -m "skip gitleaks check"
+Detect hardcoded secrets................................................Skipped
 ```
 
-Health check:
+## Usage
 
-```bash
-curl http://localhost:8080/health
+```
+Usage:
+  gitleaks [command]
+
+Available Commands:
+  completion  generate the autocompletion script for the specified shell
+  detect      detect secrets in code
+  help        Help about any command
+  protect     protect secrets in code
+  version     display gitleaks version
+
+Flags:
+  -b, --baseline-path string       path to baseline with issues that can be ignored
+  -c, --config string              config file path
+                                   order of precedence:
+                                   1. --config/-c
+                                   2. env var GITLEAKS_CONFIG
+                                   3. (--source/-s)/.gitleaks.toml
+                                   If none of the three options are used, then gitleaks will use the default config
+      --exit-code int              exit code when leaks have been encountered (default 1)
+  -h, --help                       help for gitleaks
+  -l, --log-level string           log level (trace, debug, info, warn, error, fatal) (default "info")
+      --max-target-megabytes int   files larger than this will be skipped
+      --no-color                   turn off color for verbose output
+      --no-banner                  suppress banner
+      --redact                     redact secrets from logs and stdout
+  -f, --report-format string       output format (json, csv, junit, sarif) (default "json")
+  -r, --report-path string         report file
+  -s, --source string              path to source (default ".")
+  -v, --verbose                    show verbose output from scan
+
+Use "gitleaks [command] --help" for more information about a command.
 ```
 
-If `STARTUP_VALIDATE_DB=true`, the app will fail on boot when PostgreSQL is unavailable.
+### Commands
 
-## Production Deployment Baseline
+There are two commands you will use to detect secrets; `detect` and `protect`.
 
-Files added for VPS deployment:
+#### Detect
 
-- [Dockerfile](c:/Users/cruzan/Documents/DatacubeAU_com.bot/Dockerfile)
-- [docker-compose.yml](c:/Users/cruzan/Documents/DatacubeAU_com.bot/docker-compose.yml)
-- [.env.production.example](c:/Users/cruzan/Documents/DatacubeAU_com.bot/.env.production.example)
-- [default.conf](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/nginx/default.conf)
-- [run-migrations.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/run-migrations.sh)
-- [backup-postgres.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/backup-postgres.sh)
-- [smoke-test.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/smoke-test.sh)
+The `detect` command is used to scan repos, directories, and files. This command can be used on developer machines and in CI environments.
 
-1. Copy `.env.production.example` to `.env.production`.
-2. Set `WAHA_IMAGE` to the WAHA Core image/tag you actually run.
-3. Reuse the current WAHA credentials from your existing WAHA host config for `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD`, and `WHATSAPP_SWAGGER_PASSWORD`.
-4. Set strong values for `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, and `ADMIN_API_TOKEN`.
-5. Keep the internal Docker URLs exactly as follows:
+When running `detect` on a git repository, gitleaks will parse the output of a `git log -p` command (you can see how this executed
+[here](https://github.com/zricethezav/gitleaks/blob/7240e16769b92d2a1b137c17d6bf9d55a8562899/git/git.go#L17-L25)).
+[`git log -p` generates patches](https://git-scm.com/docs/git-log#_generating_patch_text_with_p) which gitleaks will use to detect secrets.
+You can configure what commits `git log` will range over by using the `--log-opts` flag. `--log-opts` accepts any option for `git log -p`.
+For example, if you wanted to run gitleaks on a range of commits you could use the following command: `gitleaks detect --source . --log-opts="--all commitA..commitB"`.
+See the `git log` [documentation](https://git-scm.com/docs/git-log) for more information.
 
-```text
-WAHA_SERVICE_URL=http://waha:3000
-WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
-WHATSAPP_HOOK_EVENTS=message
+You can scan files and directories by using the `--no-git` option.
+
+If you want to run only specific rules you can do so by using the `--enable-rule` option (with a rule ID as a parameter), this flag can be used multiple times. For example: `--enable-rule=atlassian-api-token` will only apply that rule. You can find a list of rules [here](config/gitleaks.toml).
+
+#### Protect
+
+The `protect` command is used to scan uncommitted changes in a git repo. This command should be used on developer machines in accordance with
+[shifting left on security](https://cloud.google.com/architecture/devops/devops-tech-shifting-left-on-security).
+When running `protect` on a git repository, gitleaks will parse the output of a `git diff` command (you can see how this executed
+[here](https://github.com/zricethezav/gitleaks/blob/7240e16769b92d2a1b137c17d6bf9d55a8562899/git/git.go#L48-L49)). You can set the
+`--staged` flag to check for changes in commits that have been `git add`ed. The `--staged` flag should be used when running Gitleaks
+as a pre-commit.
+
+**NOTE**: the `protect` command can only be used on git repos, running `protect` on files or directories will result in an error message.
+
+### Creating a baseline
+
+When scanning large repositories or repositories with a long history, it can be convenient to use a baseline. When using a baseline,
+gitleaks will ignore any old findings that are present in the baseline. A baseline can be any gitleaks report. To create a gitleaks report, run gitleaks with the `--report-path` parameter.
+
+```
+gitleaks detect --report-path gitleaks-report.json # This will save the report in a file called gitleaks-report.json
 ```
 
-6. Set the public host values for your server:
+Once as baseline is created it can be applied when running the detect command again:
 
-```text
-WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
-PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
+```
+gitleaks detect --baseline-path gitleaks-report.json --report-path findings.json
 ```
 
-7. Set `LOCAL_TEST_DM_WHATSAPP_ID` to a real WhatsApp ID you can use for an end-to-end reply test.
-8. Build the images:
+After running the detect command with the --baseline-path parameter, report output (findings.json) will only contain new issues.
 
-```bash
-docker compose --env-file .env.production build
+### Verify Findings
+
+You can verify a finding found by gitleaks using a `git log` command.
+Example output:
+
+```
+Finding:     aws_secret="AKIAIMNOJVGFDXXXE4OA"
+RuleID:      aws-access-token
+Secret       AKIAIMNOJVGFDXXXE4OA
+Entropy:     3.65
+File:        checks_test.go
+Line:        37
+Commit:      ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29
+Author:      Zachary Rice
+Email:       z@email.com
+Date:        2018-01-28T17:39:00Z
+Fingerprint: ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29:checks_test.go:aws-access-token:37
 ```
 
-9. Start the stack. The `migrate` service runs migrations and seed SQL automatically before the API starts:
+We can use the following format to verify the leak:
 
-```bash
-docker compose --env-file .env.production up -d
+```
+git log -L {StartLine,EndLine}:{File} {Commit}
 ```
 
-10. Run the end-to-end smoke check:
+So in this example it would look like:
 
-```bash
-sh deploy/scripts/smoke-test.sh
+```
+git log -L 37,37:checks_test.go ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29
 ```
 
-11. Create a database backup when needed:
+Which gives us:
 
-```bash
-sh deploy/scripts/backup-postgres.sh
+```
+commit ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29
+Author: zricethezav <thisispublicanyways@gmail.com>
+Date:   Sun Jan 28 17:39:00 2018 -0500
+
+    [update] entropy check
+
+diff --git a/checks_test.go b/checks_test.go
+--- a/checks_test.go
++++ b/checks_test.go
+@@ -28,0 +37,1 @@
++               "aws_secret= \"AKIAIMNOJVGFDXXXE4OA\"":          true,
+
 ```
 
-This baseline uses Nginx as an HTTP reverse proxy. Before public internet exposure, terminate TLS in front of Nginx or replace the proxy layer with one that manages certificates automatically.
+## Pre-Commit hook
 
-With the default compose file, WAHA is also published on `http://localhost:3000` so the dashboard and swagger UI can match the WAHA env settings in `.env.production`.
+You can run Gitleaks as a pre-commit hook by copying the example `pre-commit.py` script into
+your `.git/hooks/` directory.
 
-## WAHA Webhook Setup
+## Configuration
 
-If WAHA runs in the same Compose stack as this backend, point WAHA inbound webhook to:
+Gitleaks offers a configuration format you can follow to write your own secret detection rules:
 
-```text
-http://api:8080/webhooks/waha
+```toml
+# Title for the gitleaks configuration file.
+title = "Gitleaks title"
+
+# Extend the base (this) configuration. When you extend a configuration
+# the base rules take precedence over the extended rules. I.e., if there are
+# duplicate rules in both the base configuration and the extended configuration
+# the base rules will override the extended rules.
+# Another thing to know with extending configurations is you can chain together
+# multiple configuration files to a depth of 2. Allowlist arrays are appended
+# and can contain duplicates.
+# useDefault and path can NOT be used at the same time. Choose one.
+[extend]
+# useDefault will extend the base configuration with the default gitleaks config:
+# https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml
+useDefault = true
+# or you can supply a path to a configuration. Path is relative to where gitleaks
+# was invoked, not the location of the base config.
+path = "common_config.toml"
+
+# An array of tables that contain information that define instructions
+# on how to detect secrets
+[[rules]]
+
+# Unique identifier for this rule
+id = "awesome-rule-1"
+
+# Short human readable description of the rule.
+description = "awesome rule 1"
+
+# Golang regular expression used to detect secrets. Note Golang's regex engine
+# does not support lookaheads.
+regex = '''one-go-style-regex-for-this-rule'''
+
+# Golang regular expression used to match paths. This can be used as a standalone rule or it can be used
+# in conjunction with a valid `regex` entry.
+path = '''a-file-path-regex'''
+
+# Array of strings used for metadata and reporting purposes.
+tags = ["tag","another tag"]
+
+# Int used to extract secret from regex match and used as the group that will have
+# its entropy checked if `entropy` is set.
+secretGroup = 3
+
+# Float representing the minimum shannon entropy a regex group must have to be considered a secret.
+entropy = 3.5
+
+# Keywords are used for pre-regex check filtering. Rules that contain
+# keywords will perform a quick string compare check to make sure the
+# keyword(s) are in the content being scanned. Ideally these values should
+# either be part of the idenitifer or unique strings specific to the rule's regex
+# (introduced in v8.6.0)
+keywords = [
+  "auth",
+  "password",
+  "token",
+]
+
+# You can include an allowlist table for a single rule to reduce false positives or ignore commits
+# with known/rotated secrets
+[rules.allowlist]
+description = "ignore commit A"
+commits = [ "commit-A", "commit-B"]
+paths = [
+  '''go\.mod''',
+  '''go\.sum'''
+]
+# note: (rule) regexTarget defaults to check the _Secret_ in the finding.
+# if regexTarget is not specified then _Secret_ will be used.
+# Acceptable values for regexTarget are "match" and "line"
+regexTarget = "match"
+regexes = [
+  '''process''',
+  '''getenv''',
+]
+# note: stopwords targets the extracted secret, not the entire regex match
+# like 'regexes' does. (stopwords introduced in 8.8.0)
+stopwords = [
+  '''client''',
+  '''endpoint''',
+]
+
+
+# This is a global allowlist which has a higher order of precedence than rule-specific allowlists.
+# If a commit listed in the `commits` field below is encountered then that commit will be skipped and no
+# secrets will be detected for said commit. The same logic applies for regexes and paths.
+[allowlist]
+description = "global allow list"
+commits = [ "commit-A", "commit-B", "commit-C"]
+paths = [
+  '''gitleaks\.toml''',
+  '''(.*?)(jpg|gif|doc)'''
+]
+
+# note: (global) regexTarget defaults to check the _Secret_ in the finding.
+# if regexTarget is not specified then _Secret_ will be used.
+# Acceptable values for regexTarget are "match" and "line"
+regexTarget = "match"
+
+regexes = [
+  '''219-09-9999''',
+  '''078-05-1120''',
+  '''(9[0-9]{2}|666)-\d{2}-\d{4}''',
+]
+# note: stopwords targets the extracted secret, not the entire regex match
+# like 'regexes' does. (stopwords introduced in 8.8.0)
+stopwords = [
+  '''client''',
+  '''endpoint''',
+]
 ```
 
-Restrict WAHA webhook events to:
+Refer to the default [gitleaks config](https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml) for examples or follow the [contributing guidelines](https://github.com/zricethezav/gitleaks/blob/master/README.md) if you would like to contribute to the default configuration. Additionally, you can check out [this gitleaks blog post](https://blog.gitleaks.io/stop-leaking-secrets-configuration-2-3-aeed293b1fbf) which covers advanced configuration setups.
 
-```text
-message
+### Additional Configuration
+
+#### gitleaks:allow
+
+If you are knowingly committing a test secret that gitleaks will catch you can add a `gitleaks:allow` comment to that line which will instruct gitleaks
+to ignore that secret. Ex:
+
+```
+class CustomClass:
+    discord_client_secret = '8dyfuiRyq=vVc3RRr_edRk-fK__JItpZ'  #gitleaks:allow
+
 ```
 
-This backend normalizes inbound message payloads. Sending broader WAHA events such as `session.status` to the same route will create noisy non-message webhook traffic that the router does not need.
+#### .gitleaksignore
 
-If WAHA is outside this Compose network, use the backend's public URL instead:
+You can ignore specific findings by creating a `.gitleaksignore` file at the root of your repo. In release v8.10.0 Gitleaks added a `Fingerprint` value to the Gitleaks report. Each leak, or finding, has a Fingerprint that uniquely identifies a secret. Add this fingerprint to the `.gitleaksignore` file to ignore that specific secret. See Gitleaks' [.gitleaksignore](https://github.com/zricethezav/gitleaks/blob/master/.gitleaksignore) for an example. Note: this feature is experimental and is subject to change in the future.
 
-```text
-http://YOUR_DROPLET_IP/webhooks/waha
+## Sponsorships
+
+<p align="left">
+	  <a href="https://www.tines.com/?utm_source=oss&utm_medium=sponsorship&utm_campaign=gitleaks">
+		  <img alt="Tines Sponsorship" src="https://user-images.githubusercontent.com/15034943/146411864-4878f936-b4f7-49a0-b625-f9f40c704bfa.png" width=200>
+	  </a>
+  </p>
+
+## Exit Codes
+
+You can always set the exit code when leaks are encountered with the --exit-code flag. Default exit codes below:
+
 ```
-
-## DigitalOcean Same-Server Plan
-
-Edit these files on the server:
-
-- `.env.production`
-- `docker-compose.yml`
-- `deploy/nginx/default.conf` only if you later move the backend off port `8080`
-
-Exact env values to set in `.env.production`:
-
-```text
-ENVIRONMENT=production
-API_HOST=0.0.0.0
-API_PORT=8080
-POSTGRES_USER=datacube
-POSTGRES_PASSWORD=<strong-db-password>
-POSTGRES_DB=datacube_bot
-DATABASE_URL=postgresql+asyncpg://datacube:<strong-db-password>@postgres:5432/datacube_bot
-DATABASE_URL_SYNC=postgresql://datacube:<strong-db-password>@postgres:5432/datacube_bot
-WAHA_SERVICE_URL=http://waha:3000
-WAHA_API_KEY=<reuse-the-value-from-your-current-waha-.env>
-WAHA_SESSION_NAME=default
-WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
-WHATSAPP_HOOK_EVENTS=message
-WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
-PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
-ADMIN_USERNAME=zina
-ADMIN_PASSWORD=<strong-admin-password>
-ADMIN_SESSION_SECRET=<strong-random-session-secret>
-ADMIN_SESSION_TTL_SECONDS=86400
-ADMIN_LOGIN_MAX_FAILURES=5
-ADMIN_LOGIN_LOCKOUT_SECONDS=900
-ADMIN_COOKIE_SECURE=false
-ADMIN_API_TOKEN=<strong-admin-token-for-scripts>
-LOCAL_TEST_DM_WHATSAPP_ID=<your-test-number>@c.us
+0 - no leaks present
+1 - leaks or error encountered
+126 - unknown flag
 ```
-
-Exact commands to run on the DigitalOcean server:
-
-```bash
-cp .env.production.example .env.production
-nano .env.production
-docker compose --env-file .env.production build
-docker compose --env-file .env.production up -d
-docker compose --env-file .env.production ps
-sh deploy/scripts/smoke-test.sh
-```
-
-Exact verification steps:
-
-1. `docker compose --env-file .env.production ps` should show `postgres`, `api`, `waha`, and `nginx` as running.
-2. `curl http://YOUR_DROPLET_IP/health` should return `"database":"ok"` and must not check WAHA.
-3. `curl http://YOUR_DROPLET_IP/health/dependencies` should show WAHA/OpenRouter dependency status separately.
-4. `sh deploy/scripts/smoke-test.sh` should return a webhook result containing an accepted webhook status; outbound delivery happens through the queue worker.
-5. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/messages/recent` should show one inbound and one outbound message for the smoke test chat.
-6. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/router-decisions/recent` should show a recent decision with `reply_sent=true`.
-7. `http://YOUR_DROPLET_IP/admin/ui` should redirect to `/admin/login` until you sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
-
-## Local Test Flow
-
-1. Run migration and seed SQL.
-2. Start FastAPI on `http://localhost:8080`.
-3. Start WAHA and confirm its session name matches `WAHA_SESSION_NAME`.
-4. Send a DM payload:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File bot_core/scripts/test-dm-webhook.ps1
-```
-
-5. Send a group mention payload:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File bot_core/scripts/test-group-webhook.ps1
-```
-
-6. Inspect recent decisions:
-
-```bash
-curl -H "X-Admin-Token: local-admin-token" http://localhost:8080/admin/router-decisions/recent
-```
-
-7. Inspect recent messages:
-
-```bash
-curl -H "X-Admin-Token: local-admin-token" http://localhost:8080/admin/messages/recent
-```
-
-8. Inspect recent audit logs:
-
-```bash
-curl -H "X-Admin-Token: local-admin-token" http://localhost:8080/admin/logs/recent
-```
-
-9. Upload sample knowledge:
-
-```bash
-curl -X POST "http://localhost:8080/admin/knowledge/upload" \
-  -H "X-Admin-Token: local-admin-token" \
-  -F "source_type=product_docs" \
-  -F "file=@bot_core/examples/sample-knowledge.md"
-```
-
-10. Send a DM with a question matching the knowledge text and inspect the resulting `kb_reply` decision.
-
-## Sample Test Payloads
-
-Files:
-
-- [dm_webhook.json](c:/Users/cruzan/Documents/DatacubeAU_com.bot/bot_core/examples/dm_webhook.json)
-- [group_mention_webhook.json](c:/Users/cruzan/Documents/DatacubeAU_com.bot/bot_core/examples/group_mention_webhook.json)
-
-You can also post them directly:
-
-```bash
-curl -X POST http://localhost:8080/webhooks/waha \
-  -H "Content-Type: application/json" \
-  --data @bot_core/examples/dm_webhook.json
-```
-
-## Debug and Admin Endpoints
-
-- `GET /admin/logs/recent`
-- `GET /admin/router-decisions/recent`
-- `GET /admin/messages/recent`
-- `POST /admin/test-reply`
-- `POST /admin/group-mode`
-- `GET /admin/config/debug`
-- `POST /admin/knowledge/upload`
-- `POST /admin/knowledge/text`
-- `POST /admin/knowledge/reindex/{document_id}`
-- `GET /admin/knowledge/search`
-- `GET /admin/knowledge/documents`
-
-Browser admin access uses `/admin/login` and a signed `HttpOnly` session cookie. Set `ADMIN_COOKIE_SECURE=true` when the public admin URL is HTTPS and the app cannot infer HTTPS from `X-Forwarded-Proto`.
-
-Scripted admin API calls can still use `X-Admin-Token` when `ADMIN_API_TOKEN` is configured. Do not expose this token in browser storage.
-
-## Verifying Behavior
-
-DM:
-- send `hello`
-- expect `static_reply`
-- send the same DM twice quickly
-- expect the second response to be blocked by cooldown
-
-Group:
-- send a group message without a mention
-- expect `ignore`
-- send a group message with `@datacube bot`
-- expect a reply
-
-Knowledge:
-- ingest a document
-- send a matching question
-- expect `kb_reply`
-
-## How To Enable AI Later
-
-Set these env vars:
-
-- `AI_ENABLED=true`
-- `OPENROUTER_API_KEY=...`
-- `OPENROUTER_MODEL_LIGHT=...`
-- `OPENROUTER_MODEL_DEEP=...`
-
-AI fallback only runs after static and knowledge paths fail or score too low.
-
-## Known Assumptions
-
-- Knowledge search currently uses text scoring fallback instead of embeddings.
-- `router_decisions` are written before outbound delivery so delivery failures remain inspectable.
-- WAHA connectivity is checked in `/health`, but the app does not require WAHA to be reachable to start.
-- The included production reverse proxy is an HTTP baseline and still needs TLS termination before internet exposure.

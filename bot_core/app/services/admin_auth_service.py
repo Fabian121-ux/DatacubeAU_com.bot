@@ -98,6 +98,12 @@ class AdminAuthService:
             return None
         return AdminPrincipal(username=username, issued_at=issued_at, expires_at=expires_at, login_at=login_at)
 
+    def get_soft_session(self, request: Request) -> AdminPrincipal | None:
+        try:
+            return self.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
+        except Exception:
+            return None
+
     def token_principal(self, token: str | None) -> AdminPrincipal | None:
         if not settings.admin_api_token:
             return None

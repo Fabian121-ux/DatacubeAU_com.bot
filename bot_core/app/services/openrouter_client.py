@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 from typing import Any
+import asyncio
 
 import httpx
 
@@ -99,13 +100,23 @@ class OpenRouterClient:
 
         started = time.perf_counter()
         last_error: Exception | None = None
-        for _ in range(settings.openrouter_retry_count + 1):
+        for attempt in range(settings.openrouter_retry_count + 1):
+            if attempt > 0:
+                await asyncio.sleep(2 ** attempt)  # exponential backoff
             try:
                 response = await self._client.post(f"{settings.openrouter_base_url}/chat/completions", json=payload, headers=headers)
                 response.raise_for_status()
                 data = response.json()
+                
+                # Basic schema validation
+                if not isinstance(data, dict) or "choices" not in data or not data["choices"]:
+                    raise ValueError(f"Invalid response schema from OpenRouter: {data}")
+                choice = data["choices"][0]
+                if "message" not in choice or "content" not in choice["message"]:
+                    raise ValueError(f"Invalid response schema from OpenRouter: {data}")
+                
                 usage = data.get("usage", {})
-                text = str(data["choices"][0]["message"]["content"]).strip()
+                text = str(choice["message"]["content"]).strip()
                 return OpenRouterResult(
                     text=text,
                     model=model,

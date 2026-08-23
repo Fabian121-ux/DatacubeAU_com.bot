@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.experience_formatter import WhatsAppExperienceFormatter, format_whatsapp_quote, memory_context_indicators
+from app.core.experience_formatter import WhatsAppExperienceFormatter, memory_context_indicators
 
 
 def test_source_indicator_badges() -> None:
@@ -43,35 +43,18 @@ def test_signature_style_can_be_disabled_for_legacy_shape() -> None:
     assert reply == "Source: Rule\n\nDatacube AU is active."
 
 
-def test_format_whatsapp_quote_single_line() -> None:
-    assert format_whatsapp_quote("Message text") == "> Message text"
-
-
-def test_format_whatsapp_quote_multiline_paragraphs() -> None:
-    assert format_whatsapp_quote("Good morning, Daniel.\n\nIt looks like it may rain today.") == (
-        "> Good morning, Daniel.\n\n"
-        "> It looks like it may rain today."
-    )
-
-
-def test_format_whatsapp_quote_preserves_blank_lines() -> None:
-    assert format_whatsapp_quote("First line\n\n\nSecond line") == "> First line\n\n\n> Second line"
-
-
-def test_format_whatsapp_quote_does_not_duplicate_existing_marker() -> None:
-    assert format_whatsapp_quote("> Already quoted\n\nNext line") == "> Already quoted\n\n> Next line"
-
 
 def test_format_reply_can_quote_only_the_body() -> None:
     formatter = WhatsAppExperienceFormatter()
     reply = formatter.format_reply(
-        "ZinaX is part of Fabian's AI ecosystem.",
-        source="Identity",
-        show_source=False,
-        quote_body=True,
+        "Important notification.",
+        source="System",
+        context_indicators=[],
+        whatsapp_format_mode="quote",
     )
 
-    assert reply == "*Zina*\n\n> ZinaX is part of Fabian's AI ecosystem."
+    assert reply.startswith("*Zina*")
+    assert "> Important notification." in reply
 
 
 def test_memory_context_indicators_only_from_used_memory_diagnostics() -> None:

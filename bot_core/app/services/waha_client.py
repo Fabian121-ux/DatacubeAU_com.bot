@@ -180,3 +180,60 @@ class WAHAClient:
     @staticmethod
     def _should_retry_status(status_code: int) -> bool:
         return status_code >= 500 or status_code in {408, 425, 429}
+
+    @staticmethod
+    def normalize_waha_status(raw_payload: dict[str, Any] | None, error: str | None = None) -> dict[str, Any]:
+        """Maps any WAHA session payload or error into a canonical status object."""
+        service_reachable = error is None and raw_payload is not None
+        session_exists = False
+        connected = False
+        requires_pairing = False
+        session_status = "UNKNOWN"
+        session_name = settings.waha_session_name
+
+        if service_reachable and raw_payload:
+            session_name = raw_payload.get("name", session_name)
+            
+            # Find status key in root or nested session dict
+            raw_status = None
+            for key in ("status", "state", "sessionStatus"):
+                if key in raw_payload:
+                    raw_status = str(raw_payload[key]).upper()
+                    break
+            
+            if not raw_status and "session" in raw_payload and isinstance(raw_payload["session"], dict):
+                nested = raw_payload["session"]
+                for key in ("status", "state", "sessionStatus"):
+                    if key in nested:
+                        raw_status = str(nested[key]).upper()
+                        break
+            
+            if raw_status:
+                session_status = raw_status
+                session_exists = True
+                
+                if session_status == "WORKING":
+                    connected = True
+                elif session_status == "SCAN_QR_CODE":
+                    requires_pairing = True
+
+        return {
+            "service_reachable": service_reachable,
+            "service_status": "healthy" if service_reachable else "error",
+            "session_name": session_name,
+            "session_exists": session_exists,
+            "session_status": session_status,
+            "connected": connected,
+            "requires_pairing": requires_pairing,
+            "last_error": error
+        }
+
+    async def get_qr_code(self, session_name: str = "default") -> bytes:
+        response = await self.client.get(
+            f"/api/{session_name}/auth/qr",
+            headers={"Accept": "image/png"}
+        )
+        if response.status_code == 200:
+            return response.content
+        raise WahaClientError(f"Failed to fetch QR code: HTTP {response.status_code} {response.text}")
+

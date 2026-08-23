@@ -29,40 +29,21 @@ async def health(db: AsyncSession = Depends(get_db_session)) -> dict[str, object
 
 @router.get("/health/dependencies")
 async def dependency_health(db: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
-    db_status: str | dict[str, object] = "ok"
-    waha_status: str | dict[str, object] = "unknown"
-
-    try:
-        await db.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
-        db_status = {"status": "error", "detail": str(exc)}
-
-    client = WAHAClient()
-    try:
-        waha_status = await client.get_session_status()
-    except WahaClientError as exc:
-        waha_status = {"status": "error", "detail": str(exc)}
-    finally:
-        await client.close()
-
-    openrouter_status: dict[str, object] = {
-        "enabled": settings.ai_enabled,
-        "configured": bool(settings.openrouter_api_key),
-        "base_url": settings.openrouter_base_url if settings.ai_enabled else "",
-    }
-
+    """Deprecated compatibility wrapper delegating to canonical status."""
+    from app.services.system_status_service import SystemStatusService
+    service = SystemStatusService(db)
+    status = await service.build_canonical_status()
+    
+    db_status = status["database"]
+    waha_status = status["waha"]
+    ai_status = status["ai_provider"]
+    
     return {
-        "status": "ok" if db_status == "ok" and not _is_dependency_error(waha_status) else "degraded",
-        "service": settings.app_name,
-        "environment": settings.environment,
+        "status": "ok" if db_status.get("status") == "ok" and waha_status.get("service_reachable") else "degraded",
+        "service": status["api"]["service"],
+        "environment": status["api"]["environment"],
         "database": db_status,
         "waha": waha_status,
-        "openrouter": openrouter_status,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "openrouter": ai_status,
+        "timestamp": status["timestamp"],
     }
-
-
-def _is_dependency_error(value: str | dict[str, object]) -> bool:
-    if isinstance(value, dict):
-        return value.get("status") == "error"
-    return False

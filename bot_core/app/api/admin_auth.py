@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from html import escape
 from typing import Annotated
 
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_admin_session
+from app.api.deps import require_admin_session_html, require_admin_session_api
 from app.config import settings
 from app.db import get_db_session
 from app.services.admin_auth_service import ADMIN_SESSION_COOKIE, AdminAuthService, AdminPrincipal
@@ -17,7 +18,7 @@ router = APIRouter(tags=["admin-auth"])
 
 
 @router.get("/admin", include_in_schema=False, response_model=None)
-async def admin_root(principal: AdminPrincipal = Depends(require_admin_session)) -> Response:
+async def admin_root(principal: AdminPrincipal = Depends(require_admin_session_html)) -> Response:
     return RedirectResponse("/admin/ui", status_code=303)
 
 
@@ -27,7 +28,19 @@ async def login_page(request: Request) -> Response:
     principal = auth.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
     if principal:
         return RedirectResponse("/admin/ui", status_code=303)
-    return _render_login_page()
+    
+    csrf_token = secrets.token_urlsafe(32)
+    response = _render_login_page(csrf_token=csrf_token)
+    response.set_cookie(
+        "admin_csrf_token",
+        csrf_token,
+        max_age=3600,
+        httponly=True,
+        secure=auth.cookie_secure_for_request(request),
+        samesite="lax",
+        path="/admin",
+    )
+    return response
 
 
 @router.post("/admin/login", response_class=HTMLResponse, response_model=None)
@@ -35,9 +48,15 @@ async def login(
     request: Request,
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
+    csrf_token: Annotated[str, Form()],
     db: AsyncSession = Depends(get_db_session),
 ) -> Response:
     auth = AdminAuthService()
+    
+    cookie_csrf = request.cookies.get("admin_csrf_token")
+    if not cookie_csrf or not secrets.compare_digest(cookie_csrf, csrf_token):
+        return _render_login_page(error="Invalid or missing CSRF token. Please refresh the page.", csrf_token=secrets.token_urlsafe(32), status_code=403)
+
     submitted_username = username.strip()
     ip_address = auth.client_ip(request)
 
@@ -51,7 +70,7 @@ async def login(
         )
         return _render_login_page(
             error=f"Too many failed attempts. Try again in {settings.admin_login_lockout_seconds // 60} minutes.",
-            username=submitted_username,
+            csrf_token=cookie_csrf,
             status_code=429,
         )
 
@@ -68,7 +87,7 @@ async def login(
         error = "Invalid username or password."
         if locked:
             error = f"Too many failed attempts. Try again in {settings.admin_login_lockout_seconds // 60} minutes."
-        return _render_login_page(error=error, username=submitted_username, status_code=401)
+        return _render_login_page(error=error, csrf_token=cookie_csrf, status_code=401)
 
     await auth.record_login_event(db, action="admin_login_success", username=principal.username, request=request)
     response = RedirectResponse("/admin/ui", status_code=303)
@@ -96,7 +115,7 @@ async def logout(request: Request, db: AsyncSession = Depends(get_db_session)) -
 
 
 @router.get("/admin/session")
-async def admin_session(principal: AdminPrincipal = Depends(require_admin_session)) -> dict[str, object]:
+async def admin_session(principal: AdminPrincipal = Depends(require_admin_session_api)) -> dict[str, object]:
     return {
         "username": principal.username,
         "auth_method": principal.auth_method,
@@ -105,9 +124,8 @@ async def admin_session(principal: AdminPrincipal = Depends(require_admin_sessio
     }
 
 
-def _render_login_page(error: str = "", username: str = "", status_code: int = 200) -> HTMLResponse:
+def _render_login_page(error: str = "", csrf_token: str = "", status_code: int = 200) -> HTMLResponse:
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
-    username_value = escape(username or settings.admin_username)
     return HTMLResponse(
         f"""<!DOCTYPE html>
 <html lang="en">
@@ -135,8 +153,9 @@ button:hover{{background:#4834d4}}
     <h1>Zina Admin</h1>
     <p>Sign in to manage memory, identity, rules, queue, AI controls, and knowledge sources.</p>
     {error_html}
+    <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
     <label for="username">Username</label>
-    <input id="username" name="username" value="{username_value}" autocomplete="username" required autofocus>
+    <input id="username" name="username" value="" autocomplete="username" required autofocus>
     <label for="password">Password</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required>
     <button type="submit">Sign In</button>

@@ -468,11 +468,30 @@ tr:hover td{background:var(--surface2)}
     <!-- WAHA -->
     <div id="tab-waha" class="panel">
       <h2>WAHA Session Control</h2>
+      
       <div class="card">
+        <h3>WAHA Status</h3>
+        <div class="btn-group" style="margin-bottom:.8rem">
+          <button class="btn btn-ghost btn-sm" onclick="loadWaha()">Refresh Status</button>
+        </div>
+        <div id="wahaDetailedStatusPanel">Loading…</div>
+        <div id="wahaQrCodePanel" style="margin-top: 1rem; display: none;"></div>
+      </div>
+      
+      <div class="card">
+        <h3>Session Actions</h3>
         <div class="form-row">
           <div><button class="btn btn-primary" onclick="wahaAction('start')">Start Session</button></div>
           <div><button class="btn btn-danger" onclick="wahaAction('stop')">Stop Session</button></div>
-          <div><button class="btn btn-ghost" onclick="window.open(window.location.origin + ':3000/dashboard', '_blank')">Open WAHA Dashboard</button></div>
+          <div><button class="btn btn-orange" onclick="wahaAction('restart')">Restart Session</button></div>
+          <div><button class="btn btn-ghost" onclick="(() => {
+            try {
+              const url = new URL(window.location.protocol + '//' + window.location.hostname + ':3000/dashboard');
+              if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+              if (url.username || url.password) return;
+              window.open(url.toString(), '_blank', 'noopener,noreferrer');
+            } catch (e) {}
+          })()">Open WAHA Dashboard</button></div>
         </div>
       </div>
       <div class="card">
@@ -749,32 +768,44 @@ function loadTab(tab) {
 // ---- STATUS ----
 async function loadStatus() {
   try {
-    const [health, usage] = await Promise.all([
-      api('/health'),
+    const [sys, usage] = await Promise.all([
+      api('/admin/system/status'),
       api('/admin/usage')
     ]);
     const stats = document.getElementById('statusStats');
-    const db = health.database || 'unknown';
-    const waha = typeof health.waha === 'object' ? (health.waha.status || 'unknown') : health.waha;
+    const db = sys.database?.status || 'unknown';
+    const waha = sys.waha?.session_status || 'UNKNOWN';
+    const ai = sys.ai_provider?.state || 'unknown';
+    
+    let wahaBadge = 'badge-red';
+    if (waha === 'WORKING') wahaBadge = 'badge-green';
+    else if (waha === 'SCAN_QR_CODE') wahaBadge = 'badge-orange';
+    
+    let aiBadge = 'badge-gray';
+    if (ai === 'enabled') aiBadge = 'badge-green';
+    else if (ai === 'disabled_by_configuration' || ai === 'provider_error') aiBadge = 'badge-red';
+    
+    let dbBadge = db === 'ok' ? 'badge-green' : 'badge-red';
+    
     stats.innerHTML = `
-      <div class="stat"><div class="val"><span class="badge ${waha === 'WORKING' || waha === 'SCAN_QR_CODE' ? 'badge-green' : 'badge-red'}">${waha === 'WORKING' || waha === 'SCAN_QR_CODE' ? 'online' : 'offline'}</span></div><div class="lbl">WAHA</div></div>
-      <div class="stat"><div class="val"><span class="badge ${db === 'ok' ? 'badge-green' : 'badge-red'}">${db === 'ok' ? 'ok' : 'down'}</span></div><div class="lbl">Database</div></div>
-      <div class="stat"><div class="val"><span class="badge ${health.ai_enabled ? 'badge-green' : 'badge-gray'}">${health.ai_enabled ? 'on' : 'off'}</span></div><div class="lbl">AI</div></div>
+      <div class="stat"><div class="val"><span class="badge ${wahaBadge}">${sys.waha?.connected ? 'online' : waha}</span></div><div class="lbl">WAHA</div></div>
+      <div class="stat"><div class="val"><span class="badge ${dbBadge}">${db}</span></div><div class="lbl">Database</div></div>
+      <div class="stat"><div class="val"><span class="badge ${aiBadge}">${ai.replace('disabled_by_', '')}</span></div><div class="lbl">AI Status</div></div>
       <div class="stat"><div class="val">${usage.today.messages}</div><div class="lbl">Msgs Today</div></div>
       <div class="stat"><div class="val">${usage.today.ai_calls}</div><div class="lbl">AI Calls Today</div></div>
       <div class="stat"><div class="val">${usage.today.total_tokens}</div><div class="lbl">Tokens Today</div></div>
       <div class="stat"><div class="val">${usage.totals.contacts}</div><div class="lbl">Contacts</div></div>
       <div class="stat"><div class="val">${usage.totals.memory_entries}</div><div class="lbl">Memories</div></div>
-      <div class="stat"><div class="val">${usage.totals.conversation_timeline_entries || 0}</div><div class="lbl">Timeline</div></div>
+      <div class="stat"><div class="val">${sys.faq_bootstrap?.status || 'unknown'}</div><div class="lbl">FAQ Sync</div></div>
       <div class="stat"><div class="val">${usage.totals.conversation_summaries || 0}</div><div class="lbl">Summaries</div></div>
     `;
     const hi = document.getElementById('healthInfo');
     hi.innerHTML = `
       <div style="display:flex;flex-wrap:wrap;gap:1rem">
-        <span class="badge badge-${db==='ok'?'green':'red'}">DB: ${db}</span>
-        <span class="badge badge-${waha==='WORKING'?'green':waha==='SCAN_QR_CODE'?'orange':'red'}">WAHA: ${waha}</span>
-        <span class="badge badge-blue">Env: ${health.environment}</span>
-        <span class="badge badge-purple">Cache: ${usage.totals.cache_entries}</span>
+        <span class="badge ${dbBadge}">DB: ${db}</span>
+        <span class="badge ${wahaBadge}">WAHA: ${waha}</span>
+        <span class="badge badge-blue">Env: ${sys.api?.environment || 'unknown'}</span>
+        <span class="badge badge-purple">FAQ: ${sys.faq_bootstrap?.entries || 0}</span>
       </div>
     `;
     loadStorage();
@@ -1286,11 +1317,12 @@ async function loadConversationInspector() {
     const table = document.getElementById('conversationInspectorTable');
     if (!d.items.length) { table.innerHTML = '<em>No conversations inspected yet.</em>'; return; }
     table.innerHTML = `<table>
-      <thead><tr><th>Time</th><th>User</th><th>Message</th><th>Intent</th><th>Route</th><th>Sources Used</th><th>Hits</th><th>Fallback</th><th>Reason</th><th>Final Response</th></tr></thead>
+      <thead><tr><th>Time</th><th>User</th><th>Message</th><th>Queue/Payload</th><th>Intent</th><th>Route</th><th>Sources Used</th><th>Hits</th><th>Fallback</th><th>Reason</th><th>Final Response</th></tr></thead>
       <tbody>${d.items.map(m => `<tr>
         <td style="white-space:nowrap">${new Date(m.created_at).toLocaleString()}</td>
         <td><strong>${esc(m.user_name || 'Unknown')}</strong><br><small>${esc(m.phone_number || m.whatsapp_id || '—')}</small></td>
         <td title="${esc(m.message || m.question || '')}">${esc((m.message || m.question || '').substring(0,70))}</td>
+        <td class="mono" style="font-size:0.75rem"><span title="${esc(JSON.stringify(m.raw_payload_json||{}))}">Q:${m.outbound_queue_id || 'none'}</span></td>
         <td><span class="badge badge-gray">${esc(m.intent || m.router_analytics?.intent || 'unknown')}</span></td>
         <td><span class="badge badge-purple">${esc(m.selected_source || m.selected_route || m.decision_type || '—')}</span><br><small>${esc(m.topic || '—')}</small></td>
         <td class="mono">
@@ -1306,15 +1338,66 @@ async function loadConversationInspector() {
 }
 
 // ---- WAHA ----
-function loadWaha() {
+let wahaPollingInterval = null;
+
+async function loadWaha() {
+  try {
+    const sys = await api('/admin/system/status');
+    const w = sys.waha || {};
+    const p = document.getElementById('wahaDetailedStatusPanel');
+    const qrPanel = document.getElementById('wahaQrCodePanel');
+    
+    let badge = 'badge-gray';
+    const st = (w.session_status || 'UNKNOWN').toUpperCase();
+    
+    if (st === 'WORKING') badge = 'badge-green';
+    else if (st === 'SCAN_QR_CODE' || st === 'PASSKEY_REQUIRED' || st === 'PASSKEY_CONFIRMATION_REQUIRED') badge = 'badge-orange';
+    else if (st === 'STARTING') badge = 'badge-purple';
+    else if (st === 'FAILED' || st === 'STOPPED') badge = 'badge-red';
+    
+    p.innerHTML = `
+      <div class="detail-grid">
+        <div class="detail"><div class="k">Service</div><div class="v"><span class="badge ${w.service_reachable ? 'badge-green' : 'badge-red'}">${w.service_status || 'error'}</span></div></div>
+        <div class="detail"><div class="k">Session</div><div class="v"><span class="badge ${badge}">${esc(st)}</span></div></div>
+        <div class="detail"><div class="k">Connected</div><div class="v">${w.connected ? 'Yes' : 'No'}</div></div>
+        <div class="detail"><div class="k">Name</div><div class="v">${esc(w.session_name || 'default')}</div></div>
+        <div class="detail"><div class="k">Last Error</div><div class="v">${w.last_error ? esc(w.last_error) : 'None'}</div></div>
+      </div>
+    `;
+    
+    if (w.requires_pairing && w.session_name) {
+      qrPanel.style.display = 'block';
+      qrPanel.innerHTML = `
+        <div style="text-align:center; padding: 1rem; background: #fff; border-radius: var(--radius); display: inline-block;">
+          <img src="/admin/waha/qr?t=${Date.now()}" alt="WAHA QR Code" style="max-width: 250px; display: block;" onerror="this.src=''; this.alt='QR code not available or expired';">
+        </div>
+        <p style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted)">Scan this QR code with your WhatsApp app (Linked Devices).</p>
+      `;
+    } else {
+      qrPanel.style.display = 'none';
+    }
+  } catch (e) {
+    document.getElementById('wahaDetailedStatusPanel').innerHTML = `<span class="badge badge-red">Failed to load status</span>`;
+  }
   loadWahaOutages();
 }
+
+function startWahaPolling() {
+  if (wahaPollingInterval) clearInterval(wahaPollingInterval);
+  wahaPollingInterval = setInterval(() => {
+    if (!document.hidden && document.getElementById('tab-waha').classList.contains('active')) {
+      loadWaha();
+    }
+  }, 30000);
+}
+startWahaPolling();
+
 async function wahaAction(action) {
   try {
     await api(`/admin/waha/${action}`, { method: 'POST' });
     toast(`WAHA session ${action} requested.`);
     loadStatus();
-    loadWahaOutages();
+    loadWaha();
   } catch (_) {}
 }
 async function loadWahaOutages() {

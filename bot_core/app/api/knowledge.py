@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_admin_session
+from app.api.deps import require_admin_session_api
 from app.config import settings
 from app.db import get_db_session
 from app.models.enums import KnowledgeDocumentStatus, SourceType
@@ -15,7 +15,7 @@ from app.models.schema import AuditLog, KnowledgeDocument
 from app.services.retrieval_service import RetrievalService
 
 
-router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_session)])
+router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_session_api)])
 
 
 class KnowledgeTextIn(BaseModel):
@@ -34,7 +34,18 @@ async def upload_document(
 ) -> dict[str, Any]:
     if not file.filename or not file.filename.lower().endswith((".txt", ".md")):
         raise HTTPException(status_code=400, detail="only .txt and .md files are supported")
-    raw_text = (await file.read()).decode("utf-8", errors="ignore").strip()
+    max_size = 5 * 1024 * 1024  # 5MB
+    file_chunks = []
+    total_size = 0
+    while True:
+        chunk = await file.read(65536)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > max_size:
+            raise HTTPException(status_code=413, detail="File too large (max 5MB)")
+        file_chunks.append(chunk)
+    raw_text = b"".join(file_chunks).decode("utf-8", errors="ignore").strip()
     if not raw_text:
         raise HTTPException(status_code=400, detail="empty document")
 

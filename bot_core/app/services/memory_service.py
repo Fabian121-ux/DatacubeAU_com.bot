@@ -17,7 +17,7 @@ from app.models.schema import (
     UserMemory,
     UserMemoryTimeline,
 )
-from app.utils.text import normalize_text
+from app.utils.text import escape_like, normalize_text
 from app.utils.time import utcnow
 
 
@@ -66,10 +66,12 @@ class MemoryService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_memory(self, contact_id: int, *, include_disabled: bool = False) -> UserMemory | None:
+    async def get_memory(self, contact_id: int, *, include_disabled: bool = False, for_update: bool = False) -> UserMemory | None:
         stmt = select(UserMemory).where(UserMemory.contact_id == contact_id).limit(1)
         if not include_disabled:
             stmt = stmt.where(UserMemory.is_enabled.is_(True))
+        if for_update:
+            stmt = stmt.with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def upsert_memory(
@@ -95,10 +97,7 @@ class MemoryService:
         normalized_relationship_type = (
             self.normalize_relationship_type(relationship_type) if relationship_type is not None else None
         )
-        try:
-            memory = await self.get_memory(contact_id, include_disabled=True)
-        except TypeError:
-            memory = await self.get_memory(contact_id)
+        memory = await self.get_memory(contact_id, include_disabled=True, for_update=True)
         if memory:
             if display_name is not None:
                 memory.display_name = display_name
@@ -253,7 +252,7 @@ class MemoryService:
         stmt = select(ConversationTimeline).where(ConversationTimeline.contact_id == contact_id)
         if query and normalize_text(query) not in {"", "hi", "hello", "hey", "yo"}:
             like = f"%{query.strip()}%"
-            stmt = stmt.where(or_(ConversationTimeline.topic.ilike(like), ConversationTimeline.summary.ilike(like)))
+            stmt = stmt.where(or_(ConversationTimeline.topic.ilike(like, escape="\\"), ConversationTimeline.summary.ilike(like, escape="\\")))
         stmt = stmt.order_by(ConversationTimeline.timestamp.desc()).limit(limit)
         return list((await self.session.execute(stmt)).scalars().all())
 

@@ -1,10 +1,9 @@
 # Core FAQ
 
 ## Q: Who are you?
+V: What is your name?
 A: {{identity:zina}}
 
-## Q: What is your name?
-A: {{identity:zina}}
 
 ## Q: Who is Fabian?
 A: {{identity:fabian}}

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_admin_session
+from app.api.deps import require_admin_session_api, require_admin_session_html
 from app.config import settings
 from app.core.experience_formatter import WhatsAppMessageFormat
 from app.core.message_normalizer import NormalizedMessage
@@ -48,11 +48,11 @@ from app.services.faq_service import FAQService
 from app.services.identity_registry_service import IdentityRegistryService
 from app.services.memory_service import MemoryService
 from app.services.waha_client import WAHAClient, WahaClientError
-from app.utils.text import normalize_text
+from app.utils.text import escape_like, normalize_text
 from app.utils.time import utcnow
 
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_session_api)])
 CORE_FAQ_PATH = Path(__file__).resolve().parents[2] / "core_faq.md"
 
 
@@ -291,6 +291,7 @@ async def recent_router_decisions(
     final_response_map: dict[int, str] = {}
     whatsapp_final_response_map: dict[int, str] = {}
     response_formatting_map: dict[int, dict[str, Any]] = {}
+    raw_payload_map: dict[int, dict[str, Any]] = {}
     if inbound_ids:
         inbound_messages = (
             await db.execute(select(Message).where(Message.id.in_(inbound_ids)))
@@ -322,6 +323,7 @@ async def recent_router_decisions(
                 final_response_map[inbound.id] = _display_text_for_message(final)
                 whatsapp_final_response_map[inbound.id] = final.message_text
                 response_formatting_map[inbound.id] = _message_formatting(final)
+                raw_payload_map[inbound.id] = final.raw_payload_json or {}
     return {
         "count": len(rows),
         "items": [
@@ -384,6 +386,8 @@ async def recent_router_decisions(
                 "final_response": final_response_map.get(row[0].message_id),
                 "whatsapp_final_response": whatsapp_final_response_map.get(row[0].message_id),
                 "response_formatting": response_formatting_map.get(row[0].message_id) or {},
+                "outbound_queue_id": audit_map.get(str(row[0].id), {}).get("outbound_queue_id") or raw_payload_map.get(row[0].message_id, {}).get("outbound_queue_id"),
+                "raw_payload_json": raw_payload_map.get(row[0].message_id) or {},
             }
             for row in rows
         ],
@@ -666,8 +670,8 @@ async def list_groups(
     elif status == "disabled":
         stmt = stmt.where(GroupConfig.is_enabled.is_(False))
     if q:
-        like = f"%{q}%"
-        stmt = stmt.where(or_(GroupConfig.chat_id.ilike(like), GroupConfig.display_name.ilike(like)))
+        like = f"%{escape_like(q)}%"
+        stmt = stmt.where(or_(GroupConfig.chat_id.ilike(like, escape="\\"), GroupConfig.display_name.ilike(like, escape="\\")))
     rows = (await db.execute(stmt)).scalars().all()
     metadata_rows = (
         await db.execute(select(GroupMetadata).where(GroupMetadata.chat_id.in_([row.chat_id for row in rows])))
@@ -786,17 +790,17 @@ async def list_memory(
     elif status == "disabled":
         stmt = stmt.where(UserMemory.is_enabled.is_(False))
     if q:
-        like = f"%{q}%"
-        norm_like = f"%{normalize_text(q)}%"
+        like = f"%{escape_like(q)}%"
+        norm_like = f"%{normalize_text(escape_like(q))}%"
         stmt = stmt.where(
             or_(
-                Contact.display_name.ilike(like),
-                Contact.whatsapp_id.ilike(like),
-                Contact.normalized_phone.ilike(like),
-                UserMemory.display_name.ilike(like),
-                UserMemory.user_name.ilike(like),
-                UserMemory.interests.ilike(norm_like),
-                UserMemory.projects.ilike(norm_like),
+                Contact.display_name.ilike(like, escape="\\"),
+                Contact.whatsapp_id.ilike(like, escape="\\"),
+                Contact.normalized_phone.ilike(like, escape="\\"),
+                UserMemory.display_name.ilike(like, escape="\\"),
+                UserMemory.user_name.ilike(like, escape="\\"),
+                UserMemory.interests.ilike(norm_like, escape="\\"),
+                UserMemory.projects.ilike(norm_like, escape="\\"),
             )
         )
     rows = (await db.execute(stmt)).all()
@@ -861,13 +865,13 @@ async def list_memory_facts(
     if min_importance is not None:
         stmt = stmt.where(UserMemoryTimeline.importance >= min_importance)
     if q:
-        like = f"%{q}%"
+        like = f"%{escape_like(q)}%"
         stmt = stmt.where(
             or_(
-                UserMemoryTimeline.memory_text.ilike(like),
-                Contact.display_name.ilike(like),
-                Contact.whatsapp_id.ilike(like),
-                Contact.normalized_phone.ilike(like),
+                UserMemoryTimeline.memory_text.ilike(like, escape="\\"),
+                Contact.display_name.ilike(like, escape="\\"),
+                Contact.whatsapp_id.ilike(like, escape="\\"),
+                Contact.normalized_phone.ilike(like, escape="\\"),
             )
         )
     rows = (await db.execute(stmt)).all()
@@ -1056,13 +1060,13 @@ async def update_memory(
 @router.delete("/memory/{contact_id}")
 async def delete_memory(
     contact_id: int,
-    level: str = Query("high", description="low, medium, high, or critical"),
+    level: str = Query("high", description="low, medium, or high"),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     stmt = select(UserMemory).where(UserMemory.contact_id == contact_id).limit(1)
     mem = (await db.execute(stmt)).scalar_one_or_none()
     
-    if not mem and level != "critical":
+    if not mem:
         raise HTTPException(status_code=404, detail="memory not found for this contact")
         
     action_details = {"level": level}
@@ -1086,25 +1090,12 @@ async def delete_memory(
             await db.execute(delete(ConversationSummary).where(ConversationSummary.contact_id == contact_id))
             action_details["cleared"] = "full_user_memory, memory_timeline, conversation_timeline, conversation_summaries"
             
-    elif level == "critical":
-        if mem:
-            await db.delete(mem)
-        await db.execute(delete(UserMemoryTimeline).where(UserMemoryTimeline.contact_id == contact_id))
-        await db.execute(delete(ConversationTimeline).where(ConversationTimeline.contact_id == contact_id))
-        await db.execute(delete(ConversationSummary).where(ConversationSummary.contact_id == contact_id))
-        # Also clear conversation summaries for this contact
-        contact_stmt = select(Contact.whatsapp_id).where(Contact.id == contact_id).limit(1)
-        whatsapp_id = (await db.execute(contact_stmt)).scalar_one_or_none()
-        if whatsapp_id:
-            summary_stmt = delete(ConversationSession).where(ConversationSession.chat_id == whatsapp_id)
-            await db.execute(summary_stmt)
-            action_details["cleared"] = "full_user_memory, memory_timeline, conversation_timeline, conversation_summaries, conversation_sessions"
 
     db.add(AuditLog(action="memory_cleared", entity_type="user_memory", entity_id=str(contact_id), details_json=action_details))
     await db.commit()
     return {"ok": True, "contact_id": contact_id, "level": level, "details": action_details}
 
-@router.delete("/memory/all/critical")
+@router.post("/memory/actions/clear-critical")
 async def clear_all_memory_critical(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
@@ -1289,23 +1280,23 @@ async def list_profiles(
     )
     if q:
         like = f"%{normalize_text(q)}%"
-        display_like = f"%{q}%"
+        display_like = f"%{escape_like(q)}%"
         stmt = stmt.where(
             or_(
-                Contact.whatsapp_id.ilike(display_like),
-                Contact.display_name.ilike(display_like),
-                Contact.push_name.ilike(display_like),
-                Contact.contact_name.ilike(display_like),
-                Contact.normalized_phone.ilike(display_like),
-                Contact.chat_id.ilike(display_like),
-                UserMemory.display_name.ilike(display_like),
-                UserMemory.user_name.ilike(display_like),
-                UserMemory.profession.ilike(display_like),
-                UserMemory.interests.ilike(like),
-                UserMemory.projects.ilike(like),
-                UserMemory.goals.ilike(like),
-                UserMemory.relationship_type.ilike(like),
-                UserMemory.personality_notes.ilike(like),
+                Contact.whatsapp_id.ilike(display_like, escape="\\"),
+                Contact.display_name.ilike(display_like, escape="\\"),
+                Contact.push_name.ilike(display_like, escape="\\"),
+                Contact.contact_name.ilike(display_like, escape="\\"),
+                Contact.normalized_phone.ilike(display_like, escape="\\"),
+                Contact.chat_id.ilike(display_like, escape="\\"),
+                UserMemory.display_name.ilike(display_like, escape="\\"),
+                UserMemory.user_name.ilike(display_like, escape="\\"),
+                UserMemory.profession.ilike(display_like, escape="\\"),
+                UserMemory.interests.ilike(like, escape="\\"),
+                UserMemory.projects.ilike(like, escape="\\"),
+                UserMemory.goals.ilike(like, escape="\\"),
+                UserMemory.relationship_type.ilike(like, escape="\\"),
+                UserMemory.personality_notes.ilike(like, escape="\\"),
             )
         )
     rows = (await db.execute(stmt)).all()
@@ -1607,9 +1598,15 @@ async def upload_faq(
 ) -> dict[str, Any]:
     if not file.filename or not file.filename.lower().endswith((".md", ".txt")):
         raise HTTPException(status_code=400, detail="only .md and .txt FAQ files are supported")
-    content = (await file.read()).decode("utf-8", errors="ignore")
+    
+    content_bytes = bytearray()
+    while chunk := await file.read(8192):
+        content_bytes.extend(chunk)
+        if len(content_bytes) > 2 * 1024 * 1024:  # 2 MB limit
+            raise HTTPException(status_code=413, detail="file too large (max 2MB)")
+            
+    content = content_bytes.decode("utf-8", errors="ignore")
     return await _save_and_sync_faq(content, db, action="faq_uploaded", filename=file.filename)
-
 
 @router.post("/faq/save")
 async def save_faq(
@@ -1949,7 +1946,7 @@ async def resend_queue_message(
     message = await db.get(OutboundMessage, queue_id)
     if not message:
         raise HTTPException(status_code=404, detail="queue message not found")
-    message.status = "pending"
+    message.status = "queued"
     message.retry_count = 0
     message.next_attempt_at = utcnow()
     message.error_message = None
@@ -2262,34 +2259,70 @@ async def internet_usage_dashboard(
 
 
 # ---------------------------------------------------------------------------
-# WAHA Session Controls
+# System Status & WAHA Session Controls
 # ---------------------------------------------------------------------------
+
+@router.get("/system/status")
+async def get_system_status(db: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
+    from app.services.system_status_service import SystemStatusService
+    service = SystemStatusService(db)
+    return await service.build_canonical_status()
+
 
 @router.post("/waha/start")
 async def start_waha_session() -> dict[str, Any]:
     client = WAHAClient()
+    error = None
+    payload = None
     try:
         payload = await client.start_session()
-        return {"ok": True, "status": "starting", "response": payload}
     except WahaClientError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        error = str(exc)
     finally:
         await client.close()
+    
+    return WAHAClient.normalize_waha_status(payload, error)
 
 
 @router.post("/waha/stop")
 async def stop_waha_session() -> dict[str, Any]:
-    import httpx
+    client = WAHAClient()
     url = f"{settings.waha_service_url}/api/sessions/stop"
     payload = {"name": settings.waha_session_name, "logout": False}
     headers = {"X-Api-Key": settings.waha_api_key} if settings.waha_api_key else {}
-    async with httpx.AsyncClient() as client:
+    raw_payload: dict[str, Any] = {}
+    error: str | None = None
+    try:
+        raw_payload = await client._request("POST", url, headers=headers, json=payload)
+    except WahaClientError as exc:
+        error = str(exc)
+    finally:
+        await client.close()
+    return WAHAClient.normalize_waha_status(raw_payload, error)
+
+
+@router.post("/waha/restart")
+async def restart_waha_session() -> dict[str, Any]:
+    client = WAHAClient()
+    stop_url = f"{settings.waha_service_url}/api/sessions/stop"
+    start_url = f"{settings.waha_service_url}/api/sessions/start"
+    stop_payload = {"name": settings.waha_session_name, "logout": False}
+    start_payload = {"name": settings.waha_session_name, "config": {"telemetry": False}}
+    headers = {"X-Api-Key": settings.waha_api_key} if settings.waha_api_key else {}
+    raw_payload: dict[str, Any] = {}
+    error: str | None = None
+    try:
         try:
-            res = await client.post(url, json=payload, headers=headers, timeout=30)
-            res.raise_for_status()
-            return {"ok": True, "status": "stopped"}
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            await client._request("POST", stop_url, headers=headers, json=stop_payload)
+        except WahaClientError:
+            pass # ignore if already stopped
+        raw_payload = await client._request("POST", start_url, headers=headers, json=start_payload)
+    except WahaClientError as exc:
+        error = str(exc)
+    finally:
+        await client.close()
+    return WAHAClient.normalize_waha_status(raw_payload, error)
+
 
 
 @router.get("/waha/outages")
@@ -2316,6 +2349,19 @@ async def list_waha_outages(
             for row in rows
         ],
     }
+
+
+@router.get("/waha/qr")
+async def get_waha_qr() -> Response:
+    from app.services.waha_client import WAHAClient
+    client = WAHAClient()
+    try:
+        image_bytes = await client.get_qr_code(session_name="default")
+        return Response(content=image_bytes, media_type="image/png", headers={"Cache-Control": "no-store"})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    finally:
+        await client.close()
 
 
 # ---------------------------------------------------------------------------

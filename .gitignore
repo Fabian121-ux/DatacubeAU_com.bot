@@ -27,3 +27,9 @@ Thumbs.db
 deploy/backups/
 deploy/ssl/
 deploy/logs/
+
+.env
+.env.production
+gitleaks
+.env
+.env.production

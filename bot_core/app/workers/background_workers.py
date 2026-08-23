@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 import logging
+import random
 from typing import Any
+import httpx
 
 from sqlalchemy import or_, select
 
@@ -16,8 +18,7 @@ from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 
-_DELIVERY_STATUSES = ("pending", "retrying")
-
+_DELIVERY_STATUSES = ("queued", "failed_retryable")
 
 async def outbound_queue_delivery_worker() -> None:
     client = WAHAClient()
@@ -29,7 +30,6 @@ async def outbound_queue_delivery_worker() -> None:
         raise
     finally:
         await client.close()
-
 
 async def waha_monitor_worker() -> None:
     client = WAHAClient()
@@ -80,7 +80,6 @@ async def waha_monitor_worker() -> None:
     finally:
         await client.close()
 
-
 async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
     now = utcnow()
     async with SessionLocal() as session:
@@ -120,7 +119,12 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 else:
                     response = await client.send_text(chat_id=message.chat_id, text=message.message_text)
             except WahaClientError as exc:
-                await _mark_delivery_failed(session, message, str(exc))
+                is_permanent = False
+                if isinstance(exc.__cause__, httpx.HTTPStatusError):
+                    status_code = exc.__cause__.response.status_code
+                    if 400 <= status_code < 500 and status_code != 429:
+                        is_permanent = True
+                await _mark_delivery_failed(session, message, str(exc), is_permanent=is_permanent)
             else:
                 message.status = "sent"
                 message.error_message = None
@@ -137,17 +141,16 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
 
-
-async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -> None:
+async def _mark_delivery_failed(session, message: OutboundMessage, error: str, is_permanent: bool = False) -> None:
     next_retry_count = message.retry_count + 1
     message.retry_count = next_retry_count
     message.error_message = error[:2000]
     message.updated_at = utcnow()
 
-    if next_retry_count > message.max_retries:
-        message.status = "failed"
+    if is_permanent or next_retry_count > message.max_retries:
+        message.status = "failed_final"
     else:
-        message.status = "retrying"
+        message.status = "failed_retryable"
         message.next_attempt_at = utcnow() + _retry_delay(next_retry_count)
 
     session.add(
@@ -223,8 +226,6 @@ def _extract_waha_status(payload: dict[str, Any]) -> str:
 
 
 def _retry_delay(retry_count: int) -> timedelta:
-    if retry_count <= 1:
-        return timedelta(seconds=30)
-    if retry_count == 2:
-        return timedelta(minutes=2)
-    return timedelta(minutes=10)
+    base_delay = 2 ** (retry_count - 1) * 30  # 30s, 60s, 120s...
+    jitter = random.uniform(0, 0.2 * base_delay)
+    return timedelta(seconds=base_delay + jitter)

@@ -111,12 +111,16 @@ class MessageNormalizer:
     @staticmethod
     def _normalize_phone(value: Any) -> str | None:
         text = str(value or "")
+        if "@lid" in text:
+            return None
         left = text.split("@", 1)[0]
         digits = re.sub(r"\D+", "", left)
         return digits or None
 
     @classmethod
     def _temporary_phone_name(cls, value: Any) -> str | None:
+        if "@lid" in str(value or ""):
+            return None
         digits = cls._normalize_phone(value)
         return digits if digits and len(digits) >= 7 else None
 

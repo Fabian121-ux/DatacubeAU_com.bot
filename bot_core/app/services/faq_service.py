@@ -18,7 +18,7 @@ from app.utils.time import utcnow
 logger = logging.getLogger(__name__)
 
 FAQ_PATTERN = re.compile(
-    r"(?:^|\n)\s*(?:#{1,6}\s*)?Q(?:uestion)?\s*:\s*(.*?)\n\s*A(?:nswer)?\s*:\s*(.*?)(?=\n\s*(?:#{1,6}\s*)?Q(?:uestion)?\s*:|$)",
+    r"(?:^|\n)\s*(?:#{1,6}\s*)?Q(?:uestion)?\s*:\s*(.*?)\n(?:\s*V(?:ariations?)?\s*:\s*(.*?)\n)?\s*A(?:nswer)?\s*:\s*(.*?)(?=\n\s*(?:#{1,6}\s*)?Q(?:uestion)?\s*:|$)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -127,7 +127,7 @@ class FAQService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    def parse_faq_text(self, raw_text: str) -> list[tuple[str, str]]:
+    def parse_faq_text(self, raw_text: str) -> list[dict[str, Any]]:
         pairs = self._parse_labeled_faq(raw_text)
         if pairs:
             return pairs
@@ -143,7 +143,7 @@ class FAQService:
 
     async def replace_source_entries(
         self,
-        pairs: list[tuple[str, str]],
+        pairs: list[dict[str, Any]] | list[tuple[str, str]],
         *,
         source_id: str,
         source_name: str,
@@ -157,63 +157,99 @@ class FAQService:
         )
         return int(report["active_entries"])
 
-    async def replace_source_entries_report(
-        self,
-        pairs: list[tuple[str, str]],
-        *,
-        source_id: str,
-        source_name: str,
-        source_version: str | None = None,
-    ) -> dict[str, int | str]:
+    async def replace_source_entries_report(self, pairs, *, source_id, source_name, source_version=None) -> dict[str, int | str]:
         if not pairs:
             raise ValueError("FAQ source did not contain any parseable entries.")
+        from sqlalchemy.exc import IntegrityError
         version = source_version or self.version_for_pairs(pairs)
         source_hash = sha256_text("\n\n".join(f"{q}\n{a}" for q, a in pairs))
-        count = 0
-        created = 0
-        updated = 0
-        duplicates = 0
-        superseded = 0
+        count = created = updated = unchanged = duplicates = superseded = conflicted = failed = 0
         seen: set[str] = set()
         seen_questions: set[str] = set()
-        entries = await self._fetch_all_entries()
         active_ids: set[int] = set()
-        active_objects: set[int] = set()
-        for question, answer in pairs:
-            payload = self.build_payload(question=question, answer=answer)
+
+        for item in pairs:
+            if isinstance(item, dict):
+                question = item.get("question", "")
+                answer = item.get("answer", "")
+                variations = item.get("variations", [])
+            else:
+                question, answer = item
+                variations = []
+            
+            payload = self.build_payload(question=question, answer=answer, question_variations=variations)
             dedupe_key = self._dedupe_key(payload)
             if dedupe_key in seen or payload.normalized_question in seen_questions:
                 duplicates += 1
                 continue
             seen.add(dedupe_key)
             seen_questions.add(payload.normalized_question)
-            existing = self._find_existing_entry(payload, entries)
-            entry = await self._upsert_entry(payload, existing)
-            entry.source_id = source_id
-            entry.source_name = source_name
-            entry.source_version = version
-            entry.source_hash = source_hash
-            entry.sync_status = "synced"
-            entry.is_enabled = True
-            entry.last_synchronized_at = utcnow()
-            if existing is None:
-                entries.append(entry)
-                created += 1
-            else:
-                updated += 1
-            if getattr(entry, "id", None):
-                active_ids.add(int(entry.id))
-            active_objects.add(id(entry))
-            count += 1
 
-        for entry in entries:
-            if getattr(entry, "source_id", "core_faq") != source_id:
-                continue
-            if id(entry) in active_objects:
-                continue
-            if getattr(entry, "id", None) and int(entry.id) in active_ids:
-                continue
-            if getattr(entry, "is_enabled", True):
+            stmt = select(FAQEntry).where(FAQEntry.normalized_question == payload.normalized_question)
+            existing = (await self.session.execute(stmt)).scalars().first()
+
+            if existing:
+                if getattr(existing, "source_id", source_id) != source_id:
+                    conflicted += 1
+                    continue
+
+                is_unchanged = (
+                    existing.question == payload.question and
+                    existing.answer == payload.answer and
+                    existing.category == payload.category and
+                    existing.intent == payload.intent and
+                    set(self._coerce_list(existing.question_variations)) == set(payload.question_variations or []) and
+                    set(self._coerce_list(existing.keywords)) == set(payload.keywords or []) and
+                    set(self._coerce_list(existing.entities)) == set(payload.entities or []) and
+                    abs(float(existing.confidence_threshold or 0) - payload.confidence_threshold) < 0.001
+                )
+                if is_unchanged:
+                    unchanged += 1
+                else:
+                    updated += 1
+                    existing.question = payload.question
+                    existing.answer = payload.answer
+                    existing.category = payload.category
+                    existing.intent = payload.intent
+                    existing.question_variations = payload.question_variations
+                    existing.keywords = payload.keywords
+                    existing.entities = payload.entities
+                    existing.confidence_threshold = payload.confidence_threshold
+                    existing.updated_at = utcnow()
+
+                existing.source_name = source_name
+                existing.source_version = version
+                existing.source_hash = source_hash
+                existing.sync_status = "synced"
+                existing.is_enabled = True
+                existing.last_synchronized_at = utcnow()
+                active_ids.add(int(existing.id))
+                count += 1
+            else:
+                try:
+                    async with self.session.begin_nested():
+                        entry = FAQEntry(
+                            source_id=source_id, source_name=source_name, source_version=version,
+                            source_hash=source_hash, sync_status="synced",
+                            question=payload.question, normalized_question=payload.normalized_question,
+                            dedupe_key=payload.dedupe_key, answer=payload.answer, category=payload.category,
+                            intent=payload.intent, question_variations=payload.question_variations,
+                            keywords=payload.keywords, entities=payload.entities,
+                            confidence_threshold=payload.confidence_threshold, is_enabled=True,
+                            last_synchronized_at=utcnow(), created_at=utcnow(), updated_at=utcnow()
+                        )
+                        self.session.add(entry)
+                        await self.session.flush()
+                        active_ids.add(int(entry.id))
+                        created += 1
+                        count += 1
+                except IntegrityError:
+                    conflicted += 1
+
+        stmt = select(FAQEntry).where(FAQEntry.source_id == source_id).where(FAQEntry.is_enabled.is_(True))
+        all_core_entries = (await self.session.execute(stmt)).scalars().all()
+        for entry in all_core_entries:
+            if int(entry.id) not in active_ids:
                 entry.is_enabled = False
                 entry.sync_status = "superseded"
                 entry.updated_at = utcnow()
@@ -226,11 +262,16 @@ class FAQService:
             "source_version": version,
             "active_entries": count,
             "created": created,
+            "inserted": created,
             "updated": updated,
+            "unchanged": unchanged,
             "superseded": superseded,
             "disabled": superseded,
+            "conflicted": conflicted,
             "duplicates": duplicates,
+            "failed": failed,
         }
+
 
     async def upsert_faq(self, question: str, answer: str, *, category: str | None = None) -> tuple[FAQEntry, bool]:
         payload = self.build_payload(question=question, answer=answer, category=category)
@@ -241,14 +282,18 @@ class FAQService:
         return entry, existing is None
 
     async def load_faq_from_file(self, file_path: str) -> int:
+        report = await self.load_faq_report_from_file(file_path)
+        return int(report.get("active_entries", 0))
+
+    async def load_faq_report_from_file(self, file_path: str) -> dict[str, int | str]:
         path = Path(file_path)
         if not path.exists():
             logger.warning("FAQ file %s not found.", file_path)
-            return 0
+            return {}
         try:
             raw = path.read_text(encoding="utf-8")
             pairs = self.parse_faq_text(raw)
-            return await self.replace_source_entries(
+            return await self.replace_source_entries_report(
                 pairs,
                 source_id="core_faq",
                 source_name=path.name,
@@ -257,7 +302,8 @@ class FAQService:
         except Exception as exc:
             await self.session.rollback()
             logger.error("Failed to load FAQ from file %s: %s", file_path, exc, exc_info=True)
-            return 0
+            return {}
+
 
     async def search_faq(
         self,
@@ -746,18 +792,21 @@ class FAQService:
         return TOKEN_SYNONYMS.get(token, token)
 
     @staticmethod
-    def _parse_labeled_faq(raw_text: str) -> list[tuple[str, str]]:
+    def _parse_labeled_faq(raw_text: str) -> list[dict[str, Any]]:
         pairs = []
         for match in FAQ_PATTERN.finditer(raw_text):
             q = match.group(1).strip()
-            a = match.group(2).strip()
+            v_text = match.group(2)
+            a = match.group(3).strip()
             if q and a:
-                pairs.append((q, a))
+                variations = [v.strip() for v in v_text.split("\n")] if v_text else []
+                variations = [v for v in variations if v]
+                pairs.append({"question": q, "answer": a, "variations": variations})
         return pairs
 
     @staticmethod
-    def _parse_plain_faq(raw_text: str) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
+    def _parse_plain_faq(raw_text: str) -> list[dict[str, Any]]:
+        pairs: list[dict[str, Any]] = []
         question: str | None = None
         answer_lines: list[str] = []
 
@@ -765,7 +814,7 @@ class FAQService:
             nonlocal question, answer_lines
             answer = "\n".join(line for line in answer_lines if line.strip()).strip()
             if question and answer:
-                pairs.append((question, answer))
+                pairs.append({"question": question, "answer": answer, "variations": []})
             question = None
             answer_lines = []
 
@@ -923,8 +972,14 @@ class FAQService:
         return sha256_text(cleaned)[:16] if cleaned else "empty"
 
     @classmethod
-    def version_for_pairs(cls, pairs: list[tuple[str, str]]) -> str:
-        raw = "\n\n".join(f"{question.strip()}\n{answer.strip()}" for question, answer in pairs)
+    def version_for_pairs(cls, pairs: list[dict[str, Any]] | list[tuple[str, str]]) -> str:
+        raw_parts = []
+        for item in pairs:
+            if isinstance(item, dict):
+                raw_parts.append(f"{item.get('question', '').strip()}\n{item.get('answer', '').strip()}")
+            else:
+                raw_parts.append(f"{item[0].strip()}\n{item[1].strip()}")
+        raw = "\n\n".join(raw_parts)
         return cls.version_for_text(raw)
 
     @classmethod

@@ -46,3 +46,7 @@ def has_any_keyword(text: str, keywords: Iterable[str]) -> bool:
             return True
     return False
 
+def escape_like(query: str) -> str:
+    """Escapes SQL LIKE wildcards % and _"""
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+

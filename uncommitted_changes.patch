@@ -1,0 +1,2122 @@
+diff --git a/.gitignore b/.gitignore
+index 2400378..2dae5e4 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -27,3 +27,7 @@ Thumbs.db
+ deploy/backups/
+ deploy/ssl/
+ deploy/logs/
++
++.env
++.env.production
++gitleaks
+diff --git a/README.md b/README.md
+index 32dd8c8..5e92898 100644
+--- a/README.md
++++ b/README.md
+@@ -1,396 +1,420 @@
+-# Datacube AU WhatsApp Bot Backend
+-
+-Local-first V1 backend for a WhatsApp bot using WAHA Core, FastAPI, and PostgreSQL. The current build supports rules-based routing, debug/admin inspection, knowledge ingestion with text-search fallback, and optional OpenRouter fallback that is disabled by default.
+-
+-## Backend Scope
+-
+-- inbound WAHA webhook handling
+-- DM replies
+-- group mention-only replies
+-- cooldown enforcement
+-- router decision logging
+-- audit log inspection
+-- knowledge document ingestion
+-- retrieval-based replies
+-- optional AI fallback behind env flags
+-
+-## Folder Structure
+-
+-```text
+-Dockerfile
+-docker-compose.yml
+-requirements.txt
+-.env.production.example
+-deploy/
+-  nginx/
+-    default.conf
+-  scripts/
+-    backup-postgres.sh
+-    run-migrations.sh
+-    smoke-test.sh
+-bot_core/
+-  app/
+-    main.py
+-    config.py
+-    db.py
+-    api/
+-      admin.py
+-      health.py
+-      inbound.py
+-      knowledge.py
+-    core/
+-      message_normalizer.py
+-      reply_planner.py
+-      router.py
+-      rules_engine.py
+-    models/
+-      enums.py
+-      schema.py
+-    services/
+-      chunking_service.py
+-      logging_service.py
+-      openrouter_client.py
+-      retrieval_service.py
+-      waha_client.py
+-    utils/
+-      hashing.py
+-      text.py
+-      time.py
+-  migrations/
+-    001_init.sql
+-  seeds/
+-    001_local_seed.sql
+-  examples/
+-    dm_webhook.json
+-    group_mention_webhook.json
+-    sample-knowledge.md
+-  scripts/
+-    test-dm-webhook.ps1
+-    test-group-webhook.ps1
+-```
+-
+-## Project Setup
++# Gitleaks
+ 
+-1. Install dependencies:
+-
+-```bash
+-uv sync
+ ```
+-
+-2. Copy `.env.example` to `.env` and adjust values.
+-
+-3. Create PostgreSQL database:
+-
+-```bash
+-createdb datacube_bot
++┌─○───┐
++│ │╲  │
++│ │ ○ │
++│ ○ ░ │
++└─░───┘
+ ```
+ 
+-4. Run the schema migrations and default seed data:
++<p align="left">
++  <p align="left">
++	  <a href="https://github.com/zricethezav/gitleaks/actions/workflows/test.yml">
++		  <img alt="Github Test" src="https://github.com/zricethezav/gitleaks/actions/workflows/test.yml/badge.svg">
++	  </a>
++	  <a href="https://hub.docker.com/r/zricethezav/gitleaks">
++		  <img src="https://img.shields.io/docker/pulls/zricethezav/gitleaks.svg" />
++	  </a>
++	  <a href="https://github.com/zricethezav/gitleaks-action">
++        	<img alt="gitleaks badge" src="https://img.shields.io/badge/protected%20by-gitleaks-blue">
++    	 </a>
++	  <a href="https://twitter.com/intent/follow?screen_name=zricethezav">
++		  <img src="https://img.shields.io/twitter/follow/zricethezav?label=Follow%20zricethezav&style=social&color=blue" alt="Follow @zricethezav" />
++	  </a>
++  </p>
++</p>
++
++### Join our Discord! [![Discord](https://img.shields.io/discord/1102689410522284044.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/8Hzbrnkr7E)
++
++Gitleaks is a SAST tool for **detecting** and **preventing** hardcoded secrets like passwords, api keys, and tokens in git repos. Gitleaks is an **easy-to-use, all-in-one solution** for detecting secrets, past or present, in your code.
+ 
+-```bash
+-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/001_init.sql
+-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/002_expand_v1.sql
+-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/003_assistant_layer.sql
+-psql "$DATABASE_URL_SYNC" -f bot_core/migrations/004_nextgen_intelligence.sql
+-psql "$DATABASE_URL_SYNC" -f bot_core/seeds/001_local_seed.sql
+-psql "$DATABASE_URL_SYNC" -f bot_core/seeds/002_default_config.sql
++```
++➜  ~/code(master) gitleaks detect --source . -v
++
++    ○
++    │╲
++    │ ○
++    ○ ░
++    ░    gitleaks
++
++
++Finding:     "export BUNDLE_ENTERPRISE__CONTRIBSYS__COM=cafebabe:deadbeef",
++Secret:      cafebabe:deadbeef
++RuleID:      sidekiq-secret
++Entropy:     2.609850
++File:        cmd/generate/config/rules/sidekiq.go
++Line:        23
++Commit:      cd5226711335c68be1e720b318b7bc3135a30eb2
++Author:      John
++Email:       john@users.noreply.github.com
++Date:        2022-08-03T12:31:40Z
++Fingerprint: cd5226711335c68be1e720b318b7bc3135a30eb2:cmd/generate/config/rules/sidekiq.go:sidekiq-secret:23
+ ```
+ 
+-## Environment Setup
+-
+-Important env vars:
+-
+-- `DATABASE_URL`
+-- `DATABASE_URL_SYNC`
+-- `WAHA_SERVICE_URL`
+-- `WAHA_SESSION_NAME`
+-- `ADMIN_USERNAME`
+-- `ADMIN_PASSWORD`
+-- `ADMIN_SESSION_SECRET`
+-- `ADMIN_API_TOKEN` for scripted admin API access
+-- `ENABLE_AUTO_REPLY`
+-- `GROUP_DEFAULT_REPLY_MODE`
+-- `GROUP_DEFAULT_COOLDOWN_SECONDS`
+-- `DM_DEFAULT_COOLDOWN_SECONDS`
+-- `KB_MIN_SCORE`
+-- `AI_ENABLED`
++## Getting Started
+ 
+-Startup validation will fail fast if required config is invalid. If `AI_ENABLED=true`, OpenRouter credentials and model names must be present.
++Gitleaks can be installed using Homebrew, Docker, or Go. Gitleaks is also available in binary form for many popular platforms and OS types on the [releases page](https://github.com/zricethezav/gitleaks/releases). In addition, Gitleaks can be implemented as a pre-commit hook directly in your repo or as a GitHub action using [Gitleaks-Action](https://github.com/gitleaks/gitleaks-action).
+ 
+-For Docker deployments, keep these two WAHA URLs distinct:
++### Installing
+ 
+-- `WAHA_SERVICE_URL` is how this FastAPI app reaches the WAHA container, usually `http://waha:3000`.
+-- `WAHA_BASE_URL` is WAHA's own advertised base URL for dashboard, swagger, webhooks, and generated file URLs, usually `http://localhost:3000` or your public domain.
++```bash
++# MacOS
++brew install gitleaks
+ 
+-## Running Locally
++# Docker (DockerHub)
++docker pull zricethezav/gitleaks:latest
++docker run -v ${path_to_host_folder_to_scan}:/path zricethezav/gitleaks:latest [COMMAND] --source="/path" [OPTIONS]
+ 
+-Start FastAPI from the `bot_core` directory:
++# Docker (ghcr.io)
++docker pull ghcr.io/gitleaks/gitleaks:latest
++docker run -v ${path_to_host_folder_to_scan}:/path ghcr.io/gitleaks/gitleaks:latest [COMMAND] --source="/path" [OPTIONS]
+ 
+-```bash
+-cd bot_core
+-uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
++# From Source
++git clone https://github.com/gitleaks/gitleaks.git
++cd gitleaks
++make build
+ ```
+ 
+-Health check:
++### GitHub Action
+ 
+-```bash
+-curl http://localhost:8080/health
++Check out the official [Gitleaks GitHub Action](https://github.com/gitleaks/gitleaks-action)
++
++```
++name: gitleaks
++on: [pull_request, push, workflow_dispatch]
++jobs:
++  scan:
++    name: gitleaks
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v3
++        with:
++          fetch-depth: 0
++      - uses: gitleaks/gitleaks-action@v2
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE}} # Only required for Organizations, not personal accounts.
+ ```
+ 
+-If `STARTUP_VALIDATE_DB=true`, the app will fail on boot when PostgreSQL is unavailable.
++### Pre-Commit
+ 
+-## Production Deployment Baseline
++1. Install pre-commit from https://pre-commit.com/#install
++2. Create a `.pre-commit-config.yaml` file at the root of your repository with the following content:
+ 
+-Files added for VPS deployment:
++   ```
++   repos:
++     - repo: https://github.com/gitleaks/gitleaks
++       rev: v8.16.1
++       hooks:
++         - id: gitleaks
++   ```
+ 
+-- [Dockerfile](c:/Users/cruzan/Documents/DatacubeAU_com.bot/Dockerfile)
+-- [docker-compose.yml](c:/Users/cruzan/Documents/DatacubeAU_com.bot/docker-compose.yml)
+-- [.env.production.example](c:/Users/cruzan/Documents/DatacubeAU_com.bot/.env.production.example)
+-- [default.conf](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/nginx/default.conf)
+-- [run-migrations.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/run-migrations.sh)
+-- [backup-postgres.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/backup-postgres.sh)
+-- [smoke-test.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/smoke-test.sh)
++   for a [native execution of GitLeaks](https://github.com/zricethezav/gitleaks/releases) or use the [`gitleaks-docker` pre-commit ID](https://github.com/zricethezav/gitleaks/blob/master/.pre-commit-hooks.yaml) for executing GitLeaks using the [official Docker images](#docker)
+ 
+-1. Copy `.env.production.example` to `.env.production`.
+-2. Set `WAHA_IMAGE` to the WAHA Core image/tag you actually run.
+-3. Reuse the current WAHA credentials from your existing WAHA host config for `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD`, and `WHATSAPP_SWAGGER_PASSWORD`.
+-4. Set strong values for `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, and `ADMIN_API_TOKEN`.
+-5. Keep the internal Docker URLs exactly as follows:
++3. Auto-update the config to the latest repos' versions by executing `pre-commit autoupdate`
++4. Install with `pre-commit install`
++5. Now you're all set!
+ 
+-```text
+-WAHA_SERVICE_URL=http://waha:3000
+-WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
+-WHATSAPP_HOOK_EVENTS=message
+ ```
+-
+-6. Set the public host values for your server:
+-
+-```text
+-WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
+-PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
++➜ git commit -m "this commit contains a secret"
++Detect hardcoded secrets.................................................Failed
+ ```
+ 
+-7. Set `LOCAL_TEST_DM_WHATSAPP_ID` to a real WhatsApp ID you can use for an end-to-end reply test.
+-8. Build the images:
++Note: to disable the gitleaks pre-commit hook you can prepend `SKIP=gitleaks` to the commit command
++and it will skip running gitleaks
+ 
+-```bash
+-docker compose --env-file .env.production build
+ ```
+-
+-9. Start the stack. The `migrate` service runs migrations and seed SQL automatically before the API starts:
+-
+-```bash
+-docker compose --env-file .env.production up -d
++➜ SKIP=gitleaks git commit -m "skip gitleaks check"
++Detect hardcoded secrets................................................Skipped
+ ```
+ 
+-10. Run the end-to-end smoke check:
++## Usage
+ 
+-```bash
+-sh deploy/scripts/smoke-test.sh
++```
++Usage:
++  gitleaks [command]
++
++Available Commands:
++  completion  generate the autocompletion script for the specified shell
++  detect      detect secrets in code
++  help        Help about any command
++  protect     protect secrets in code
++  version     display gitleaks version
++
++Flags:
++  -b, --baseline-path string       path to baseline with issues that can be ignored
++  -c, --config string              config file path
++                                   order of precedence:
++                                   1. --config/-c
++                                   2. env var GITLEAKS_CONFIG
++                                   3. (--source/-s)/.gitleaks.toml
++                                   If none of the three options are used, then gitleaks will use the default config
++      --exit-code int              exit code when leaks have been encountered (default 1)
++  -h, --help                       help for gitleaks
++  -l, --log-level string           log level (trace, debug, info, warn, error, fatal) (default "info")
++      --max-target-megabytes int   files larger than this will be skipped
++      --no-color                   turn off color for verbose output
++      --no-banner                  suppress banner
++      --redact                     redact secrets from logs and stdout
++  -f, --report-format string       output format (json, csv, junit, sarif) (default "json")
++  -r, --report-path string         report file
++  -s, --source string              path to source (default ".")
++  -v, --verbose                    show verbose output from scan
++
++Use "gitleaks [command] --help" for more information about a command.
+ ```
+ 
+-11. Create a database backup when needed:
++### Commands
+ 
+-```bash
+-sh deploy/scripts/backup-postgres.sh
+-```
++There are two commands you will use to detect secrets; `detect` and `protect`.
+ 
+-This baseline uses Nginx as an HTTP reverse proxy. Before public internet exposure, terminate TLS in front of Nginx or replace the proxy layer with one that manages certificates automatically.
++#### Detect
+ 
+-With the default compose file, WAHA is also published on `http://localhost:3000` so the dashboard and swagger UI can match the WAHA env settings in `.env.production`.
++The `detect` command is used to scan repos, directories, and files. This command can be used on developer machines and in CI environments.
+ 
+-## WAHA Webhook Setup
++When running `detect` on a git repository, gitleaks will parse the output of a `git log -p` command (you can see how this executed
++[here](https://github.com/zricethezav/gitleaks/blob/7240e16769b92d2a1b137c17d6bf9d55a8562899/git/git.go#L17-L25)).
++[`git log -p` generates patches](https://git-scm.com/docs/git-log#_generating_patch_text_with_p) which gitleaks will use to detect secrets.
++You can configure what commits `git log` will range over by using the `--log-opts` flag. `--log-opts` accepts any option for `git log -p`.
++For example, if you wanted to run gitleaks on a range of commits you could use the following command: `gitleaks detect --source . --log-opts="--all commitA..commitB"`.
++See the `git log` [documentation](https://git-scm.com/docs/git-log) for more information.
+ 
+-If WAHA runs in the same Compose stack as this backend, point WAHA inbound webhook to:
++You can scan files and directories by using the `--no-git` option.
+ 
+-```text
+-http://api:8080/webhooks/waha
+-```
++If you want to run only specific rules you can do so by using the `--enable-rule` option (with a rule ID as a parameter), this flag can be used multiple times. For example: `--enable-rule=atlassian-api-token` will only apply that rule. You can find a list of rules [here](config/gitleaks.toml).
+ 
+-Restrict WAHA webhook events to:
++#### Protect
+ 
+-```text
+-message
+-```
++The `protect` command is used to scan uncommitted changes in a git repo. This command should be used on developer machines in accordance with
++[shifting left on security](https://cloud.google.com/architecture/devops/devops-tech-shifting-left-on-security).
++When running `protect` on a git repository, gitleaks will parse the output of a `git diff` command (you can see how this executed
++[here](https://github.com/zricethezav/gitleaks/blob/7240e16769b92d2a1b137c17d6bf9d55a8562899/git/git.go#L48-L49)). You can set the
++`--staged` flag to check for changes in commits that have been `git add`ed. The `--staged` flag should be used when running Gitleaks
++as a pre-commit.
+ 
+-This backend normalizes inbound message payloads. Sending broader WAHA events such as `session.status` to the same route will create noisy non-message webhook traffic that the router does not need.
++**NOTE**: the `protect` command can only be used on git repos, running `protect` on files or directories will result in an error message.
+ 
+-If WAHA is outside this Compose network, use the backend's public URL instead:
++### Creating a baseline
+ 
+-```text
+-http://YOUR_DROPLET_IP/webhooks/waha
+-```
++When scanning large repositories or repositories with a long history, it can be convenient to use a baseline. When using a baseline,
++gitleaks will ignore any old findings that are present in the baseline. A baseline can be any gitleaks report. To create a gitleaks report, run gitleaks with the `--report-path` parameter.
+ 
+-## DigitalOcean Same-Server Plan
+-
+-Edit these files on the server:
+-
+-- `.env.production`
+-- `docker-compose.yml`
+-- `deploy/nginx/default.conf` only if you later move the backend off port `8080`
+-
+-Exact env values to set in `.env.production`:
+-
+-```text
+-ENVIRONMENT=production
+-API_HOST=0.0.0.0
+-API_PORT=8080
+-POSTGRES_USER=datacube
+-POSTGRES_PASSWORD=<strong-db-password>
+-POSTGRES_DB=datacube_bot
+-DATABASE_URL=postgresql+asyncpg://datacube:<strong-db-password>@postgres:5432/datacube_bot
+-DATABASE_URL_SYNC=postgresql://datacube:<strong-db-password>@postgres:5432/datacube_bot
+-WAHA_SERVICE_URL=http://waha:3000
+-WAHA_API_KEY=<reuse-the-value-from-your-current-waha-.env>
+-WAHA_SESSION_NAME=default
+-WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
+-WHATSAPP_HOOK_EVENTS=message
+-WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
+-PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
+-ADMIN_USERNAME=zina
+-ADMIN_PASSWORD=<strong-admin-password>
+-ADMIN_SESSION_SECRET=<strong-random-session-secret>
+-ADMIN_SESSION_TTL_SECONDS=86400
+-ADMIN_LOGIN_MAX_FAILURES=5
+-ADMIN_LOGIN_LOCKOUT_SECONDS=900
+-ADMIN_COOKIE_SECURE=false
+-ADMIN_API_TOKEN=<strong-admin-token-for-scripts>
+-LOCAL_TEST_DM_WHATSAPP_ID=<your-test-number>@c.us
++```
++gitleaks detect --report-path gitleaks-report.json # This will save the report in a file called gitleaks-report.json
+ ```
+ 
+-Exact commands to run on the DigitalOcean server:
++Once as baseline is created it can be applied when running the detect command again:
+ 
+-```bash
+-cp .env.production.example .env.production
+-nano .env.production
+-docker compose --env-file .env.production build
+-docker compose --env-file .env.production up -d
+-docker compose --env-file .env.production ps
+-sh deploy/scripts/smoke-test.sh
++```
++gitleaks detect --baseline-path gitleaks-report.json --report-path findings.json
+ ```
+ 
+-Exact verification steps:
+-
+-1. `docker compose --env-file .env.production ps` should show `postgres`, `api`, `waha`, and `nginx` as running.
+-2. `curl http://YOUR_DROPLET_IP/health` should return `"database":"ok"` and must not check WAHA.
+-3. `curl http://YOUR_DROPLET_IP/health/dependencies` should show WAHA/OpenRouter dependency status separately.
+-4. `sh deploy/scripts/smoke-test.sh` should return a webhook result containing an accepted webhook status; outbound delivery happens through the queue worker.
+-5. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/messages/recent` should show one inbound and one outbound message for the smoke test chat.
+-6. `curl -H "X-Admin-Token: <strong-admin-token>" http://YOUR_DROPLET_IP/admin/router-decisions/recent` should show a recent decision with `reply_sent=true`.
+-7. `http://YOUR_DROPLET_IP/admin/ui` should redirect to `/admin/login` until you sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
++After running the detect command with the --baseline-path parameter, report output (findings.json) will only contain new issues.
+ 
+-## Local Test Flow
++### Verify Findings
+ 
+-1. Run migration and seed SQL.
+-2. Start FastAPI on `http://localhost:8080`.
+-3. Start WAHA and confirm its session name matches `WAHA_SESSION_NAME`.
+-4. Send a DM payload:
++You can verify a finding found by gitleaks using a `git log` command.
++Example output:
+ 
+-```powershell
+-powershell -ExecutionPolicy Bypass -File bot_core/scripts/test-dm-webhook.ps1
+ ```
+-
+-5. Send a group mention payload:
+-
+-```powershell
+-powershell -ExecutionPolicy Bypass -File bot_core/scripts/test-group-webhook.ps1
++Finding:     aws_secret="AKIAIMNOJVGFDXXXE4OA"
++RuleID:      aws-access-token
++Secret       AKIAIMNOJVGFDXXXE4OA
++Entropy:     3.65
++File:        checks_test.go
++Line:        37
++Commit:      ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29
++Author:      Zachary Rice
++Email:       z@email.com
++Date:        2018-01-28T17:39:00Z
++Fingerprint: ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29:checks_test.go:aws-access-token:37
+ ```
+ 
+-6. Inspect recent decisions:
++We can use the following format to verify the leak:
+ 
+-```bash
+-curl -H "X-Admin-Token: local-admin-token" http://localhost:8080/admin/router-decisions/recent
+ ```
+-
+-7. Inspect recent messages:
+-
+-```bash
+-curl -H "X-Admin-Token: local-admin-token" http://localhost:8080/admin/messages/recent
++git log -L {StartLine,EndLine}:{File} {Commit}
+ ```
+ 
+-8. Inspect recent audit logs:
++So in this example it would look like:
+ 
+-```bash
+-curl -H "X-Admin-Token: local-admin-token" http://localhost:8080/admin/logs/recent
+ ```
+-
+-9. Upload sample knowledge:
+-
+-```bash
+-curl -X POST "http://localhost:8080/admin/knowledge/upload" \
+-  -H "X-Admin-Token: local-admin-token" \
+-  -F "source_type=product_docs" \
+-  -F "file=@bot_core/examples/sample-knowledge.md"
++git log -L 37,37:checks_test.go ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29
+ ```
+ 
+-10. Send a DM with a question matching the knowledge text and inspect the resulting `kb_reply` decision.
+-
+-## Sample Test Payloads
++Which gives us:
+ 
+-Files:
++```
++commit ec2fc9d6cb0954fb3b57201cf6133c48d8ca0d29
++Author: zricethezav <thisispublicanyways@gmail.com>
++Date:   Sun Jan 28 17:39:00 2018 -0500
+ 
+-- [dm_webhook.json](c:/Users/cruzan/Documents/DatacubeAU_com.bot/bot_core/examples/dm_webhook.json)
+-- [group_mention_webhook.json](c:/Users/cruzan/Documents/DatacubeAU_com.bot/bot_core/examples/group_mention_webhook.json)
++    [update] entropy check
+ 
+-You can also post them directly:
++diff --git a/checks_test.go b/checks_test.go
++--- a/checks_test.go
+++++ b/checks_test.go
++@@ -28,0 +37,1 @@
+++               "aws_secret= \"AKIAIMNOJVGFDXXXE4OA\"":          true,
+ 
+-```bash
+-curl -X POST http://localhost:8080/webhooks/waha \
+-  -H "Content-Type: application/json" \
+-  --data @bot_core/examples/dm_webhook.json
+ ```
+ 
+-## Debug and Admin Endpoints
++## Pre-Commit hook
++
++You can run Gitleaks as a pre-commit hook by copying the example `pre-commit.py` script into
++your `.git/hooks/` directory.
++
++## Configuration
++
++Gitleaks offers a configuration format you can follow to write your own secret detection rules:
++
++```toml
++# Title for the gitleaks configuration file.
++title = "Gitleaks title"
++
++# Extend the base (this) configuration. When you extend a configuration
++# the base rules take precedence over the extended rules. I.e., if there are
++# duplicate rules in both the base configuration and the extended configuration
++# the base rules will override the extended rules.
++# Another thing to know with extending configurations is you can chain together
++# multiple configuration files to a depth of 2. Allowlist arrays are appended
++# and can contain duplicates.
++# useDefault and path can NOT be used at the same time. Choose one.
++[extend]
++# useDefault will extend the base configuration with the default gitleaks config:
++# https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml
++useDefault = true
++# or you can supply a path to a configuration. Path is relative to where gitleaks
++# was invoked, not the location of the base config.
++path = "common_config.toml"
++
++# An array of tables that contain information that define instructions
++# on how to detect secrets
++[[rules]]
++
++# Unique identifier for this rule
++id = "awesome-rule-1"
++
++# Short human readable description of the rule.
++description = "awesome rule 1"
++
++# Golang regular expression used to detect secrets. Note Golang's regex engine
++# does not support lookaheads.
++regex = '''one-go-style-regex-for-this-rule'''
++
++# Golang regular expression used to match paths. This can be used as a standalone rule or it can be used
++# in conjunction with a valid `regex` entry.
++path = '''a-file-path-regex'''
++
++# Array of strings used for metadata and reporting purposes.
++tags = ["tag","another tag"]
++
++# Int used to extract secret from regex match and used as the group that will have
++# its entropy checked if `entropy` is set.
++secretGroup = 3
++
++# Float representing the minimum shannon entropy a regex group must have to be considered a secret.
++entropy = 3.5
++
++# Keywords are used for pre-regex check filtering. Rules that contain
++# keywords will perform a quick string compare check to make sure the
++# keyword(s) are in the content being scanned. Ideally these values should
++# either be part of the idenitifer or unique strings specific to the rule's regex
++# (introduced in v8.6.0)
++keywords = [
++  "auth",
++  "password",
++  "token",
++]
++
++# You can include an allowlist table for a single rule to reduce false positives or ignore commits
++# with known/rotated secrets
++[rules.allowlist]
++description = "ignore commit A"
++commits = [ "commit-A", "commit-B"]
++paths = [
++  '''go\.mod''',
++  '''go\.sum'''
++]
++# note: (rule) regexTarget defaults to check the _Secret_ in the finding.
++# if regexTarget is not specified then _Secret_ will be used.
++# Acceptable values for regexTarget are "match" and "line"
++regexTarget = "match"
++regexes = [
++  '''process''',
++  '''getenv''',
++]
++# note: stopwords targets the extracted secret, not the entire regex match
++# like 'regexes' does. (stopwords introduced in 8.8.0)
++stopwords = [
++  '''client''',
++  '''endpoint''',
++]
++
++
++# This is a global allowlist which has a higher order of precedence than rule-specific allowlists.
++# If a commit listed in the `commits` field below is encountered then that commit will be skipped and no
++# secrets will be detected for said commit. The same logic applies for regexes and paths.
++[allowlist]
++description = "global allow list"
++commits = [ "commit-A", "commit-B", "commit-C"]
++paths = [
++  '''gitleaks\.toml''',
++  '''(.*?)(jpg|gif|doc)'''
++]
++
++# note: (global) regexTarget defaults to check the _Secret_ in the finding.
++# if regexTarget is not specified then _Secret_ will be used.
++# Acceptable values for regexTarget are "match" and "line"
++regexTarget = "match"
++
++regexes = [
++  '''219-09-9999''',
++  '''078-05-1120''',
++  '''(9[0-9]{2}|666)-\d{2}-\d{4}''',
++]
++# note: stopwords targets the extracted secret, not the entire regex match
++# like 'regexes' does. (stopwords introduced in 8.8.0)
++stopwords = [
++  '''client''',
++  '''endpoint''',
++]
++```
+ 
+-- `GET /admin/logs/recent`
+-- `GET /admin/router-decisions/recent`
+-- `GET /admin/messages/recent`
+-- `POST /admin/test-reply`
+-- `POST /admin/group-mode`
+-- `GET /admin/config/debug`
+-- `POST /admin/knowledge/upload`
+-- `POST /admin/knowledge/text`
+-- `POST /admin/knowledge/reindex/{document_id}`
+-- `GET /admin/knowledge/search`
+-- `GET /admin/knowledge/documents`
++Refer to the default [gitleaks config](https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml) for examples or follow the [contributing guidelines](https://github.com/zricethezav/gitleaks/blob/master/README.md) if you would like to contribute to the default configuration. Additionally, you can check out [this gitleaks blog post](https://blog.gitleaks.io/stop-leaking-secrets-configuration-2-3-aeed293b1fbf) which covers advanced configuration setups.
+ 
+-Browser admin access uses `/admin/login` and a signed `HttpOnly` session cookie. Set `ADMIN_COOKIE_SECURE=true` when the public admin URL is HTTPS and the app cannot infer HTTPS from `X-Forwarded-Proto`.
++### Additional Configuration
+ 
+-Scripted admin API calls can still use `X-Admin-Token` when `ADMIN_API_TOKEN` is configured. Do not expose this token in browser storage.
++#### gitleaks:allow
+ 
+-## Verifying Behavior
++If you are knowingly committing a test secret that gitleaks will catch you can add a `gitleaks:allow` comment to that line which will instruct gitleaks
++to ignore that secret. Ex:
+ 
+-DM:
+-- send `hello`
+-- expect `static_reply`
+-- send the same DM twice quickly
+-- expect the second response to be blocked by cooldown
++```
++class CustomClass:
++    discord_client_secret = '8dyfuiRyq=vVc3RRr_edRk-fK__JItpZ'  #gitleaks:allow
+ 
+-Group:
+-- send a group message without a mention
+-- expect `ignore`
+-- send a group message with `@datacube bot`
+-- expect a reply
++```
+ 
+-Knowledge:
+-- ingest a document
+-- send a matching question
+-- expect `kb_reply`
++#### .gitleaksignore
+ 
+-## How To Enable AI Later
++You can ignore specific findings by creating a `.gitleaksignore` file at the root of your repo. In release v8.10.0 Gitleaks added a `Fingerprint` value to the Gitleaks report. Each leak, or finding, has a Fingerprint that uniquely identifies a secret. Add this fingerprint to the `.gitleaksignore` file to ignore that specific secret. See Gitleaks' [.gitleaksignore](https://github.com/zricethezav/gitleaks/blob/master/.gitleaksignore) for an example. Note: this feature is experimental and is subject to change in the future.
+ 
+-Set these env vars:
++## Sponsorships
+ 
+-- `AI_ENABLED=true`
+-- `OPENROUTER_API_KEY=...`
+-- `OPENROUTER_MODEL_LIGHT=...`
+-- `OPENROUTER_MODEL_DEEP=...`
++<p align="left">
++	  <a href="https://www.tines.com/?utm_source=oss&utm_medium=sponsorship&utm_campaign=gitleaks">
++		  <img alt="Tines Sponsorship" src="https://user-images.githubusercontent.com/15034943/146411864-4878f936-b4f7-49a0-b625-f9f40c704bfa.png" width=200>
++	  </a>
++  </p>
+ 
+-AI fallback only runs after static and knowledge paths fail or score too low.
++## Exit Codes
+ 
+-## Known Assumptions
++You can always set the exit code when leaks are encountered with the --exit-code flag. Default exit codes below:
+ 
+-- Knowledge search currently uses text scoring fallback instead of embeddings.
+-- `router_decisions` are written before outbound delivery so delivery failures remain inspectable.
+-- WAHA connectivity is checked in `/health`, but the app does not require WAHA to be reachable to start.
+-- The included production reverse proxy is an HTTP baseline and still needs TLS termination before internet exposure.
++```
++0 - no leaks present
++1 - leaks or error encountered
++126 - unknown flag
++```
+diff --git a/bot_core/app/api/admin.py b/bot_core/app/api/admin.py
+index 2488e11..a6a341e 100644
+--- a/bot_core/app/api/admin.py
++++ b/bot_core/app/api/admin.py
+@@ -46,13 +46,15 @@ from app.services.bot_config_service import BotConfigService
+ from app.services.command_catalog_service import CommandCatalogService
+ from app.services.faq_service import FAQService
+ from app.services.identity_registry_service import IdentityRegistryService
++from app.services.logging_service import get_diagnostics
+ from app.services.memory_service import MemoryService
++from app.services.rules_service import RulesService
+ from app.services.waha_client import WAHAClient, WahaClientError
+-from app.utils.text import normalize_text
++from app.utils.text import escape_like, normalize_text
+ from app.utils.time import utcnow
+ 
+ 
+-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
++router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_session_api)])
+ CORE_FAQ_PATH = Path(__file__).resolve().parents[2] / "core_faq.md"
+ 
+ 
+@@ -666,8 +668,8 @@ async def list_groups(
+     elif status == "disabled":
+         stmt = stmt.where(GroupConfig.is_enabled.is_(False))
+     if q:
+-        like = f"%{q}%"
+-        stmt = stmt.where(or_(GroupConfig.chat_id.ilike(like), GroupConfig.display_name.ilike(like)))
++        like = f"%{escape_like(q)}%"
++        stmt = stmt.where(or_(GroupConfig.chat_id.ilike(like, escape="\\"), GroupConfig.display_name.ilike(like, escape="\\")))
+     rows = (await db.execute(stmt)).scalars().all()
+     metadata_rows = (
+         await db.execute(select(GroupMetadata).where(GroupMetadata.chat_id.in_([row.chat_id for row in rows])))
+@@ -786,17 +788,17 @@ async def list_memory(
+     elif status == "disabled":
+         stmt = stmt.where(UserMemory.is_enabled.is_(False))
+     if q:
+-        like = f"%{q}%"
+-        norm_like = f"%{normalize_text(q)}%"
++        like = f"%{escape_like(q)}%"
++        norm_like = f"%{normalize_text(escape_like(q))}%"
+         stmt = stmt.where(
+             or_(
+-                Contact.display_name.ilike(like),
+-                Contact.whatsapp_id.ilike(like),
+-                Contact.normalized_phone.ilike(like),
+-                UserMemory.display_name.ilike(like),
+-                UserMemory.user_name.ilike(like),
+-                UserMemory.interests.ilike(norm_like),
+-                UserMemory.projects.ilike(norm_like),
++                Contact.display_name.ilike(like, escape="\\"),
++                Contact.whatsapp_id.ilike(like, escape="\\"),
++                Contact.normalized_phone.ilike(like, escape="\\"),
++                UserMemory.display_name.ilike(like, escape="\\"),
++                UserMemory.user_name.ilike(like, escape="\\"),
++                UserMemory.interests.ilike(norm_like, escape="\\"),
++                UserMemory.projects.ilike(norm_like, escape="\\"),
+             )
+         )
+     rows = (await db.execute(stmt)).all()
+@@ -861,13 +863,13 @@ async def list_memory_facts(
+     if min_importance is not None:
+         stmt = stmt.where(UserMemoryTimeline.importance >= min_importance)
+     if q:
+-        like = f"%{q}%"
++        like = f"%{escape_like(q)}%"
+         stmt = stmt.where(
+             or_(
+-                UserMemoryTimeline.memory_text.ilike(like),
+-                Contact.display_name.ilike(like),
+-                Contact.whatsapp_id.ilike(like),
+-                Contact.normalized_phone.ilike(like),
++                UserMemoryTimeline.memory_text.ilike(like, escape="\\"),
++                Contact.display_name.ilike(like, escape="\\"),
++                Contact.whatsapp_id.ilike(like, escape="\\"),
++                Contact.normalized_phone.ilike(like, escape="\\"),
+             )
+         )
+     rows = (await db.execute(stmt)).all()
+@@ -1104,7 +1106,7 @@ async def delete_memory(
+     await db.commit()
+     return {"ok": True, "contact_id": contact_id, "level": level, "details": action_details}
+ 
+-@router.delete("/memory/all/critical")
++@router.post("/memory/actions/clear-critical")
+ async def clear_all_memory_critical(
+     db: AsyncSession = Depends(get_db_session),
+ ) -> dict[str, Any]:
+@@ -1289,23 +1291,23 @@ async def list_profiles(
+     )
+     if q:
+         like = f"%{normalize_text(q)}%"
+-        display_like = f"%{q}%"
++        display_like = f"%{escape_like(q)}%"
+         stmt = stmt.where(
+             or_(
+-                Contact.whatsapp_id.ilike(display_like),
+-                Contact.display_name.ilike(display_like),
+-                Contact.push_name.ilike(display_like),
+-                Contact.contact_name.ilike(display_like),
+-                Contact.normalized_phone.ilike(display_like),
+-                Contact.chat_id.ilike(display_like),
+-                UserMemory.display_name.ilike(display_like),
+-                UserMemory.user_name.ilike(display_like),
+-                UserMemory.profession.ilike(display_like),
+-                UserMemory.interests.ilike(like),
+-                UserMemory.projects.ilike(like),
+-                UserMemory.goals.ilike(like),
+-                UserMemory.relationship_type.ilike(like),
+-                UserMemory.personality_notes.ilike(like),
++                Contact.whatsapp_id.ilike(display_like, escape="\\"),
++                Contact.display_name.ilike(display_like, escape="\\"),
++                Contact.push_name.ilike(display_like, escape="\\"),
++                Contact.contact_name.ilike(display_like, escape="\\"),
++                Contact.normalized_phone.ilike(display_like, escape="\\"),
++                Contact.chat_id.ilike(display_like, escape="\\"),
++                UserMemory.display_name.ilike(display_like, escape="\\"),
++                UserMemory.user_name.ilike(display_like, escape="\\"),
++                UserMemory.profession.ilike(display_like, escape="\\"),
++                UserMemory.interests.ilike(like, escape="\\"),
++                UserMemory.projects.ilike(like, escape="\\"),
++                UserMemory.goals.ilike(like, escape="\\"),
++                UserMemory.relationship_type.ilike(like, escape="\\"),
++                UserMemory.personality_notes.ilike(like, escape="\\"),
+             )
+         )
+     rows = (await db.execute(stmt)).all()
+diff --git a/bot_core/app/api/admin_auth.py b/bot_core/app/api/admin_auth.py
+index 754af22..5566f64 100644
+--- a/bot_core/app/api/admin_auth.py
++++ b/bot_core/app/api/admin_auth.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import secrets
+ from html import escape
+ from typing import Annotated
+ 
+@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, Request, Response
+ from fastapi.responses import HTMLResponse, RedirectResponse
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+-from app.api.deps import require_admin_session
++from app.api.deps import require_admin_session_html, require_admin_session_api
+ from app.config import settings
+ from app.db import get_db_session
+ from app.services.admin_auth_service import ADMIN_SESSION_COOKIE, AdminAuthService, AdminPrincipal
+@@ -17,7 +18,7 @@ router = APIRouter(tags=["admin-auth"])
+ 
+ 
+ @router.get("/admin", include_in_schema=False, response_model=None)
+-async def admin_root(principal: AdminPrincipal = Depends(require_admin_session)) -> Response:
++async def admin_root(principal: AdminPrincipal = Depends(require_admin_session_html)) -> Response:
+     return RedirectResponse("/admin/ui", status_code=303)
+ 
+ 
+@@ -27,7 +28,19 @@ async def login_page(request: Request) -> Response:
+     principal = auth.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
+     if principal:
+         return RedirectResponse("/admin/ui", status_code=303)
+-    return _render_login_page()
++    
++    csrf_token = secrets.token_urlsafe(32)
++    response = _render_login_page(csrf_token=csrf_token)
++    response.set_cookie(
++        "admin_csrf_token",
++        csrf_token,
++        max_age=3600,
++        httponly=True,
++        secure=auth.cookie_secure_for_request(request),
++        samesite="lax",
++        path="/admin",
++    )
++    return response
+ 
+ 
+ @router.post("/admin/login", response_class=HTMLResponse, response_model=None)
+@@ -35,9 +48,15 @@ async def login(
+     request: Request,
+     username: Annotated[str, Form()],
+     password: Annotated[str, Form()],
++    csrf_token: Annotated[str, Form()],
+     db: AsyncSession = Depends(get_db_session),
+ ) -> Response:
+     auth = AdminAuthService()
++    
++    cookie_csrf = request.cookies.get("admin_csrf_token")
++    if not cookie_csrf or not secrets.compare_digest(cookie_csrf, csrf_token):
++        return _render_login_page(error="Invalid or missing CSRF token. Please refresh the page.", csrf_token=secrets.token_urlsafe(32), status_code=403)
++
+     submitted_username = username.strip()
+     ip_address = auth.client_ip(request)
+ 
+@@ -51,7 +70,7 @@ async def login(
+         )
+         return _render_login_page(
+             error=f"Too many failed attempts. Try again in {settings.admin_login_lockout_seconds // 60} minutes.",
+-            username=submitted_username,
++            csrf_token=cookie_csrf,
+             status_code=429,
+         )
+ 
+@@ -68,7 +87,7 @@ async def login(
+         error = "Invalid username or password."
+         if locked:
+             error = f"Too many failed attempts. Try again in {settings.admin_login_lockout_seconds // 60} minutes."
+-        return _render_login_page(error=error, username=submitted_username, status_code=401)
++        return _render_login_page(error=error, csrf_token=cookie_csrf, status_code=401)
+ 
+     await auth.record_login_event(db, action="admin_login_success", username=principal.username, request=request)
+     response = RedirectResponse("/admin/ui", status_code=303)
+@@ -96,7 +115,7 @@ async def logout(request: Request, db: AsyncSession = Depends(get_db_session)) -
+ 
+ 
+ @router.get("/admin/session")
+-async def admin_session(principal: AdminPrincipal = Depends(require_admin_session)) -> dict[str, object]:
++async def admin_session(principal: AdminPrincipal = Depends(require_admin_session_api)) -> dict[str, object]:
+     return {
+         "username": principal.username,
+         "auth_method": principal.auth_method,
+@@ -105,9 +124,8 @@ async def admin_session(principal: AdminPrincipal = Depends(require_admin_sessio
+     }
+ 
+ 
+-def _render_login_page(error: str = "", username: str = "", status_code: int = 200) -> HTMLResponse:
++def _render_login_page(error: str = "", csrf_token: str = "", status_code: int = 200) -> HTMLResponse:
+     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+-    username_value = escape(username or settings.admin_username)
+     return HTMLResponse(
+         f"""<!DOCTYPE html>
+ <html lang="en">
+@@ -135,8 +153,9 @@ button:hover{{background:#4834d4}}
+     <h1>Zina Admin</h1>
+     <p>Sign in to manage memory, identity, rules, queue, AI controls, and knowledge sources.</p>
+     {error_html}
++    <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
+     <label for="username">Username</label>
+-    <input id="username" name="username" value="{username_value}" autocomplete="username" required autofocus>
++    <input id="username" name="username" value="" autocomplete="username" required autofocus>
+     <label for="password">Password</label>
+     <input id="password" name="password" type="password" autocomplete="current-password" required>
+     <button type="submit">Sign In</button>
+diff --git a/bot_core/app/api/admin_ui.py b/bot_core/app/api/admin_ui.py
+index 0d1c573..7891814 100644
+--- a/bot_core/app/api/admin_ui.py
++++ b/bot_core/app/api/admin_ui.py
+@@ -6,9 +6,9 @@ from pathlib import Path
+ from fastapi import APIRouter, Depends
+ from fastapi.responses import HTMLResponse
+ 
+-from app.api.deps import require_admin_session
++from app.api.deps import require_admin_session_html
+ 
+-router = APIRouter(tags=["admin-ui"], dependencies=[Depends(require_admin_session)])
++router = APIRouter(tags=["admin-ui"], dependencies=[Depends(require_admin_session_html)])
+ 
+ _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+ 
+diff --git a/bot_core/app/api/deps.py b/bot_core/app/api/deps.py
+index caae858..d3aa548 100644
+--- a/bot_core/app/api/deps.py
++++ b/bot_core/app/api/deps.py
+@@ -13,7 +13,22 @@ def require_admin_token(x_admin_token: str | None = Header(default=None)) -> Non
+         raise HTTPException(status_code=401, detail="invalid admin token")
+ 
+ 
+-def require_admin_session(
++def require_admin_session_api(
++    request: Request,
++    x_admin_token: str | None = Header(default=None),
++) -> AdminPrincipal:
++    auth = AdminAuthService()
++    token_principal = auth.token_principal(x_admin_token)
++    if token_principal:
++        return token_principal
++
++    principal = auth.verify_session_cookie(request.cookies.get(ADMIN_SESSION_COOKIE))
++    if principal:
++        return principal
++
++    raise HTTPException(status_code=401, detail="admin login required")
++
++def require_admin_session_html(
+     request: Request,
+     x_admin_token: str | None = Header(default=None),
+ ) -> AdminPrincipal:
+diff --git a/bot_core/app/api/inbound.py b/bot_core/app/api/inbound.py
+index 0690648..3345c94 100644
+--- a/bot_core/app/api/inbound.py
++++ b/bot_core/app/api/inbound.py
+@@ -1,20 +1,25 @@
+ from __future__ import annotations
+ 
+ import logging
++import hashlib
++import json
+ from typing import Any
+ 
+ from fastapi import APIRouter, BackgroundTasks, Request, status
++from sqlalchemy.exc import IntegrityError
++from sqlalchemy import select, update
+ 
+ from app.core.router import InboundRouter
+ from app.db import SessionLocal
+ from app.services.logging_service import log_event
++from app.models.schema import InboundEvent, OutboundMessage
+ 
+ 
+ logger = logging.getLogger(__name__)
+ router = APIRouter()
+ 
+ 
+-@router.post("/webhooks/waha", status_code=status.HTTP_202_ACCEPTED)
++@router.post("/webhooks/waha", status_code=status.HTTP_200_OK)
+ async def waha_webhook(
+     request: Request,
+     background_tasks: BackgroundTasks,
+@@ -33,6 +38,8 @@ async def waha_webhook(
+     event_name = _resolve_event_name(event)
+     payload = _resolve_payload(event)
+     message_id = _resolve_message_id(payload)
++    session_name = event.get("session") or "default"
++    
+     request_id = (
+         request.headers.get("x-webhook-request-id")
+         or request.headers.get("x-request-id")
+@@ -51,19 +58,52 @@ async def waha_webhook(
+         )
+         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
+ 
+-    if _is_from_me(payload):
+-        log_event(
+-            logger,
+-            logging.INFO,
+-            "webhook_ignored",
+-            request_id=request_id,
+-            event_name=event_name or "message",
+-            message_id=message_id,
+-            reason="from_me",
+-        )
+-        return {"status": "ignored", "reason": "from_me", "event_name": event_name or "message"}
++    if not message_id:
++        log_event(logger, logging.WARNING, "webhook_ignored", request_id=request_id, reason="missing_message_id")
++        return {"status": "ignored", "reason": "missing_message_id"}
+ 
+-    background_tasks.add_task(_process_event_async, event, request_id)
++    payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
++
++    async with SessionLocal() as db:
++        if _is_from_me(payload):
++            stmt = select(OutboundMessage).where(OutboundMessage.waha_message_id == message_id)
++            result = await db.execute(stmt)
++            outbound_match = result.scalar_one_or_none()
++            if outbound_match or event_name == "message.any":
++                log_event(
++                    logger,
++                    logging.INFO,
++                    "webhook_ignored",
++                    request_id=request_id,
++                    event_name=event_name or "message",
++                    message_id=message_id,
++                    reason="outbound_echo",
++                )
++                return {"status": "ignored", "reason": "outbound_echo", "event_name": event_name or "message"}
++
++        try:
++            new_event = InboundEvent(
++                provider="waha",
++                session_name=session_name,
++                event_type=event_name or "message",
++                provider_message_id=message_id,
++                payload_hash=payload_hash,
++                processing_status="processing"
++            )
++            db.add(new_event)
++            await db.commit()
++        except IntegrityError:
++            await db.rollback()
++            await db.execute(
++                update(InboundEvent)
++                .where(InboundEvent.provider_message_id == message_id)
++                .values(delivery_attempt_count=InboundEvent.delivery_attempt_count + 1)
++            )
++            await db.commit()
++            log_event(logger, logging.INFO, "webhook_ignored", request_id=request_id, reason="duplicate_event")
++            return {"status": "ignored", "reason": "duplicate_event"}
++
++    background_tasks.add_task(_process_event_async, event, request_id, message_id)
+     log_event(
+         logger,
+         logging.INFO,
+@@ -80,16 +120,28 @@ async def waha_webhook(
+     }
+ 
+ 
+-async def _process_event_async(event: dict[str, Any], request_id: str) -> None:
++async def _process_event_async(event: dict[str, Any], request_id: str, message_id: str) -> None:
+     async with SessionLocal() as db:
+         inbound_router = InboundRouter(db)
+         result: dict[str, Any] | None = None
+         error_text: str | None = None
+         try:
+             result = await inbound_router.process_event(event)
++            await db.execute(
++                update(InboundEvent)
++                .where(InboundEvent.provider_message_id == message_id)
++                .values(processing_status="completed")
++            )
++            await db.commit()
+         except Exception as exc:  # noqa: BLE001
+             await db.rollback()
+             error_text = str(exc)
++            await db.execute(
++                update(InboundEvent)
++                .where(InboundEvent.provider_message_id == message_id)
++                .values(processing_status="failed_retryable", processing_error=error_text)
++            )
++            await db.commit()
+             log_event(logger, logging.ERROR, "webhook_processing_failed", request_id=request_id, error=error_text)
+             logger.exception("WAHA inbound processing failed")
+         finally:
+diff --git a/bot_core/app/api/knowledge.py b/bot_core/app/api/knowledge.py
+index 1db3db8..cb957ad 100644
+--- a/bot_core/app/api/knowledge.py
++++ b/bot_core/app/api/knowledge.py
+@@ -7,7 +7,7 @@ from pydantic import BaseModel
+ from sqlalchemy import select
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+-from app.api.deps import require_admin_session
++from app.api.deps import require_admin_session_api
+ from app.config import settings
+ from app.db import get_db_session
+ from app.models.enums import KnowledgeDocumentStatus, SourceType
+@@ -15,7 +15,7 @@ from app.models.schema import AuditLog, KnowledgeDocument
+ from app.services.retrieval_service import RetrievalService
+ 
+ 
+-router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_session)])
++router = APIRouter(prefix="/admin/knowledge", tags=["knowledge"], dependencies=[Depends(require_admin_session_api)])
+ 
+ 
+ class KnowledgeTextIn(BaseModel):
+@@ -34,7 +34,18 @@ async def upload_document(
+ ) -> dict[str, Any]:
+     if not file.filename or not file.filename.lower().endswith((".txt", ".md")):
+         raise HTTPException(status_code=400, detail="only .txt and .md files are supported")
+-    raw_text = (await file.read()).decode("utf-8", errors="ignore").strip()
++    max_size = 5 * 1024 * 1024  # 5MB
++    file_chunks = []
++    total_size = 0
++    while True:
++        chunk = await file.read(65536)
++        if not chunk:
++            break
++        total_size += len(chunk)
++        if total_size > max_size:
++            raise HTTPException(status_code=413, detail="File too large (max 5MB)")
++        file_chunks.append(chunk)
++    raw_text = b"".join(file_chunks).decode("utf-8", errors="ignore").strip()
+     if not raw_text:
+         raise HTTPException(status_code=400, detail="empty document")
+ 
+diff --git a/bot_core/app/config.py b/bot_core/app/config.py
+index e933125..46f4558 100644
+--- a/bot_core/app/config.py
++++ b/bot_core/app/config.py
+@@ -103,15 +103,18 @@ class Settings(BaseSettings):
+             errors.append("WAHA_SESSION_NAME is required.")
+         if not self.admin_username:
+             errors.append("ADMIN_USERNAME is required.")
+-        if not self.admin_password:
++        if self.admin_password:
++            if len(self.admin_password) < 12 or self.admin_password.startswith("replace-with-"):
++                errors.append("ADMIN_PASSWORD must be at least 12 characters and must not be the example placeholder.")
++        else:
+             errors.append("ADMIN_PASSWORD is required.")
+-        elif len(self.admin_password) < 12 or self.admin_password.startswith("replace-with-"):
+-            errors.append("ADMIN_PASSWORD must be at least 12 characters and must not be the example placeholder.")
+         if self.admin_session_secret:
+             if len(self.admin_session_secret) < 32 or self.admin_session_secret.startswith("replace-with-"):
+                 errors.append("ADMIN_SESSION_SECRET must be at least 32 characters and must not be the example placeholder.")
+-        elif self.environment == "production":
+-            errors.append("ADMIN_SESSION_SECRET is required in production.")
++        else:
++            errors.append("ADMIN_SESSION_SECRET is required and cannot be empty.")
++        if self.environment == "production":
++            self.admin_cookie_secure = True
+         if self.admin_session_ttl_seconds <= 0:
+             errors.append("ADMIN_SESSION_TTL_SECONDS must be greater than 0.")
+         if self.admin_login_max_failures <= 0:
+diff --git a/bot_core/app/core/experience_formatter.py b/bot_core/app/core/experience_formatter.py
+index 4709587..10164e0 100644
+--- a/bot_core/app/core/experience_formatter.py
++++ b/bot_core/app/core/experience_formatter.py
+@@ -31,31 +31,7 @@ class ReplyMode(str, Enum):
+     DETAILED = "detailed"
+ 
+ 
+-class WhatsAppMessageFormat(str, Enum):
+-    STANDARD = "standard"
+-    QUOTE = "quote"
+-    AUTOMATIC = "automatic"
+-
+-
+-def format_whatsapp_quote(text: str) -> str:
+-    """Apply WhatsApp native quote markup without changing paragraph spacing."""
+-    if not text:
+-        return text
+-    quoted_lines: list[str] = []
+-    for line in text.split("\n"):
+-        if not line.strip():
+-            quoted_lines.append("")
+-        elif line.lstrip().startswith(">"):
+-            quoted_lines.append(line.lstrip())
+-        else:
+-            quoted_lines.append(f"> {line}")
+-    return "\n".join(quoted_lines)
+-
+-
+-def is_whatsapp_quoted(text: str) -> bool:
+-    lines = [line for line in text.splitlines() if line.strip()]
+-    return bool(lines) and all(line.lstrip().startswith(">") for line in lines)
+-
++from app.core.whatsapp_formatter import WhatsAppMessageFormat
+ 
+ class WhatsAppExperienceFormatter:
+     """Formats user-visible replies without hiding full admin diagnostics."""
+@@ -76,11 +52,11 @@ class WhatsAppExperienceFormatter:
+         enable_signature_style: bool = True,
+         mode: str = ReplyMode.NORMAL.value,
+         next_step: str | None = None,
+-        quote_body: bool = False,
++        whatsapp_format_mode: str = "standard",
+     ) -> str:
+         body = self.format_body(reply_text)
+-        if quote_body:
+-            body = format_whatsapp_quote(body)
++        from app.core.whatsapp_formatter import format_whatsapp_response
++        body = format_whatsapp_response(body, whatsapp_format_mode)
+         indicators = self._clean_indicators(context_indicators or []) if show_context else []
+         if not enable_signature_style:
+             return self._legacy_reply(
+diff --git a/bot_core/app/core/message_normalizer.py b/bot_core/app/core/message_normalizer.py
+index 49ec1c1..b1655ac 100644
+--- a/bot_core/app/core/message_normalizer.py
++++ b/bot_core/app/core/message_normalizer.py
+@@ -111,12 +111,16 @@ class MessageNormalizer:
+     @staticmethod
+     def _normalize_phone(value: Any) -> str | None:
+         text = str(value or "")
++        if "@lid" in text:
++            return None
+         left = text.split("@", 1)[0]
+         digits = re.sub(r"\D+", "", left)
+         return digits or None
+ 
+     @classmethod
+     def _temporary_phone_name(cls, value: Any) -> str | None:
++        if "@lid" in str(value or ""):
++            return None
+         digits = cls._normalize_phone(value)
+         return digits if digits and len(digits) >= 7 else None
+ 
+diff --git a/bot_core/app/core/reply_planner.py b/bot_core/app/core/reply_planner.py
+index 9f67b51..1fe0e7e 100644
+--- a/bot_core/app/core/reply_planner.py
++++ b/bot_core/app/core/reply_planner.py
+@@ -11,7 +11,6 @@ from app.config import settings
+ from app.core.experience_formatter import (
+     WhatsAppExperienceFormatter,
+     WhatsAppMessageFormat,
+-    is_whatsapp_quoted,
+     memory_context_indicators,
+ )
+ from app.core.intent_classifier import IntentClassifier, IntentResult, MessageIntent
+@@ -772,8 +771,10 @@ class ReplyPlanner:
+         message_format = self._normalize_whatsapp_message_format(
+             await self.bot_config.get("whatsapp_message_format", settings.whatsapp_message_format)
+         )
+-        quote_body, quote_reason = self._should_quote_whatsapp_body(reply, source, message_format)
+-        raw_already_quoted = is_whatsapp_quoted(reply.raw_reply_text or "")
++        
++        from app.core.whatsapp_formatter import get_applied_format_mode
++        applied_mode = get_applied_format_mode(reply.raw_reply_text or "", message_format.value)
++        
+         reply.reply_text = self.formatter.format_reply(
+             reply.raw_reply_text or "",
+             source=source,
+@@ -782,7 +783,7 @@ class ReplyPlanner:
+             show_context=show_context,
+             enable_signature_style=signature_style,
+             mode=reply_mode,
+-            quote_body=quote_body,
++            whatsapp_format_mode=message_format.value,
+         )
+         if isinstance(experience_info, dict):
+             experience_info["formatted"] = True
+@@ -791,9 +792,8 @@ class ReplyPlanner:
+             experience_info["signature_style"] = signature_style
+             experience_info["reply_mode"] = reply_mode
+             experience_info["whatsapp_message_format"] = message_format.value
+-            experience_info["quote_rendered"] = quote_body
+-            experience_info["quote_applied"] = quote_body and not raw_already_quoted
+-            experience_info["quote_reason"] = quote_reason
++            experience_info["applied_formatting_mode"] = applied_mode
++            experience_info["formatter_version"] = "2.0"
+             experience_info["raw_reply_text_stored"] = bool(reply.raw_reply_text)
+         return reply
+ 
+@@ -909,120 +909,6 @@ class ReplyPlanner:
+         except ValueError:
+             return WhatsAppMessageFormat.AUTOMATIC
+ 
+-    def _should_quote_whatsapp_body(
+-        self,
+-        reply: PlannedReply,
+-        source: str,
+-        mode: WhatsAppMessageFormat,
+-    ) -> tuple[bool, str]:
+-        if mode == WhatsAppMessageFormat.STANDARD:
+-            return False, "standard mode"
+-        text = (reply.raw_reply_text or reply.reply_text or "").strip()
+-        if not text:
+-            return False, "empty response"
+-        if is_whatsapp_quoted(text):
+-            return True, "already quoted"
+-        blocked_reason = self._whatsapp_quote_block_reason(reply, source, text)
+-        if blocked_reason:
+-            return False, blocked_reason
+-        if mode == WhatsAppMessageFormat.QUOTE:
+-            if self._quote_mode_candidate(reply, source, text):
+-                return True, "quote mode eligible"
+-            return False, "not an eligible Zina response"
+-        if self._automatic_quote_candidate(reply, source, text):
+-            return True, "automatic highlight"
+-        return False, "automatic mode left as standard text"
+-
+-    @staticmethod
+-    def _whatsapp_quote_block_reason(reply: PlannedReply, source: str, text: str) -> str | None:
+-        diagnostics = reply.source_diagnostics or {}
+-        if source in {"Command", "Internet", "Giphy"}:
+-            return f"{source.lower()} output"
+-        if any(key in diagnostics for key in ("owner_command", "user_command")):
+-            return "command output"
+-        if isinstance(diagnostics.get("internet"), dict):
+-            return "internet output"
+-
+-        normalized = normalize_text(text)
+-        if re.search(r"https?://|www\.", text, flags=re.IGNORECASE):
+-            return "contains url"
+-        if "`" in text or "```" in text:
+-            return "technical or command markup"
+-        if re.search(r"(^|\n)\s*(traceback|error|exception):", text, flags=re.IGNORECASE):
+-            return "technical output"
+-        if re.search(r"(^|\n)\s*[{[]", text) or re.search(r"\b[A-Z][A-Z0-9_]{3,}\b[:=]", text):
+-            return "raw technical output"
+-        if normalized.startswith(("available commands", "usage:", "command:", "/help", "!help")):
+-            return "command help"
+-
+-        nonblank_lines = [line for line in text.splitlines() if line.strip()]
+-        paragraphs = [paragraph for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
+-        if len(text) > 900 or len(nonblank_lines) > 10 or len(paragraphs) > 5:
+-            return "long response"
+-        if getattr(reply, "intent", "") == MessageIntent.GREETING.value and len(text) < 160:
+-            return "ordinary greeting"
+-        if normalized.startswith(("hi ", "hi.", "hello", "good morning", "good afternoon", "good evening")) and len(text) < 160:
+-            return "ordinary greeting"
+-        return None
+-
+-    @staticmethod
+-    def _quote_mode_candidate(reply: PlannedReply, source: str, text: str) -> bool:
+-        if reply.decision_type in {
+-            DecisionType.FAQ_REPLY,
+-            DecisionType.KB_REPLY,
+-            DecisionType.MEMORY_REPLY,
+-            DecisionType.AI_REPLY_LIGHT,
+-            DecisionType.AI_REPLY_DEEP,
+-            DecisionType.ESCALATED,
+-            DecisionType.NO_MATCH,
+-            DecisionType.RATE_LIMITED,
+-        }:
+-            return True
+-        if source in {"FAQ", "KB", "Knowledge", "Memory", "Memory + Timeline", "Identity", "AI", "Global Chat", "Fallback", "Cache"}:
+-            return True
+-        return ReplyPlanner._looks_like_highlight_content(text)
+-
+-    @staticmethod
+-    def _automatic_quote_candidate(reply: PlannedReply, source: str, text: str) -> bool:
+-        if reply.decision_type in {
+-            DecisionType.FAQ_REPLY,
+-            DecisionType.KB_REPLY,
+-            DecisionType.AI_REPLY_LIGHT,
+-            DecisionType.AI_REPLY_DEEP,
+-            DecisionType.ESCALATED,
+-            DecisionType.NO_MATCH,
+-            DecisionType.RATE_LIMITED,
+-        }:
+-            return True
+-        if reply.decision_type == DecisionType.MEMORY_REPLY:
+-            memory_info = reply.source_diagnostics.get("memory")
+-            return isinstance(memory_info, dict) and bool(memory_info.get("context_used") or memory_info.get("timeline_entries"))
+-        if source in {"Identity", "Cache"} and ReplyPlanner._looks_like_highlight_content(text):
+-            return True
+-        return ReplyPlanner._looks_like_highlight_content(text) and 40 <= len(text) <= 700
+-
+-    @staticmethod
+-    def _looks_like_highlight_content(text: str) -> bool:
+-        normalized = normalize_text(text)
+-        markers = (
+-            " is ",
+-            " are ",
+-            " means ",
+-            " designed ",
+-            " focused ",
+-            " important",
+-            " warning",
+-            " summary",
+-            " key ",
+-            " should ",
+-            " need ",
+-            " must ",
+-            " use ",
+-            " steps",
+-            " instruction",
+-        )
+-        return any(marker in f" {normalized} " for marker in markers)
+-
+     async def _handle_global_chat_command(
+         self,
+         message: NormalizedMessage,
+diff --git a/bot_core/app/core/router.py b/bot_core/app/core/router.py
+index 0116fb6..6ea4dcf 100644
+--- a/bot_core/app/core/router.py
++++ b/bot_core/app/core/router.py
+@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
+ from app.config import settings
+ from app.core.message_normalizer import MessageNormalizer, NormalizedMessage
+ from app.core.reply_planner import PlannedReply, ReplyPlanner
+-from app.models.enums import DecisionType, Direction
+-from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
++from app.models.enums import ChatType, DecisionType, Direction
++from app.models.schema import AuditLog, Contact, ContactAlias, GroupConfig, Message, OutboundMessage, RouterDecision
+ from app.services.logging_service import log_event
+ from app.services.owner_command_service import OwnerCommandService
+ from app.services.waha_client import WAHAClient, WahaClientError
+@@ -44,9 +44,31 @@ class InboundRouter:
+         self.reply_planner = ReplyPlanner(session)
+ 
+     async def process_event(self, event: dict[str, Any]) -> dict[str, Any]:
++        try:
++            return await self._process_event_inner(event)
++        except Exception:
++            await self.session.rollback()
++            raise
++
++    async def _process_event_inner(self, event: dict[str, Any]) -> dict[str, Any]:
+         normalized = self.normalizer.normalize(event)
+         contact = await self._get_or_create_contact(normalized)
+         inbound = await self._save_inbound_message(normalized, contact.id)
++        
++        if normalized.chat_type == ChatType.GROUP:
++            if not await self._check_group_policy(normalized.chat_id, normalized.is_bot_mentioned):
++                await self.session.commit()
++                return asdict(RouteResult(
++                    status="ok",
++                    chat_type="group",
++                    action="ignored",
++                    decision_type="group_policy",
++                    reason="unmentioned_in_group",
++                    kb_confidence=0.0,
++                    inbound_message_id=inbound.id,
++                    outbound_message_id=None,
++                ))
++
+         await self.reply_planner.memory_service.ensure_relationship_profile(
+             contact.id,
+             normalized.sender_name or contact.display_name,
+@@ -81,7 +103,7 @@ class InboundRouter:
+                     reply_text=owner_command.reply_text,
+                     source_diagnostics=owner_command.source_diagnostics,
+                 )
+-        )
++            )
+         else:
+             profile_facts = await self.reply_planner.memory_service.extract_profile_from_message(
+                 contact.id,
+@@ -96,9 +118,12 @@ class InboundRouter:
+                 )
+ 
+             typing_started = await self._maybe_start_typing(normalized.chat_id)
+-            planned = await self.reply_planner.plan(normalized, contact.id)
+-            if typing_started:
+-                await self._maybe_stop_typing(normalized.chat_id)
++            try:
++                planned = await self.reply_planner.plan(normalized, contact.id)
++            finally:
++                if typing_started:
++                    await self._maybe_stop_typing(normalized.chat_id)
++
+         self._attach_thinking_diagnostics(planned)
+         decision = await self._save_router_decision(
+             message_id=inbound.id,
+@@ -270,23 +295,64 @@ class InboundRouter:
+ 
+     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
+         whatsapp_id = normalized.sender_id
++        alternate_ids = normalized.sender_alternate_ids
+         identity = normalized.sender_identity or {}
+         display_name = self._resolved_display_name(identity, normalized.sender_name)
+-        stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1)
+-        model = (await self.session.execute(stmt)).scalar_one_or_none()
++        
++        all_ids = [whatsapp_id] + alternate_ids
++        
++        stmt = select(Contact).where(Contact.whatsapp_id.in_(all_ids))
++        contacts_matched = (await self.session.execute(stmt)).scalars().all()
++        
++        stmt_alias = select(ContactAlias).where(ContactAlias.raw_identifier.in_(all_ids))
++        aliases_matched = (await self.session.execute(stmt_alias)).scalars().all()
++        
++        canonical_id = None
++        if contacts_matched:
++            canonical_id = contacts_matched[0].id
++        elif aliases_matched:
++            canonical_id = aliases_matched[0].contact_id
++            
++        if canonical_id:
++            stmt_canon = select(Contact).where(Contact.id == canonical_id).limit(1)
++            model = (await self.session.execute(stmt_canon)).scalar_one_or_none()
++        else:
++            model = None
++
+         if model:
+             if display_name and display_name != model.display_name and not getattr(model, "is_name_verified", False):
+                 model.display_name = display_name
+             self._apply_contact_identity(model, normalized, identity)
+             model.updated_at = utcnow()
+-            return model
++        else:
++            model = Contact(whatsapp_id=whatsapp_id or "unknown@local", display_name=display_name, updated_at=utcnow())
++            self._apply_contact_identity(model, normalized, identity)
++            self.session.add(model)
++            await self.session.flush()
++
++        stmt_existing_aliases = select(ContactAlias).where(ContactAlias.contact_id == model.id)
++        existing_aliases = (await self.session.execute(stmt_existing_aliases)).scalars().all()
++        existing_raw_ids = {a.raw_identifier for a in existing_aliases}
++        
++        for alias_id in all_ids:
++            if alias_id and alias_id not in existing_raw_ids and alias_id != model.whatsapp_id:
++                new_alias = ContactAlias(contact_id=model.id, alias_type="auto", raw_identifier=alias_id)
++                self.session.add(new_alias)
++                existing_raw_ids.add(alias_id)
+ 
+-        model = Contact(whatsapp_id=whatsapp_id or "unknown@local", display_name=display_name, updated_at=utcnow())
+-        self._apply_contact_identity(model, normalized, identity)
+-        self.session.add(model)
+         await self.session.flush()
+         return model
+ 
++    async def _check_group_policy(self, chat_id: str, is_mentioned: bool) -> bool:
++        stmt = select(GroupConfig).where(GroupConfig.chat_id == chat_id)
++        config = (await self.session.execute(stmt)).scalar_one_or_none()
++        mode = config.reply_mode if config else settings.group_default_reply_mode
++        if mode == "off":
++            return False
++        if mode == "mention_only" and not is_mentioned:
++            return False
++        return True
++
+     @staticmethod
+     def _resolved_display_name(identity: dict[str, Any], fallback: str | None) -> str | None:
+         for key in ("contact_name", "push_name", "profile_name", "display_name", "normalized_phone"):
+@@ -401,9 +467,8 @@ class InboundRouter:
+             "raw_reply_text": planned.raw_reply_text or planned.reply_text,
+             "final_reply_text": planned.reply_text,
+             "whatsapp_message_format": experience.get("whatsapp_message_format", "standard"),
+-            "quote_rendered": bool(experience.get("quote_rendered")),
+-            "quote_applied": bool(experience.get("quote_applied")),
+-            "quote_reason": experience.get("quote_reason"),
++            "mode": experience.get("applied_formatting_mode", "standard"),
++            "formatter_version": experience.get("formatter_version", "2.0"),
+         }
+ 
+     async def _save_router_decision(
+diff --git a/bot_core/app/main.py b/bot_core/app/main.py
+index 1395ab6..7e07078 100644
+--- a/bot_core/app/main.py
++++ b/bot_core/app/main.py
+@@ -24,22 +24,14 @@ CORE_FAQ_PATH = Path(__file__).resolve().parents[1] / "core_faq.md"
+ 
+ @asynccontextmanager
+ async def lifespan(_: FastAPI):
+-    tasks: list[asyncio.Task[None]] = []
+     settings.validate_runtime()
+     if settings.startup_validate_db:
+         await ping_database()
+     await _sync_core_faq()
+-    tasks.append(asyncio.create_task(outbound_queue_delivery_worker(), name="outbound-queue-delivery"))
+-    tasks.append(asyncio.create_task(waha_monitor_worker(), name="waha-monitor"))
+     log_event(logger, logging.INFO, "app_startup", environment=settings.environment, ai_enabled=settings.ai_enabled)
+     try:
+         yield
+     finally:
+-        for task in tasks:
+-            task.cancel()
+-        for task in tasks:
+-            with suppress(asyncio.CancelledError):
+-                await task
+         await engine.dispose()
+         log_event(logger, logging.INFO, "app_shutdown")
+ 
+diff --git a/bot_core/app/models/schema.py b/bot_core/app/models/schema.py
+index 498a06e..ac6bb59 100644
+--- a/bot_core/app/models/schema.py
++++ b/bot_core/app/models/schema.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ from datetime import datetime
+ from typing import Any
+ 
+-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text
++from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text, UniqueConstraint
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from app.db import Base
+@@ -53,6 +53,19 @@ class Contact(Base):
+     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+ 
+ 
++class ContactAlias(Base):
++    __tablename__ = "contact_aliases"
++
++    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
++    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
++    alias_type: Mapped[str] = mapped_column(String(40), nullable=False)
++    raw_identifier: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
++    normalized_identifier: Mapped[str | None] = mapped_column(String(120))
++    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
++    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
++
++
+ class Message(Base):
+     __tablename__ = "messages"
+ 
+@@ -69,6 +82,29 @@ class Message(Base):
+     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+ 
+ 
++class InboundEvent(Base):
++    __tablename__ = "inbound_events"
++
++    __table_args__ = (
++        UniqueConstraint("provider", "session_name", "event_type", "provider_message_id", name="uq_inbound_event"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
++    provider: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'waha'"))
++    session_name: Mapped[str] = mapped_column(String(120), nullable=False)
++    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
++    provider_message_id: Mapped[str] = mapped_column(String(120), nullable=False)
++    chat_id: Mapped[str | None] = mapped_column(String(120))
++    sender_id: Mapped[str | None] = mapped_column(String(120))
++    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
++    delivery_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
++    processing_status: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'received'"))
++    processing_error: Mapped[str | None] = mapped_column(Text)
++    related_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
++    first_received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
++    last_received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
++
++
+ class GroupConfig(Base):
+     __tablename__ = "group_configs"
+ 
+@@ -514,6 +550,8 @@ class OutboundMessage(Base):
+     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
+     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+     error_message: Mapped[str | None] = mapped_column(Text)
++    waha_message_id: Mapped[str | None] = mapped_column(String(120))
++    payload_hash: Mapped[str | None] = mapped_column(String(64))
+     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+ 
+diff --git a/bot_core/app/services/admin_management_service.py b/bot_core/app/services/admin_management_service.py
+index fb74dc3..bb532ba 100644
+--- a/bot_core/app/services/admin_management_service.py
++++ b/bot_core/app/services/admin_management_service.py
+@@ -217,9 +217,10 @@ class AdminManagementService:
+         normalized = cls.normalize_whatsapp_id(raw)
+         if normalized:
+             keys.add(normalized)
+-            digits = cls.digits_only(normalized)
+-            if digits:
+-                keys.update({digits, f"{digits}@c.us", f"{digits}@s.whatsapp.net", f"{digits}@lid"})
++            if "@lid" not in normalized:
++                digits = cls.digits_only(normalized)
++                if digits:
++                    keys.update({digits, f"{digits}@c.us", f"{digits}@s.whatsapp.net"})
+         return keys
+ 
+     @classmethod
+diff --git a/bot_core/app/services/memory_service.py b/bot_core/app/services/memory_service.py
+index 32579a9..0a81d8b 100644
+--- a/bot_core/app/services/memory_service.py
++++ b/bot_core/app/services/memory_service.py
+@@ -17,7 +17,7 @@ from app.models.schema import (
+     UserMemory,
+     UserMemoryTimeline,
+ )
+-from app.utils.text import normalize_text
++from app.utils.text import escape_like, normalize_text
+ from app.utils.time import utcnow
+ 
+ 
+@@ -66,10 +66,12 @@ class MemoryService:
+     def __init__(self, session: AsyncSession):
+         self.session = session
+ 
+-    async def get_memory(self, contact_id: int, *, include_disabled: bool = False) -> UserMemory | None:
++    async def get_memory(self, contact_id: int, *, include_disabled: bool = False, for_update: bool = False) -> UserMemory | None:
+         stmt = select(UserMemory).where(UserMemory.contact_id == contact_id).limit(1)
+         if not include_disabled:
+             stmt = stmt.where(UserMemory.is_enabled.is_(True))
++        if for_update:
++            stmt = stmt.with_for_update()
+         return (await self.session.execute(stmt)).scalar_one_or_none()
+ 
+     async def upsert_memory(
+@@ -95,10 +97,7 @@ class MemoryService:
+         normalized_relationship_type = (
+             self.normalize_relationship_type(relationship_type) if relationship_type is not None else None
+         )
+-        try:
+-            memory = await self.get_memory(contact_id, include_disabled=True)
+-        except TypeError:
+-            memory = await self.get_memory(contact_id)
++        memory = await self.get_memory(contact_id, include_disabled=True, for_update=True)
+         if memory:
+             if display_name is not None:
+                 memory.display_name = display_name
+@@ -253,7 +252,7 @@ class MemoryService:
+         stmt = select(ConversationTimeline).where(ConversationTimeline.contact_id == contact_id)
+         if query and normalize_text(query) not in {"", "hi", "hello", "hey", "yo"}:
+             like = f"%{query.strip()}%"
+-            stmt = stmt.where(or_(ConversationTimeline.topic.ilike(like), ConversationTimeline.summary.ilike(like)))
++            stmt = stmt.where(or_(ConversationTimeline.topic.ilike(like, escape="\\"), ConversationTimeline.summary.ilike(like, escape="\\")))
+         stmt = stmt.order_by(ConversationTimeline.timestamp.desc()).limit(limit)
+         return list((await self.session.execute(stmt)).scalars().all())
+ 
+diff --git a/bot_core/app/services/openrouter_client.py b/bot_core/app/services/openrouter_client.py
+index beaf79e..1533e60 100644
+--- a/bot_core/app/services/openrouter_client.py
++++ b/bot_core/app/services/openrouter_client.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ from dataclasses import dataclass
+ import time
+ from typing import Any
++import asyncio
+ 
+ import httpx
+ 
+@@ -99,13 +100,23 @@ class OpenRouterClient:
+ 
+         started = time.perf_counter()
+         last_error: Exception | None = None
+-        for _ in range(settings.openrouter_retry_count + 1):
++        for attempt in range(settings.openrouter_retry_count + 1):
++            if attempt > 0:
++                await asyncio.sleep(2 ** attempt)  # exponential backoff
+             try:
+                 response = await self._client.post(f"{settings.openrouter_base_url}/chat/completions", json=payload, headers=headers)
+                 response.raise_for_status()
+                 data = response.json()
++                
++                # Basic schema validation
++                if not isinstance(data, dict) or "choices" not in data or not data["choices"]:
++                    raise ValueError(f"Invalid response schema from OpenRouter: {data}")
++                choice = data["choices"][0]
++                if "message" not in choice or "content" not in choice["message"]:
++                    raise ValueError(f"Invalid response schema from OpenRouter: {data}")
++                
+                 usage = data.get("usage", {})
+-                text = str(data["choices"][0]["message"]["content"]).strip()
++                text = str(choice["message"]["content"]).strip()
+                 return OpenRouterResult(
+                     text=text,
+                     model=model,
+diff --git a/bot_core/app/services/owner_command_service.py b/bot_core/app/services/owner_command_service.py
+index 33d13c9..403c146 100644
+--- a/bot_core/app/services/owner_command_service.py
++++ b/bot_core/app/services/owner_command_service.py
+@@ -37,7 +37,7 @@ from app.services.command_catalog_service import CommandCatalogService
+ from app.services.faq_service import FAQService
+ from app.services.retrieval_service import RetrievalService
+ from app.services.waha_client import WAHAClient, WahaClientError
+-from app.utils.text import normalize_text
++from app.utils.text import escape_like, normalize_text
+ from app.utils.time import utcnow
+ 
+ 
+@@ -192,8 +192,15 @@ class OwnerCommandService:
+         return command, rest.strip()
+ 
+     async def is_owner_id(self, sender_id: str) -> bool:
+-        configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
+-        return self.is_owner_id_static(sender_id, configured)
++        from app.models.schema import AdminAccount
++        has_admin = (await self.session.execute(select(AdminAccount).limit(1))).scalar_one_or_none()
++        if not has_admin:
++            configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
++            return self.is_owner_id_static(sender_id, configured)
++            
++        normalized_id = AdminManagementService.normalize_whatsapp_id(sender_id)
++        stmt = select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == normalized_id)
++        return bool((await self.session.execute(stmt)).scalar_one_or_none())
+ 
+     async def is_owner_message(self, message) -> bool:
+         try:
+@@ -201,8 +208,14 @@ class OwnerCommandService:
+                 return True
+         except Exception:
+             pass
+-        configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
+-        return bool(self.identity_keys_for_message(message) & self.identity_keys_for_config(configured))
++            
++        from app.models.schema import AdminAccount
++        has_admin = (await self.session.execute(select(AdminAccount).limit(1))).scalar_one_or_none()
++        if not has_admin:
++            configured = (await self.config.get("owner_whatsapp_ids", "")).strip() or settings.owner_whatsapp_ids
++            return bool(self.identity_keys_for_message(message) & self.identity_keys_for_config(configured))
++            
++        return False
+ 
+     @staticmethod
+     def is_owner_id_static(sender_id: str, configured_ids: str) -> bool:
+@@ -373,7 +386,7 @@ class OwnerCommandService:
+             is_owner = False
+         is_owner = is_owner or bool(set(sender_keys) & self.identity_keys_for_config(configured))
+         configured_count = len([item for item in re.split(r"[\s,;]+", configured or "") if item.strip()])
+-        normalized = self.normalized_whatsapp_id(sender_id)
++        normalized = AdminManagementService.normalize_whatsapp_id(sender_id)
+         owner_text = "Yes" if is_owner else "No"
+         permissions = "Full" if is_owner else "None"
+         return (
+@@ -455,12 +468,12 @@ class OwnerCommandService:
+         doc_result = await self.session.execute(
+             delete(KnowledgeDocument)
+             .where(KnowledgeDocument.source_type == SourceType.ADMIN_NOTE.value)
+-            .where(KnowledgeDocument.raw_text.ilike(f"%{query}%"))
++            .where(KnowledgeDocument.raw_text.ilike(f"%{escape_like(query)}%", escape="\\"))
+         )
+         timeline_result = await self.session.execute(
+             delete(UserMemoryTimeline)
+             .where(UserMemoryTimeline.source == "owner_command")
+-            .where(UserMemoryTimeline.memory_text.ilike(f"%{query}%"))
++            .where(UserMemoryTimeline.memory_text.ilike(f"%{escape_like(query)}%", escape="\\"))
+         )
+         deleted = (doc_result.rowcount or 0) + (timeline_result.rowcount or 0)
+         return f"*Forget Complete*\n\nRemoved:\n{deleted} matching memory item(s)"
+@@ -473,7 +486,7 @@ class OwnerCommandService:
+             await self.session.execute(
+                 select(KnowledgeDocument)
+                 .where(KnowledgeDocument.source_type == SourceType.ADMIN_NOTE.value)
+-                .where(KnowledgeDocument.raw_text.ilike(f"%{query}%"))
++                .where(KnowledgeDocument.raw_text.ilike(f"%{escape_like(query)}%", escape="\\"))
+                 .order_by(KnowledgeDocument.created_at.desc())
+                 .limit(5)
+             )
+@@ -481,7 +494,7 @@ class OwnerCommandService:
+         facts = (
+             await self.session.execute(
+                 select(UserMemoryTimeline)
+-                .where(UserMemoryTimeline.memory_text.ilike(f"%{query}%"))
++                .where(UserMemoryTimeline.memory_text.ilike(f"%{escape_like(query)}%", escape="\\"))
+                 .order_by(UserMemoryTimeline.created_at.desc())
+                 .limit(5)
+             )
+@@ -1286,10 +1299,10 @@ class OwnerCommandService:
+         if not clean:
+             return None
+         keys = self._identity_keys(clean)
+-        conditions = [Contact.display_name.ilike(f"%{clean.lstrip('@')}%")]
++        conditions = [Contact.display_name.ilike(f"%{escape_like(clean.lstrip('@'))}%", escape="\\")]
+         for key in keys:
+             conditions.append(Contact.whatsapp_id == key)
+-            conditions.append(Contact.whatsapp_id.ilike(f"%{key}%"))
++            conditions.append(Contact.whatsapp_id.ilike(f"%{escape_like(key)}%", escape="\\"))
+         return (
+             await self.session.execute(select(Contact).where(or_(*conditions)).order_by(Contact.updated_at.desc()).limit(1))
+         ).scalar_one_or_none()
+diff --git a/bot_core/app/utils/text.py b/bot_core/app/utils/text.py
+index f8295a6..b95516f 100644
+--- a/bot_core/app/utils/text.py
++++ b/bot_core/app/utils/text.py
+@@ -46,3 +46,7 @@ def has_any_keyword(text: str, keywords: Iterable[str]) -> bool:
+             return True
+     return False
+ 
++def escape_like(query: str) -> str:
++    """Escapes SQL LIKE wildcards % and _"""
++    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
++
+diff --git a/deploy/nginx/default.conf b/deploy/nginx/default.conf
+index 8457935..0e6bc10 100644
+--- a/deploy/nginx/default.conf
++++ b/deploy/nginx/default.conf
+@@ -39,19 +39,9 @@ server {
+         proxy_read_timeout 5s;
+     }
+ 
+-    # Webhook endpoint — keep alive for WAHA retries
++    # Webhook endpoint — internal only, block from public internet
+     location /webhooks/ {
+-        proxy_pass http://api_backend;
+-        proxy_http_version 1.1;
+-        proxy_set_header Host $host;
+-        proxy_set_header X-Real-IP $remote_addr;
+-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+-        proxy_set_header X-Forwarded-Proto $scheme;
+-        proxy_set_header Connection "";
+-
+-        proxy_connect_timeout 30s;
+-        proxy_send_timeout 30s;
+-        proxy_read_timeout 30s;
++        return 403;
+     }
+ }
+ 
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 2d73e21..5aafa33 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -4,8 +4,8 @@ services:
+     restart: unless-stopped
+     env_file:
+       - .env.production
+-    ports:
+-      - "${POSTGRES_PORT:-5432}:5432"
++    expose:
++      - "5432"
+     volumes:
+       - postgres_data:/var/lib/postgresql/data
+     healthcheck:
+@@ -35,8 +35,8 @@ services:
+         condition: service_healthy
+       migrate:
+         condition: service_completed_successfully
+-    ports:
+-      - "${API_PORT:-8080}:8080"
++    expose:
++      - "8080"
+     healthcheck:
+       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1"]
+       interval: 20s
+@@ -71,8 +71,6 @@ services:
+         condition: service_healthy
+     expose:
+       - "3000"
+-    ports:
+-      - "${WAHA_HTTP_PORT:-3000}:3000"
+     healthcheck:
+       test: ["CMD", "node", "-e", "const options = { headers: {} }; if (process.env.WHATSAPP_API_KEY) options.headers['X-Api-Key'] = process.env.WHATSAPP_API_KEY; require('http').get('http://127.0.0.1:3000/api/server/status', options, (res) => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+       interval: 20s
+@@ -90,6 +88,52 @@ services:
+         max-size: "10m"
+         max-file: "3"
+ 
++  outbound-worker:
++    build:
++      context: .
++      dockerfile: Dockerfile
++    restart: unless-stopped
++    env_file:
++      - .env.production
++    environment:
++      WAHA_SERVICE_URL: ${WAHA_SERVICE_URL:-http://waha:3000}
++    depends_on:
++      postgres:
++        condition: service_healthy
++      waha:
++        condition: service_healthy
++    command: ["python", "worker_cli.py", "outbound"]
++    networks:
++      - datacube
++    logging:
++      driver: json-file
++      options:
++        max-size: "10m"
++        max-file: "3"
++
++  waha-monitor:
++    build:
++      context: .
++      dockerfile: Dockerfile
++    restart: unless-stopped
++    env_file:
++      - .env.production
++    environment:
++      WAHA_SERVICE_URL: ${WAHA_SERVICE_URL:-http://waha:3000}
++    depends_on:
++      postgres:
++        condition: service_healthy
++      waha:
++        condition: service_healthy
++    command: ["python", "worker_cli.py", "monitor"]
++    networks:
++      - datacube
++    logging:
++      driver: json-file
++      options:
++        max-size: "10m"
++        max-file: "3"
++
+   nginx:
+     image: nginx:alpine
+     restart: unless-stopped
+diff --git a/tests/unit/test_experience_formatter.py b/tests/unit/test_experience_formatter.py
+index 02afb89..62cac82 100644
+--- a/tests/unit/test_experience_formatter.py
++++ b/tests/unit/test_experience_formatter.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-from app.core.experience_formatter import WhatsAppExperienceFormatter, format_whatsapp_quote, memory_context_indicators
++from app.core.experience_formatter import WhatsAppExperienceFormatter, memory_context_indicators
+ 
+ 
+ def test_source_indicator_badges() -> None:
+@@ -43,35 +43,18 @@ def test_signature_style_can_be_disabled_for_legacy_shape() -> None:
+     assert reply == "Source: Rule\n\nDatacube AU is active."
+ 
+ 
+-def test_format_whatsapp_quote_single_line() -> None:
+-    assert format_whatsapp_quote("Message text") == "> Message text"
+-
+-
+-def test_format_whatsapp_quote_multiline_paragraphs() -> None:
+-    assert format_whatsapp_quote("Good morning, Daniel.\n\nIt looks like it may rain today.") == (
+-        "> Good morning, Daniel.\n\n"
+-        "> It looks like it may rain today."
+-    )
+-
+-
+-def test_format_whatsapp_quote_preserves_blank_lines() -> None:
+-    assert format_whatsapp_quote("First line\n\n\nSecond line") == "> First line\n\n\n> Second line"
+-
+-
+-def test_format_whatsapp_quote_does_not_duplicate_existing_marker() -> None:
+-    assert format_whatsapp_quote("> Already quoted\n\nNext line") == "> Already quoted\n\n> Next line"
+-
+ 
+ def test_format_reply_can_quote_only_the_body() -> None:
+     formatter = WhatsAppExperienceFormatter()
+     reply = formatter.format_reply(
+-        "ZinaX is part of Fabian's AI ecosystem.",
+-        source="Identity",
+-        show_source=False,
+-        quote_body=True,
++        "Important notification.",
++        source="System",
++        context_indicators=[],
++        whatsapp_format_mode="quote",
+     )
+ 
+-    assert reply == "*Zina*\n\n> ZinaX is part of Fabian's AI ecosystem."
++    assert reply.startswith("*Zina*")
++    assert "> Important notification." in reply
+ 
+ 
+ def test_memory_context_indicators_only_from_used_memory_diagnostics() -> None:
