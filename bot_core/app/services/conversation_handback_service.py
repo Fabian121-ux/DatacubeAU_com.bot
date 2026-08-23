@@ -28,7 +28,7 @@ class ConversationHandbackService:
             return existing
 
         now = utcnow()
-        window_start = row.pending_since or row.assisting_since
+        window_start = await self._resolve_window_start(chat_id=chat_id, assisting_since=row.assisting_since)
         messages = (
             await self.session.execute(
                 select(Message)
@@ -112,6 +112,20 @@ class ConversationHandbackService:
             return None
         summary = (row.metadata_json or {}).get("handback_summary")
         return summary if isinstance(summary, dict) else None
+
+    async def _resolve_window_start(self, *, chat_id: str, assisting_since):
+        """Recover the human-first waiting window even after owner-resume clears pending_since."""
+        stmt = (
+            select(AuditLog)
+            .where(AuditLog.action == "conversation_takeover_waiting")
+            .where(AuditLog.entity_type == "conversation_takeover")
+            .where(AuditLog.entity_id == chat_id)
+            .where(AuditLog.created_at <= assisting_since)
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .limit(1)
+        )
+        waiting_event = (await self.session.execute(stmt)).scalar_one_or_none()
+        return waiting_event.created_at if waiting_event is not None else assisting_since
 
     async def _get(self, chat_id: str) -> ConversationTakeover | None:
         stmt = select(ConversationTakeover).where(ConversationTakeover.chat_id == chat_id).limit(1)
