@@ -21,6 +21,7 @@ router = APIRouter(
 class ConversationTakeoverControlIn(BaseModel):
     auto_assist_enabled: bool
     inactivity_seconds: int | None = Field(default=None, ge=5, le=86400)
+    wait_for_fabian_first: bool | None = None
 
 
 @router.get("/{chat_id}")
@@ -41,6 +42,7 @@ async def set_conversation_takeover_control(
         chat_id=chat_id,
         auto_assist_enabled=body.auto_assist_enabled,
         inactivity_seconds=body.inactivity_seconds,
+        wait_for_fabian_first=body.wait_for_fabian_first,
     )
     await db.commit()
     return result
