@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin_session
 from app.db import get_db_session
+from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 
 
@@ -30,6 +31,15 @@ async def get_conversation_takeover_control(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     return await ConversationTakeoverService(db).get_chat_control(chat_id=chat_id)
+
+
+@router.get("/{chat_id}/handback")
+async def get_conversation_handback(
+    chat_id: str,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    summary = await ConversationHandbackService(db).get_latest(chat_id=chat_id)
+    return {"chat_id": chat_id, "handback": summary}
 
 
 @router.put("/{chat_id}")
