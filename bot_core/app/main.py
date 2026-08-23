@@ -14,7 +14,11 @@ from app.services.bot_config_service import BotConfigService
 from app.services.faq_service import FAQService
 from app.services.identity_registry_service import IdentityRegistryService
 from app.services.logging_service import configure_logging, log_event
-from app.workers.background_workers import outbound_queue_delivery_worker, waha_monitor_worker
+from app.workers.background_workers import (
+    conversation_takeover_worker,
+    outbound_queue_delivery_worker,
+    waha_monitor_worker,
+)
 
 
 configure_logging()
@@ -30,6 +34,7 @@ async def lifespan(_: FastAPI):
         await ping_database()
     await _sync_core_faq()
     tasks.append(asyncio.create_task(outbound_queue_delivery_worker(), name="outbound-queue-delivery"))
+    tasks.append(asyncio.create_task(conversation_takeover_worker(), name="conversation-takeover"))
     tasks.append(asyncio.create_task(waha_monitor_worker(), name="waha-monitor"))
     log_event(logger, logging.INFO, "app_startup", environment=settings.environment, ai_enabled=settings.ai_enabled)
     try:
