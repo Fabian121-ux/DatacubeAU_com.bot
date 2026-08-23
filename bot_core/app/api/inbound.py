@@ -146,11 +146,14 @@ async def _process_event_async(
             payload = _resolve_payload(event)
             chat_id = _resolve_chat_id(payload)
             if chat_id and not _is_group_chat(chat_id):
+                reply_deferred = bool(result.get("reply_deferred"))
                 takeover_scheduled = await ConversationTakeoverService(db).schedule_if_eligible(
                     chat_id=chat_id,
                     chat_type=str(result.get("chat_type") or ""),
                     message_id=_resolve_message_id(payload),
                     router_replied=bool(result.get("outbound_message_id") or result.get("outbound_queue_id")),
+                    reply_deferred=reply_deferred,
+                    outbound_queue_id=(int(result["outbound_queue_id"]) if result.get("outbound_queue_id") else None),
                 )
             if idempotency_key:
                 await InboundIdempotencyService(db).mark_completed(idempotency_key)
@@ -171,6 +174,7 @@ async def _process_event_async(
             error=error_text,
             idempotency_key=idempotency_key,
             takeover_scheduled=takeover_scheduled,
+            reply_deferred=result.get("reply_deferred") if result else None,
         )
 
 
