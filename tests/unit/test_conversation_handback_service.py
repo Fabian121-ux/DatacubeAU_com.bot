@@ -89,8 +89,25 @@ async def test_owner_resume_generates_private_handback_once(db_session):
     assert summary["zina_messages_pending"] == 0
     assert summary["latest_contact_message"] == "I can also do 4pm if that works."
     assert summary["recent_questions_to_review"] == ["Can Fabian confirm the meeting time?"]
+    assert summary["contact_requests"] == ["Can Fabian confirm the meeting time?"]
+    assert summary["zina_responses_sent"] == ["I can help with the scheduling details."]
+    assert summary["explicit_time_references"] == [
+        {
+            "source": "contact",
+            "message": "I can also do 4pm if that works.",
+            "references": ["4pm"],
+        }
+    ]
+    assert summary["zina_commitment_evidence"] == [
+        {
+            "message": "I can help with the scheduling details.",
+            "delivery_status": "sent",
+        }
+    ]
+    assert "Can Fabian confirm the meeting time?" in summary["needs_fabian_attention"]
     assert "2 contact message(s)" in summary["summary_text"]
     assert "Zina sent 2 WhatsApp message(s)" in summary["summary_text"]
+    assert "What the contact wanted" in summary["summary_text"]
 
     stored = await handback_service.get_latest(chat_id=chat_id)
     assert stored == summary
@@ -105,6 +122,9 @@ async def test_owner_resume_generates_private_handback_once(db_session):
         )
     ).scalars().all()
     assert len(audit_rows) == 1
+    assert audit_rows[0].details_json["contact_requests"] == ["Can Fabian confirm the meeting time?"]
+    assert audit_rows[0].details_json["time_reference_count"] == 1
+    assert audit_rows[0].details_json["commitment_evidence_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -162,6 +182,26 @@ async def test_handback_includes_message_that_started_waiting_window(db_session)
             ),
         ]
     )
+    db_session.add_all(
+        [
+            OutboundMessage(
+                chat_id=chat_id,
+                message_text="I'll let Fabian know you need the proposal today.",
+                status="sent",
+                next_attempt_at=assisting_started,
+                created_at=assisting_started,
+                updated_at=assisting_started + timedelta(seconds=15),
+            ),
+            OutboundMessage(
+                chat_id=chat_id,
+                message_text="A second reply is waiting.",
+                status="deferred",
+                next_attempt_at=now + timedelta(minutes=1),
+                created_at=now - timedelta(seconds=20),
+                updated_at=now - timedelta(seconds=10),
+            ),
+        ]
+    )
     await db_session.commit()
 
     assert await ConversationTakeoverService(db_session).record_owner_reply(chat_id=chat_id) is True
@@ -173,6 +213,31 @@ async def test_handback_includes_message_that_started_waiting_window(db_session)
     assert summary["window_start"] == waiting_started.isoformat()
     assert summary["recent_questions_to_review"] == ["Can Fabian send the proposal today?"]
     assert summary["latest_contact_message"] == "Please let him know it is urgent."
+    assert summary["contact_requests"] == [
+        "Can Fabian send the proposal today?",
+        "Please let him know it is urgent.",
+    ]
+    assert summary["explicit_time_references"] == [
+        {
+            "source": "contact",
+            "message": "Can Fabian send the proposal today?",
+            "references": ["today"],
+        },
+        {
+            "source": "zina",
+            "message": "I'll let Fabian know you need the proposal today.",
+            "delivery_status": "sent",
+            "references": ["today"],
+        },
+    ]
+    assert summary["zina_commitment_evidence"] == [
+        {
+            "message": "I'll let Fabian know you need the proposal today.",
+            "delivery_status": "sent",
+        }
+    ]
+    assert "Please let him know it is urgent." in summary["needs_fabian_attention"]
+    assert "1 Zina message(s) are still pending delivery." in summary["needs_fabian_attention"]
 
 
 @pytest.mark.asyncio
