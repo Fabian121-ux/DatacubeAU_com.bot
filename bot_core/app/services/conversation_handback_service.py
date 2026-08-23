@@ -102,6 +102,7 @@ class ConversationHandbackService:
             pending_statuses=pending_statuses,
             failed_statuses=failed_statuses,
         )
+        action_queue = self._build_action_queue(prioritized_attention)
 
         summary_text = self._build_summary_text(
             inbound_count=len(inbound_messages),
@@ -113,6 +114,7 @@ class ConversationHandbackService:
             contact_requests=contact_requests,
             attention_items=attention_items,
             prioritized_attention=prioritized_attention,
+            action_queue=action_queue,
         )
         summary: dict[str, Any] = {
             "for_assisting_since": assisting_key,
@@ -132,6 +134,7 @@ class ConversationHandbackService:
             "zina_commitment_evidence": commitment_evidence,
             "needs_fabian_attention": attention_items,
             "prioritized_attention_items": prioritized_attention,
+            "fabian_action_queue": action_queue,
         }
         metadata["handback_summary"] = summary
         row.metadata_json = metadata
@@ -152,6 +155,7 @@ class ConversationHandbackService:
                     "contact_requests": contact_requests,
                     "needs_fabian_attention": attention_items,
                     "prioritized_attention_items": prioritized_attention,
+                    "fabian_action_queue": action_queue,
                     "time_reference_count": len(time_references),
                     "commitment_evidence_count": len(commitment_evidence),
                 },
@@ -348,6 +352,53 @@ class ConversationHandbackService:
         )
         return ranked[:8]
 
+    @classmethod
+    def _build_action_queue(cls, prioritized_attention: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Recommend a bounded Fabian action without creating new deadlines or obligations."""
+        queue: list[dict[str, Any]] = []
+        action_rank = {"reply_now": 3, "review_today": 2, "informational": 1}
+
+        for item in prioritized_attention:
+            reasons = set(item.get("reason_codes") or [])
+            action_reasons: list[str] = []
+
+            if "unresolved_question" in reasons and (
+                "urgency_or_decision_language" in reasons or "explicit_time_reference" in reasons
+            ):
+                action = "reply_now"
+                action_reasons.append("unresolved_question_with_time_or_urgency_evidence")
+            elif "unresolved_question" in reasons:
+                action = "review_today"
+                action_reasons.append("unresolved_question")
+            elif "failed_or_cancelled_zina_delivery" in reasons:
+                action = "review_today"
+                action_reasons.append("zina_delivery_not_completed")
+            elif "urgency_or_decision_language" in reasons or "explicit_time_reference" in reasons:
+                action = "review_today"
+                action_reasons.append("time_or_urgency_evidence")
+            else:
+                action = "informational"
+                action_reasons.append("no_evidence_requiring_immediate_owner_action")
+
+            queue.append(
+                {
+                    "recommended_action": action,
+                    "action_reason_codes": action_reasons,
+                    **item,
+                }
+            )
+
+        queue.sort(
+            key=lambda item: (
+                action_rank[item["recommended_action"]],
+                item["score"],
+                item["source_created_at"],
+                item["source_id"] or 0,
+            ),
+            reverse=True,
+        )
+        return queue[:8]
+
     @staticmethod
     def _priority_for_score(score: int) -> str:
         if score >= 6:
@@ -399,6 +450,7 @@ class ConversationHandbackService:
         contact_requests: list[str],
         attention_items: list[str],
         prioritized_attention: list[dict[str, Any]],
+        action_queue: list[dict[str, Any]],
     ) -> str:
         parts = [
             f"Zina handback: {inbound_count} contact message(s) arrived while you were away.",
@@ -417,4 +469,8 @@ class ConversationHandbackService:
         high_priority = sum(1 for item in prioritized_attention if item["priority"] == "high")
         if high_priority:
             parts.append(f"High-priority evidence-backed items: {high_priority}.")
+        reply_now = sum(1 for item in action_queue if item["recommended_action"] == "reply_now")
+        review_today = sum(1 for item in action_queue if item["recommended_action"] == "review_today")
+        if reply_now or review_today:
+            parts.append(f"Suggested action queue: {reply_now} reply now; {review_today} review today.")
         return " ".join(parts)
