@@ -96,6 +96,12 @@ class ConversationHandbackService:
             pending_count=pending_count,
             failed_count=failed_count,
         )
+        prioritized_attention = self._build_prioritized_attention(
+            inbound_messages=inbound_messages,
+            outbound=outbound,
+            pending_statuses=pending_statuses,
+            failed_statuses=failed_statuses,
+        )
 
         summary_text = self._build_summary_text(
             inbound_count=len(inbound_messages),
@@ -106,6 +112,7 @@ class ConversationHandbackService:
             recent_questions=recent_questions,
             contact_requests=contact_requests,
             attention_items=attention_items,
+            prioritized_attention=prioritized_attention,
         )
         summary: dict[str, Any] = {
             "for_assisting_since": assisting_key,
@@ -124,6 +131,7 @@ class ConversationHandbackService:
             "explicit_time_references": time_references,
             "zina_commitment_evidence": commitment_evidence,
             "needs_fabian_attention": attention_items,
+            "prioritized_attention_items": prioritized_attention,
         }
         metadata["handback_summary"] = summary
         row.metadata_json = metadata
@@ -143,6 +151,7 @@ class ConversationHandbackService:
                     "recent_questions_to_review": recent_questions,
                     "contact_requests": contact_requests,
                     "needs_fabian_attention": attention_items,
+                    "prioritized_attention_items": prioritized_attention,
                     "time_reference_count": len(time_references),
                     "commitment_evidence_count": len(commitment_evidence),
                 },
@@ -262,6 +271,91 @@ class ConversationHandbackService:
             items.append(f"{failed_count} Zina message(s) failed or were cancelled.")
         return cls._dedupe(items)[-6:]
 
+    @classmethod
+    def _build_prioritized_attention(
+        cls,
+        *,
+        inbound_messages: list[Message],
+        outbound: list[OutboundMessage],
+        pending_statuses: set[str],
+        failed_statuses: set[str],
+    ) -> list[dict[str, Any]]:
+        """Rank attention evidence deterministically while preserving exact provenance."""
+        ranked: list[dict[str, Any]] = []
+        last_inbound_id = inbound_messages[-1].id if inbound_messages else None
+
+        for message in inbound_messages:
+            text = cls._clip(message.message_text)
+            if not text:
+                continue
+            reasons: list[str] = []
+            score = 0
+            if "?" in text:
+                reasons.append("unresolved_question")
+                score += 3
+            if cls._attention_pattern.search(text):
+                reasons.append("urgency_or_decision_language")
+                score += 3
+            if cls._time_pattern.search(text):
+                reasons.append("explicit_time_reference")
+                score += 2
+            if cls._request_pattern.search(text):
+                reasons.append("contact_request")
+                score += 1
+            if message.id == last_inbound_id:
+                reasons.append("most_recent_contact_message")
+                score += 1
+            if not reasons:
+                continue
+            ranked.append(
+                {
+                    "priority": cls._priority_for_score(score),
+                    "score": score,
+                    "reason_codes": reasons,
+                    "source_type": "contact_message",
+                    "source_id": message.id,
+                    "source_created_at": message.created_at.isoformat(),
+                    "evidence": text,
+                }
+            )
+
+        for item in outbound:
+            if item.status not in pending_statuses | failed_statuses:
+                continue
+            text = cls._clip(item.message_text)
+            score = 3 if item.status in failed_statuses else 2
+            reasons = ["failed_or_cancelled_zina_delivery"] if item.status in failed_statuses else ["pending_zina_delivery"]
+            ranked.append(
+                {
+                    "priority": cls._priority_for_score(score),
+                    "score": score,
+                    "reason_codes": reasons,
+                    "source_type": "zina_outbound",
+                    "source_id": item.id,
+                    "source_created_at": item.updated_at.isoformat(),
+                    "delivery_status": item.status,
+                    "evidence": text or "Zina outbound message",
+                }
+            )
+
+        ranked.sort(
+            key=lambda item: (
+                item["score"],
+                item["source_created_at"],
+                item["source_id"] or 0,
+            ),
+            reverse=True,
+        )
+        return ranked[:8]
+
+    @staticmethod
+    def _priority_for_score(score: int) -> str:
+        if score >= 6:
+            return "high"
+        if score >= 3:
+            return "medium"
+        return "low"
+
     async def _get(self, chat_id: str) -> ConversationTakeover | None:
         stmt = select(ConversationTakeover).where(ConversationTakeover.chat_id == chat_id).limit(1)
         return (await self.session.execute(stmt)).scalar_one_or_none()
@@ -304,6 +398,7 @@ class ConversationHandbackService:
         recent_questions: list[str],
         contact_requests: list[str],
         attention_items: list[str],
+        prioritized_attention: list[dict[str, Any]],
     ) -> str:
         parts = [
             f"Zina handback: {inbound_count} contact message(s) arrived while you were away.",
@@ -319,4 +414,7 @@ class ConversationHandbackService:
             parts.append(f"Questions to review: {rendered}.")
         if attention_items:
             parts.append(f"Fabian attention items: {len(attention_items)}.")
+        high_priority = sum(1 for item in prioritized_attention if item["priority"] == "high")
+        if high_priority:
+            parts.append(f"High-priority evidence-backed items: {high_priority}.")
         return " ".join(parts)
