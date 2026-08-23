@@ -36,7 +36,13 @@ class ConversationTakeoverService:
         now = utcnow()
         row = await self._get_locked(chat_id)
         if row is None:
-            row = ConversationTakeover(chat_id=chat_id)
+            row = ConversationTakeover(
+                chat_id=chat_id,
+                state="fabian_active",
+                auto_assist_enabled=True,
+                inactivity_seconds=threshold,
+                updated_at=now,
+            )
             self.session.add(row)
 
         if not row.auto_assist_enabled or row.state == "do_not_auto_assist":
