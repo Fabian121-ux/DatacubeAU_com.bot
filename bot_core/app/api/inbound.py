@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from app.core.router import InboundRouter
 from app.db import SessionLocal
+from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.logging_service import log_event
@@ -55,9 +56,12 @@ async def waha_webhook(
 
     if _is_from_me(payload):
         chat_id = _resolve_chat_id(payload)
+        handback_generated = False
         if chat_id and not _is_group_chat(chat_id):
             async with SessionLocal() as db:
                 cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
+                handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
+                handback_generated = handback is not None
                 await db.commit()
             log_event(
                 logger,
@@ -66,6 +70,7 @@ async def waha_webhook(
                 request_id=request_id,
                 chat_id=chat_id,
                 takeover_cancelled=cancelled,
+                handback_generated=handback_generated,
             )
         log_event(
             logger,
@@ -75,8 +80,14 @@ async def waha_webhook(
             event_name=event_name or "message",
             message_id=message_id,
             reason="from_me",
+            handback_generated=handback_generated,
         )
-        return {"status": "ignored", "reason": "from_me", "event_name": event_name or "message"}
+        return {
+            "status": "ignored",
+            "reason": "from_me",
+            "event_name": event_name or "message",
+            "handback_generated": handback_generated,
+        }
 
     idempotency_key = _build_idempotency_key(event, payload)
     if idempotency_key:
