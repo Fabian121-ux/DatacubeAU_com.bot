@@ -236,8 +236,10 @@ async def test_handback_includes_message_that_started_waiting_window(db_session)
             "delivery_status": "sent",
         }
     ]
+    assert summary["zina_messages_pending"] == 0
+    assert summary["zina_messages_failed_or_cancelled"] == 1
     assert "Please let him know it is urgent." in summary["needs_fabian_attention"]
-    assert "1 Zina message(s) are still pending delivery." in summary["needs_fabian_attention"]
+    assert "1 Zina message(s) failed or were cancelled." in summary["needs_fabian_attention"]
 
 
 @pytest.mark.asyncio
