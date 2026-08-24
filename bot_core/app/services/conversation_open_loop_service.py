@@ -14,6 +14,8 @@ from app.utils.time import utcnow
 
 SCAN_CURSOR_KEY = "memory_open_loop_scanner_last_message_id"
 OPEN_LOOP_PROJECTION_SOURCE = "open_loop_projection"
+SEMANTIC_RESOLUTION_MIN_SCORE = 0.60
+SEMANTIC_RESOLUTION_MIN_MARGIN = 0.20
 
 _REQUEST_PREFIXES = (
     "please ",
@@ -52,6 +54,17 @@ _IGNORED_SHORT_MESSAGES = {
     "thanks",
     "thank you",
     "yo",
+}
+_SEMANTIC_RESOLUTION_PATTERNS = (
+    re.compile(r"\balready\s+(?:received|got|found|sent|completed|resolved)\b"),
+    re.compile(r"\b(?:i|we)\s+(?:received|got|found)\s+(?:the|my|our)\b"),
+    re.compile(r"\b(?:i|we)\s+have\s+(?:the|my|our)\b"),
+    re.compile(r"\b(?:it|that)\s+(?:was|is|has been)\s+(?:sent|received|done|completed|resolved|sorted)\b"),
+)
+_TOKEN_STOPWORDS = {
+    "a", "about", "already", "am", "an", "and", "are", "be", "been", "can", "could", "did", "do", "for",
+    "from", "got", "had", "has", "have", "i", "in", "is", "it", "me", "my", "now", "of", "on", "our",
+    "please", "received", "send", "sent", "that", "the", "this", "to", "we", "will", "with", "would", "you",
 }
 
 
@@ -104,6 +117,13 @@ class ConversationOpenLoopService:
                     changed_contacts.add(message.contact_id)
                 continue
 
+            if self.is_semantic_resolution_candidate(normalized):
+                closed = await self._resolve_best_matching_loop(message, normalized)
+                if closed:
+                    resolved += 1
+                    changed_contacts.add(message.contact_id)
+                    continue
+
             loop_type = self.classify_open_loop(text_value)
             if not loop_type:
                 continue
@@ -142,6 +162,38 @@ class ConversationOpenLoopService:
         if re.match(r"^(please|kindly)\b", normalized):
             return "request"
         return None
+
+    @staticmethod
+    def is_semantic_resolution_candidate(normalized_text: str) -> bool:
+        return any(pattern.search(normalized_text or "") for pattern in _SEMANTIC_RESOLUTION_PATTERNS)
+
+    @staticmethod
+    def _semantic_tokens(text_value: str) -> set[str]:
+        normalized = normalize_text(text_value or "")
+        tokens = re.findall(r"[a-z0-9]+", normalized)
+        useful: set[str] = set()
+        for token in tokens:
+            if token in _TOKEN_STOPWORDS or len(token) < 3:
+                continue
+            if token.endswith("ies") and len(token) > 4:
+                token = token[:-3] + "y"
+            elif token.endswith("s") and len(token) > 4 and not token.endswith("ss"):
+                token = token[:-1]
+            useful.add(token)
+        return useful
+
+    @classmethod
+    def semantic_resolution_score(cls, resolution_text: str, loop_text: str) -> float:
+        resolution_tokens = cls._semantic_tokens(resolution_text)
+        loop_tokens = cls._semantic_tokens(loop_text)
+        if not resolution_tokens or not loop_tokens:
+            return 0.0
+        overlap = resolution_tokens & loop_tokens
+        if not overlap:
+            return 0.0
+        # Coverage of the completion message is the conservative signal: it
+        # should clearly name the subject of one outstanding item.
+        return len(overlap) / len(resolution_tokens)
 
     async def list_active(self, contact_id: int, *, limit: int = 8) -> list[ConversationOpenLoop]:
         stmt = (
@@ -213,12 +265,55 @@ class ConversationOpenLoopService:
         active = [row for row in await self.list_active(int(message.contact_id), limit=20) if row.chat_id == message.chat_id]
         if len(active) != 1:
             return False
-        loop = active[0]
+        return await self._mark_resolved(
+            active[0],
+            message,
+            resolution_reason="contact_explicit_resolution",
+            resolution_score=None,
+        )
+
+    async def _resolve_best_matching_loop(self, message: Message, normalized: str) -> bool:
+        active = [row for row in await self.list_active(int(message.contact_id), limit=20) if row.chat_id == message.chat_id]
+        if not active:
+            return False
+
+        scored = sorted(
+            ((self.semantic_resolution_score(normalized, row.loop_text), row) for row in active),
+            key=lambda pair: (pair[0], pair[1].updated_at, pair[1].id),
+            reverse=True,
+        )
+        best_score, best = scored[0]
+        runner_up_score = scored[1][0] if len(scored) > 1 else 0.0
+        if best_score < SEMANTIC_RESOLUTION_MIN_SCORE:
+            return False
+        if len(scored) > 1 and best_score - runner_up_score < SEMANTIC_RESOLUTION_MIN_MARGIN:
+            return False
+
+        return await self._mark_resolved(
+            best,
+            message,
+            resolution_reason="contact_semantic_resolution",
+            resolution_score=round(best_score, 4),
+        )
+
+    async def _mark_resolved(
+        self,
+        loop: ConversationOpenLoop,
+        message: Message,
+        *,
+        resolution_reason: str,
+        resolution_score: float | None,
+    ) -> bool:
         loop.status = "resolved"
         loop.resolution_message_id = message.id
-        loop.resolution_reason = "contact_explicit_resolution"
+        loop.resolution_reason = resolution_reason
         loop.resolved_at = utcnow()
         loop.updated_at = utcnow()
+        metadata = dict(loop.metadata_json or {})
+        if resolution_score is not None:
+            metadata["resolution_score"] = resolution_score
+            metadata["resolution_evidence"] = (message.message_text or "").strip()[:500]
+        loop.metadata_json = metadata
         self.session.add(
             AuditLog(
                 action="conversation_open_loop_resolved",
@@ -228,7 +323,9 @@ class ConversationOpenLoopService:
                     "contact_id": message.contact_id,
                     "chat_id": message.chat_id,
                     "resolution_message_id": message.id,
-                    "resolution_reason": loop.resolution_reason,
+                    "resolution_reason": resolution_reason,
+                    "resolution_score": resolution_score,
+                    "source_message_id": loop.source_message_id,
                 },
             )
         )
