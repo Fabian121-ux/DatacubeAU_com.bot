@@ -9,6 +9,8 @@ from sqlalchemy import or_, select
 
 from app.db import SessionLocal
 from app.models.schema import AuditLog, OutboundMessage, WahaOutage
+from app.services.conversation_open_loop_service import ConversationOpenLoopService
+from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
@@ -29,6 +31,34 @@ async def outbound_queue_delivery_worker() -> None:
         raise
     finally:
         await client.close()
+
+
+async def conversation_takeover_worker() -> None:
+    try:
+        while True:
+            async with SessionLocal() as session:
+                claimed = await ConversationTakeoverService(session).claim_due()
+                if claimed:
+                    await session.commit()
+                    log_event(logger, logging.INFO, "conversation_takeovers_started", count=claimed)
+            await asyncio.sleep(1 if claimed else 3)
+    except asyncio.CancelledError:
+        raise
+
+
+async def conversation_open_loop_worker() -> None:
+    """Keep unresolved questions/requests durable and projected into Memory context."""
+    try:
+        while True:
+            async with SessionLocal() as session:
+                result = await ConversationOpenLoopService(session).scan_once(limit=100)
+                if result["processed"]:
+                    await session.commit()
+                    if result["created"] or result["repeated"] or result["resolved"]:
+                        log_event(logger, logging.INFO, "conversation_open_loops_updated", **result)
+            await asyncio.sleep(2 if result["processed"] else 5)
+    except asyncio.CancelledError:
+        raise
 
 
 async def waha_monitor_worker() -> None:

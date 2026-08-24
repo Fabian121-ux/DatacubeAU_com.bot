@@ -13,7 +13,9 @@ from app.core.message_normalizer import MessageNormalizer, NormalizedMessage
 from app.core.reply_planner import PlannedReply, ReplyPlanner
 from app.models.enums import DecisionType, Direction
 from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
+from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.memory_compaction_policy import effective_summary_thresholds
 from app.services.owner_command_service import OwnerCommandService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
@@ -35,6 +37,7 @@ class RouteResult:
     outbound_message_id: int | None
     outbound_queue_id: int | None = None
     delivery_error: str | None = None
+    reply_deferred: bool = False
 
 
 class InboundRouter:
@@ -71,8 +74,15 @@ class InboundRouter:
             chat_type=normalized.chat_type.value,
         )
 
+        takeover_service = ConversationTakeoverService(self.session)
+        wait_for_fabian_first = (
+            normalized.chat_type.value == "dm"
+            and await takeover_service.should_wait_for_fabian_first(chat_id=normalized.chat_id)
+        )
+
         owner_command = await OwnerCommandService(self.session).handle(normalized, contact)
         if owner_command:
+            wait_for_fabian_first = False
             planned = await self.reply_planner._apply_identity_guard(
                 PlannedReply(
                     decision_type=DecisionType.STATIC_REPLY,
@@ -81,7 +91,7 @@ class InboundRouter:
                     reply_text=owner_command.reply_text,
                     source_diagnostics=owner_command.source_diagnostics,
                 )
-        )
+            )
         else:
             profile_facts = await self.reply_planner.memory_service.extract_profile_from_message(
                 contact.id,
@@ -95,7 +105,9 @@ class InboundRouter:
                     details_json={"facts": profile_facts},
                 )
 
-            typing_started = await self._maybe_start_typing(normalized.chat_id)
+            typing_started = False
+            if not wait_for_fabian_first:
+                typing_started = await self._maybe_start_typing(normalized.chat_id)
             planned = await self.reply_planner.plan(normalized, contact.id)
             if typing_started:
                 await self._maybe_stop_typing(normalized.chat_id)
@@ -119,6 +131,7 @@ class InboundRouter:
                 "reason": planned.reason,
                 "kb_confidence": planned.kb_confidence,
                 "should_reply": planned.should_reply,
+                "wait_for_fabian_first": wait_for_fabian_first,
                 "source_diagnostics": planned.source_diagnostics,
                 "router_analytics": planned.source_diagnostics.get("router_analytics"),
             },
@@ -131,6 +144,7 @@ class InboundRouter:
             decision_type=planned.decision_type.value,
             should_reply=planned.should_reply,
             kb_confidence=planned.kb_confidence,
+            wait_for_fabian_first=wait_for_fabian_first,
         )
         if not planned.should_reply or not planned.reply_text:
             await self.session.commit()
@@ -145,8 +159,14 @@ class InboundRouter:
                 outbound_message_id=None,
             ))
 
-        await self._maybe_typing_delay(normalized, planned)
+        reply_deferred = wait_for_fabian_first
+        if not reply_deferred:
+            await self._maybe_typing_delay(normalized, planned)
         formatting_metadata = self._reply_formatting_metadata(planned)
+        formatting_metadata["delivery_policy"] = (
+            "wait_for_fabian_first" if reply_deferred else "immediate"
+        )
+        formatting_metadata["reply_deferred"] = reply_deferred
         queued = await self._queue_outbound_message(
             normalized.chat_id,
             planned.reply_text,
@@ -154,6 +174,7 @@ class InboundRouter:
             media_type=planned.media_type,
             media_caption=planned.media_caption,
             formatting_json=formatting_metadata,
+            delivery_status="deferred" if reply_deferred else "pending",
         )
         outbound = await self._save_outbound_message(
             normalized,
@@ -163,7 +184,7 @@ class InboundRouter:
             raw_reply_text=planned.raw_reply_text,
             formatting_json=formatting_metadata,
         )
-        decision.reply_sent = True
+        decision.reply_sent = not reply_deferred
         if planned.ai_call:
             planned.ai_call.message_id = inbound.id
             self.session.add(planned.ai_call)
@@ -176,23 +197,30 @@ class InboundRouter:
             planned.source_diagnostics.setdefault("ai_usage", {})["event_id"] = usage_event.id
             planned.source_diagnostics["ai_usage"]["total_tokens"] = usage_event.total_tokens
         await self.reply_planner.cache_answer_if_reusable(normalized.message_text, planned)
-        await self.reply_planner.upsert_conversation_summary(
-            chat_id=normalized.chat_id,
-            chat_type=normalized.chat_type.value,
-            user_text=normalized.message_text,
-            bot_text=planned.raw_reply_text or planned.reply_text,
-            decision=planned.decision_type.value,
-        )
+        if not reply_deferred:
+            await self.reply_planner.upsert_conversation_summary(
+                chat_id=normalized.chat_id,
+                chat_type=normalized.chat_type.value,
+                user_text=normalized.message_text,
+                bot_text=planned.raw_reply_text or planned.reply_text,
+                decision=planned.decision_type.value,
+            )
         timeline_entry = await self.reply_planner.memory_service.log_conversation_event(
             contact.id,
             user_text=normalized.message_text,
             decision=planned.decision_type.value,
         )
         threshold_config = await self.reply_planner.bot_config.get("memory_summary_thresholds", "25,50,100")
+        configured_thresholds = self.reply_planner.memory_service.parse_summary_thresholds(threshold_config)
+        summary_thresholds = await effective_summary_thresholds(
+            self.session,
+            contact.id,
+            configured_thresholds,
+        )
         due_summaries = await self.reply_planner.memory_service.generate_due_summaries(
             contact.id,
             chat_id=normalized.chat_id,
-            thresholds=self.reply_planner.memory_service.parse_summary_thresholds(threshold_config),
+            thresholds=summary_thresholds,
         )
         if timeline_entry:
             await self._save_audit_log(
@@ -215,16 +243,21 @@ class InboundRouter:
                     "contact_id": contact.id,
                     "summary_ids": [row.id for row in due_summaries],
                     "thresholds": [row.threshold for row in due_summaries],
+                    "configured_thresholds": list(configured_thresholds),
+                    "effective_thresholds": list(summary_thresholds),
                 },
             )
         planned.source_diagnostics.setdefault("memory", {}).update(
             {
                 "timeline_event_created": bool(timeline_entry),
                 "summaries_created": len(due_summaries),
+                "summary_thresholds": list(summary_thresholds),
+                "assistant_reply_deferred": reply_deferred,
             }
         )
+        audit_action = "outbound_deferred" if reply_deferred else "outbound_queued"
         await self._save_audit_log(
-            action="outbound_queued",
+            action=audit_action,
             entity_type="message",
             entity_id=str(outbound.id),
             details_json={
@@ -238,28 +271,31 @@ class InboundRouter:
                 "final_reply_text": planned.reply_text,
                 "formatting": formatting_metadata,
                 "source_diagnostics": planned.source_diagnostics,
+                "reply_deferred": reply_deferred,
             },
         )
         log_event(
             logger,
             logging.INFO,
-            "outbound_queued",
+            audit_action,
             inbound_message_id=inbound.id,
             outbound_message_id=outbound.id,
             outbound_queue_id=queued.id,
             decision_type=planned.decision_type.value,
+            reply_deferred=reply_deferred,
         )
         await self.session.commit()
         return asdict(RouteResult(
             status="ok",
             chat_type=normalized.chat_type.value,
-            action="queued",
+            action="deferred" if reply_deferred else "queued",
             decision_type=planned.decision_type.value,
             reason=planned.reason,
             kb_confidence=planned.kb_confidence,
             inbound_message_id=inbound.id,
             outbound_message_id=outbound.id,
             outbound_queue_id=queued.id,
+            reply_deferred=reply_deferred,
         ))
 
     async def preview(self, normalized: NormalizedMessage, contact_id: int | None = None) -> PlannedReply:
@@ -374,6 +410,7 @@ class InboundRouter:
         media_type: str | None = None,
         media_caption: str | None = None,
         formatting_json: dict[str, Any] | None = None,
+        delivery_status: str = "pending",
     ) -> OutboundMessage:
         model = OutboundMessage(
             chat_id=chat_id or "unknown-chat",
@@ -382,7 +419,7 @@ class InboundRouter:
             media_type=media_type,
             media_caption=media_caption,
             formatting_json=formatting_json,
-            status="pending",
+            status=delivery_status,
             retry_count=0,
             max_retries=3,
             next_attempt_at=utcnow(),

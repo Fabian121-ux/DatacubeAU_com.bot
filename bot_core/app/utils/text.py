@@ -4,13 +4,21 @@ from typing import Iterable
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _NON_WORD_RE = re.compile(r"[^\w\s]")
+_TOKEN_CANONICALIZATION = {
+    "services": "service",
+    "offered": "offer",
+    "offers": "offer",
+    "offering": "offer",
+}
 
 
 def normalize_text(text: str) -> str:
     value = text.lower().strip()
     value = _NON_WORD_RE.sub(" ", value)
-    value = _WHITESPACE_RE.sub(" ", value)
-    return value
+    value = _WHITESPACE_RE.sub(" ", value).strip()
+    if not value:
+        return ""
+    return " ".join(_TOKEN_CANONICALIZATION.get(token, token) for token in value.split())
 
 
 def estimate_tokens(text: str) -> int:
@@ -45,4 +53,3 @@ def has_any_keyword(text: str, keywords: Iterable[str]) -> bool:
         if keyword and normalize_text(keyword) in normalized:
             return True
     return False
-
