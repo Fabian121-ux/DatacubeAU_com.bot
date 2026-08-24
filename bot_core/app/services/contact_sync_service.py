@@ -76,23 +76,35 @@ class ContactSyncService:
 
         raw_id = self._first_text(
             payload.get("id"),
-            payload.get("jid"),
             payload.get("contactId"),
             self._nested(payload, "_data", "id", "_serialized"),
             self._nested(payload, "_data", "id"),
+            payload.get("jid"),
         )
         if not raw_id or self._is_non_person_chat(raw_id):
             return "skipped"
 
-        whatsapp_id = self._canonical_whatsapp_id(raw_id)
         lid = raw_id if raw_id.endswith("@lid") else self._first_text(payload.get("lid"), payload.get("LID"))
+        pn_id = self._first_person_jid(
+            payload.get("pn"),
+            payload.get("phoneJid"),
+            payload.get("phoneNumberJid"),
+            payload.get("jid"),
+            raw_id,
+        )
+        if raw_id.endswith("@lid") and not pn_id:
+            # A bare LID is not a phone number. Do not create a second person row
+            # until WAHA supplies a PN mapping that can be reconciled safely.
+            return "skipped"
+
+        whatsapp_id = self._canonical_whatsapp_id(pn_id or raw_id)
         phone = self._first_text(
             payload.get("phone"),
             payload.get("number"),
             payload.get("phoneNumber"),
             self._phone_from_jid(whatsapp_id),
         )
-        normalized_phone = self._digits(phone or whatsapp_id) or None
+        normalized_phone = self._digits(phone) or None if phone else None
         contact_name = self._first_text(payload.get("name"), payload.get("contactName"))
         push_name = self._first_text(payload.get("pushName"), payload.get("pushname"), payload.get("notify"))
 
@@ -198,9 +210,23 @@ class ContactSyncService:
 
     @staticmethod
     def _phone_from_jid(value: str) -> str | None:
-        local = str(value).split("@", 1)[0]
+        lowered = str(value).strip().lower()
+        if not (lowered.endswith("@c.us") or lowered.endswith("@s.whatsapp.net")):
+            return None
+        local = lowered.split("@", 1)[0]
         digits = re.sub(r"\D+", "", local)
         return digits or None
+
+    @classmethod
+    def _first_person_jid(cls, *values: Any) -> str | None:
+        for value in values:
+            text = cls._first_text(value)
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered.endswith("@c.us") or lowered.endswith("@s.whatsapp.net"):
+                return text
+        return None
 
     @staticmethod
     def _digits(value: str) -> str:
