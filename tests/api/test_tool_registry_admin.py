@@ -37,6 +37,19 @@ class _FakeRegistry:
                 "input_schema": {"type": "object"},
                 "handler_target": "scheduled_action.whatsapp_send_message",
                 "enabled": self.enabled,
+                "planner_exposed": True,
+            }
+        ]
+
+    async def planner_catalog(self, *, permission):
+        if permission != "owner" or not self.enabled:
+            return []
+        return [
+            {
+                "name": "whatsapp.send_message",
+                "description": "Send message",
+                "risk": "medium",
+                "input_schema": {"type": "object"},
             }
         ]
 
@@ -72,6 +85,22 @@ def test_admin_lists_tool_contracts(monkeypatch):
         assert body["count"] == 1
         assert body["items"][0]["name"] == "whatsapp.send_message"
         assert body["items"][0]["risk"] == "medium"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_admin_planner_catalog_omits_internal_handler_targets(monkeypatch):
+    monkeypatch.setattr(tool_registry_admin, "ToolRegistryService", _FakeRegistry)
+    _FakeRegistry.enabled = True
+    client = _client()
+    try:
+        response = client.get("/admin/tools/catalog/planner?permission=owner")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["count"] == 1
+        assert body["items"][0]["name"] == "whatsapp.send_message"
+        assert "handler_target" not in body["items"][0]
+        assert "permission" not in body["items"][0]
     finally:
         app.dependency_overrides.clear()
 
