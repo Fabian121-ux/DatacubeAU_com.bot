@@ -105,6 +105,53 @@ async def test_non_admin_from_me_instruction_is_denied(db_session, monkeypatch):
     assert (await db_session.execute(select(ScheduledAction))).scalars().all() == []
 
 
+@pytest.mark.asyncio
+async def test_admin_level_account_cannot_execute_owner_send_tool(db_session, monkeypatch):
+    admin = AdminAccount(
+        name="Limited Admin",
+        whatsapp_number="2348000000003",
+        normalized_whatsapp_id="2348000000003@c.us",
+        role="admin",
+        permission_level="admin",
+        is_primary=False,
+        is_enabled=True,
+    )
+    amanda = Contact(
+        whatsapp_id="2348000000002@c.us",
+        display_name="Amanda Christabel",
+        contact_name="Amanda Christabel",
+    )
+    db_session.add_all([admin, amanda])
+    await db_session.flush()
+
+    event = {
+        "event": "message",
+        "session": "default",
+        "payload": {
+            "id": "ADMIN-ACTION-DENIED",
+            "chatId": "2348000000003@c.us",
+            "from": "2348000000003@c.us",
+            "fromMe": True,
+            "body": "message Amanda Christabel tomorrow at 9am and tell her hello",
+        },
+    }
+
+    import app.services.natural_action_planner_service as planner_module
+
+    fixed_now = datetime(2026, 8, 24, 19, 0, tzinfo=ZoneInfo("Africa/Lagos"))
+    monkeypatch.setattr(planner_module, "utcnow", lambda: fixed_now)
+
+    result = await _plan_owner_natural_action(
+        db_session,
+        event=event,
+        message_id="ADMIN-ACTION-DENIED",
+        request_id="ADMIN-ACTION-DENIED",
+    )
+
+    assert result == {"error": "permission denied for tool whatsapp.send_message"}
+    assert (await db_session.execute(select(ScheduledAction))).scalars().all() == []
+
+
 def test_owner_action_idempotency_is_shared_by_message_event_variants():
     payload = {"id": "OWNER-SAME", "chatId": "2348000000001@c.us"}
     message_event = {"event": "message", "session": "default", "payload": payload}
