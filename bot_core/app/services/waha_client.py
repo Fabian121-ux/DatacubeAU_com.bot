@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -91,6 +92,42 @@ class WAHAClient:
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
             for key in ("data", "chats", "items"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    async def get_contacts(
+        self,
+        session_name: str | None = None,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return one paginated WAHA contact page without introducing another address book."""
+        name = session_name or settings.waha_session_name
+        query = urlencode(
+            {
+                "session": name,
+                "limit": max(1, min(int(limit), 1000)),
+                "offset": max(0, int(offset)),
+                "sortBy": "id",
+                "sortOrder": "asc",
+            }
+        )
+        url = f"{settings.waha_service_url}/api/contacts/all?{query}"
+        headers: dict[str, str] = {}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            payload = await self._request("GET", url, headers=headers)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA contact sync failed for {name}: {exc}") from exc
+
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("data", "contacts", "items"):
                 value = payload.get(key)
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]
