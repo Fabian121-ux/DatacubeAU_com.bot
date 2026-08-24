@@ -42,6 +42,7 @@ async def create_natural_whatsapp_action(
     try:
         result = await service.create_from_instruction(
             payload.instruction,
+            actor_permission="owner",
             timezone=payload.timezone,
             source_message_id=payload.source_message_id,
             requested_by_contact_id=payload.requested_by_contact_id,
