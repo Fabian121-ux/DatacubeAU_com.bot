@@ -46,3 +46,33 @@ def test_action_queue_ui_supports_shareable_chat_and_filter_deep_links():
         assert 'href="/admin/ui#inspector"' in response.text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_action_queue_open_route_requires_admin_session():
+    app.dependency_overrides.clear()
+    client = TestClient(app, follow_redirects=False)
+    response = client.get("/admin/action-queue/open/15550001101%40c.us?action=reply_now")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"
+
+
+def test_action_queue_open_route_builds_canonical_owner_deep_link():
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    try:
+        client = TestClient(app, follow_redirects=False)
+        response = client.get("/admin/action-queue/open/15550001101%40c.us?action=review_today")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/admin/action-queue?chat_id=15550001101%40c.us&action=review_today"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_action_queue_open_route_ignores_unsupported_action_filter():
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    try:
+        client = TestClient(app, follow_redirects=False)
+        response = client.get("/admin/action-queue/open/15550001101%40c.us?action=delete_everything")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/admin/action-queue?chat_id=15550001101%40c.us"
+    finally:
+        app.dependency_overrides.clear()
