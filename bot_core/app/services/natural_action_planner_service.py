@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.scheduled_action_service import ScheduledActionService
+from app.services.tool_dispatcher_service import ToolDispatcherService, ToolExecutionContext
 from app.utils.time import utcnow
 
 
@@ -29,7 +29,8 @@ class NaturalActionPlannerService:
     """Conservative natural-language planner for owner-approved Zina actions.
 
     This service deliberately parses only a narrow WhatsApp scheduling grammar. It never
-    sends directly to WAHA; execution is delegated to the existing ScheduledActionService.
+    sends directly to WAHA; execution passes through the Tool Dispatcher, which delegates
+    to the existing ScheduledActionService after deterministic policy validation.
     """
 
     _TIME = r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?"
@@ -70,7 +71,7 @@ class NaturalActionPlannerService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
-        self.scheduler = ScheduledActionService(session)
+        self.dispatcher = ToolDispatcherService(session)
 
     @classmethod
     def parse(
@@ -129,6 +130,7 @@ class NaturalActionPlannerService:
         self,
         instruction: str,
         *,
+        actor_permission: str,
         timezone: str = DEFAULT_OWNER_TIMEZONE,
         source_message_id: int | None = None,
         requested_by_contact_id: int | None = None,
@@ -138,17 +140,24 @@ class NaturalActionPlannerService:
         plan = self.parse(instruction, timezone=timezone, now=now)
         if plan is None:
             return None
-        item = await self.scheduler.create_whatsapp_message(
-            target_reference=plan.target_reference,
-            text=plan.message_text,
-            scheduled_for=plan.scheduled_for,
-            timezone=plan.timezone,
-            source_message_id=source_message_id,
-            requested_by_contact_id=requested_by_contact_id,
-            idempotency_key=idempotency_key,
+        execution = await self.dispatcher.execute(
+            "whatsapp.send_message",
+            {
+                "target": plan.target_reference,
+                "text": plan.message_text,
+                "scheduled_for": plan.scheduled_for,
+                "timezone": plan.timezone,
+            },
+            context=ToolExecutionContext(
+                permission=actor_permission,
+                source_message_id=source_message_id,
+                requested_by_contact_id=requested_by_contact_id,
+                idempotency_key=idempotency_key,
+            ),
         )
         return {
-            "action": "whatsapp.send_message",
+            "action": execution["tool"],
+            "handler_target": execution["handler_target"],
             "plan": {
                 "target_reference": plan.target_reference,
                 "scheduled_for": plan.scheduled_for,
@@ -156,7 +165,7 @@ class NaturalActionPlannerService:
                 "date_phrase": plan.date_phrase,
                 "time_phrase": plan.time_phrase,
             },
-            "scheduled_action": item,
+            "scheduled_action": execution["result"],
         }
 
     @staticmethod
