@@ -15,6 +15,7 @@ from app.models.enums import DecisionType, Direction
 from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.memory_compaction_policy import effective_summary_thresholds
 from app.services.owner_command_service import OwnerCommandService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
@@ -210,10 +211,16 @@ class InboundRouter:
             decision=planned.decision_type.value,
         )
         threshold_config = await self.reply_planner.bot_config.get("memory_summary_thresholds", "25,50,100")
+        configured_thresholds = self.reply_planner.memory_service.parse_summary_thresholds(threshold_config)
+        summary_thresholds = await effective_summary_thresholds(
+            self.session,
+            contact.id,
+            configured_thresholds,
+        )
         due_summaries = await self.reply_planner.memory_service.generate_due_summaries(
             contact.id,
             chat_id=normalized.chat_id,
-            thresholds=self.reply_planner.memory_service.parse_summary_thresholds(threshold_config),
+            thresholds=summary_thresholds,
         )
         if timeline_entry:
             await self._save_audit_log(
@@ -236,12 +243,15 @@ class InboundRouter:
                     "contact_id": contact.id,
                     "summary_ids": [row.id for row in due_summaries],
                     "thresholds": [row.threshold for row in due_summaries],
+                    "configured_thresholds": list(configured_thresholds),
+                    "effective_thresholds": list(summary_thresholds),
                 },
             )
         planned.source_diagnostics.setdefault("memory", {}).update(
             {
                 "timeline_event_created": bool(timeline_entry),
                 "summaries_created": len(due_summaries),
+                "summary_thresholds": list(summary_thresholds),
                 "assistant_reply_deferred": reply_deferred,
             }
         )
