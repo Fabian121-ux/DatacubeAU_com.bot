@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import select
 
 from app.models.scheduled_action import ScheduledAction
-from app.models.schema import Contact
+from app.models.schema import AuditLog, Contact
+from app.services.memory_service import MemoryService
 from app.services.tool_dispatcher_service import ToolDispatcherService, ToolExecutionContext
 
 
@@ -44,6 +45,104 @@ async def test_owner_send_message_dispatches_to_existing_scheduler(db_session):
 
 
 @pytest.mark.asyncio
+async def test_find_contact_is_executable_read_tool_with_resolution_provenance(db_session):
+    contact = Contact(
+        whatsapp_id="2348022222222@c.us",
+        display_name="Amanda Christabel",
+        contact_name="Amanda Christabel",
+        push_name="Mandy",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    result = await ToolDispatcherService(db_session).execute(
+        "whatsapp.find_contact",
+        {"query": "Amanda Christabel", "limit": 3},
+        context=ToolExecutionContext(permission="owner"),
+    )
+
+    assert result["tool"] == "whatsapp.find_contact"
+    assert result["handler_target"] == "contact_intelligence.resolve"
+    assert result["result"]["status"] == "resolved"
+    assert result["result"]["match"]["contact_id"] == contact.id
+    assert result["result"]["match"]["matched_field"] in {"contact_name", "display_name"}
+
+    audit = (
+        await db_session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "tool_execution_accepted")
+            .where(AuditLog.entity_id == str(contact.id))
+        )
+    ).scalar_one()
+    assert audit.details_json["tool"] == "whatsapp.find_contact"
+    assert "Amanda" not in str(audit.details_json)
+
+
+@pytest.mark.asyncio
+async def test_memory_search_uses_existing_contact_and_memory_context(db_session):
+    contact = Contact(
+        whatsapp_id="2348033333333@c.us",
+        display_name="Amanda Christabel",
+        contact_name="Amanda Christabel",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    memory = MemoryService(db_session)
+    await memory.upsert_memory(
+        contact.id,
+        display_name="Amanda Christabel",
+        interests="AI systems",
+        projects="Datacube launch",
+        relationship_type="friend",
+    )
+    await memory.log_timeline_event(
+        contact.id,
+        topic="Datacube launch",
+        summary="Discussed the Datacube launch and AI integration plan.",
+        importance_score=0.9,
+    )
+
+    result = await ToolDispatcherService(db_session).execute(
+        "memory.search",
+        {"query": "Datacube", "contact": "Amanda Christabel", "limit": 5},
+        context=ToolExecutionContext(permission="owner"),
+    )
+
+    payload = result["result"]
+    assert result["handler_target"] == "memory.search"
+    assert payload["contact_id"] == contact.id
+    assert payload["contact_resolution"]["status"] == "resolved"
+    assert payload["profile"]["display_name"] == "Amanda Christabel"
+    assert any(item["topic"] == "Datacube launch" for item in payload["timeline_entries"])
+    assert "Datacube launch" in payload["context_text"]
+    assert payload["retrieved_item_count"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_memory_search_defaults_to_requester_memory_and_requires_scope(db_session):
+    owner = Contact(whatsapp_id="2348044444444@c.us", display_name="Fabian")
+    db_session.add(owner)
+    await db_session.flush()
+    await MemoryService(db_session).upsert_memory(owner.id, display_name="Fabian", projects="AU MCP beta")
+
+    result = await ToolDispatcherService(db_session).execute(
+        "memory.search",
+        {"query": "AU MCP"},
+        context=ToolExecutionContext(permission="owner", requested_by_contact_id=owner.id),
+    )
+    assert result["result"]["contact_id"] == owner.id
+    assert result["result"]["contact_resolution"] == {"status": "requester", "contact_id": owner.id}
+
+    with pytest.raises(ValueError, match="requires contact or requested_by_contact_id"):
+        await ToolDispatcherService(db_session).execute(
+            "memory.search",
+            {"query": "AU MCP"},
+            context=ToolExecutionContext(permission="owner"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_admin_permission_cannot_execute_owner_tool(db_session):
     dispatcher = ToolDispatcherService(db_session)
     with pytest.raises(ValueError, match="permission denied"):
@@ -70,12 +169,19 @@ async def test_disabled_tool_is_denied_before_side_effect(db_session):
 
 
 @pytest.mark.asyncio
-async def test_unknown_or_extra_arguments_are_rejected(db_session):
+async def test_unknown_extra_and_out_of_range_arguments_are_rejected(db_session):
     dispatcher = ToolDispatcherService(db_session)
     with pytest.raises(ValueError, match="unknown tool argument"):
         await dispatcher.execute(
             "whatsapp.send_message",
             {"target": "Amanda", "text": "hello", "bypass": True},
+            context=ToolExecutionContext(permission="owner"),
+        )
+
+    with pytest.raises(ValueError, match="above maximum"):
+        await dispatcher.execute(
+            "whatsapp.find_contact",
+            {"query": "Amanda", "limit": 21},
             context=ToolExecutionContext(permission="owner"),
         )
 
@@ -92,7 +198,12 @@ async def test_nonimplemented_registered_tool_cannot_fake_success(db_session):
     dispatcher = ToolDispatcherService(db_session)
     with pytest.raises(ValueError, match="no executable adapter"):
         await dispatcher.execute(
-            "memory.search",
-            {"query": "Amanda"},
+            "task.create",
+            {
+                "action": "whatsapp.send_message",
+                "scheduled_for": "2026-08-25T09:00:00+01:00",
+                "timezone": "Africa/Lagos",
+                "arguments": {},
+            },
             context=ToolExecutionContext(permission="owner"),
         )
