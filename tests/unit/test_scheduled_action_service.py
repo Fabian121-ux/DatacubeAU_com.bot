@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -67,6 +67,19 @@ async def test_schedule_refuses_ambiguous_contact_instead_of_guessing(db_session
         )
 
     assert getattr(exc_info.value, "resolution")["status"] == "ambiguous"
+    assert (await db_session.execute(select(ScheduledAction))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_schedule_refuses_naive_datetime_before_contact_resolution(db_session):
+    with pytest.raises(ValueError, match="timezone offset"):
+        await ScheduledActionService(db_session).create_whatsapp_message(
+            target_reference="Amanda",
+            text="Hello",
+            scheduled_for=datetime(2026, 8, 25, 9, 0),
+            timezone="Africa/Lagos",
+        )
+
     assert (await db_session.execute(select(ScheduledAction))).scalars().all() == []
 
 
