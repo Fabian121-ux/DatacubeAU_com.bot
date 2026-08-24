@@ -4,13 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import AuditLog
+from app.models.schema import AuditLog, ConversationSummary, UserMemoryTimeline
 from app.services.contact_intelligence_service import ContactIntelligenceService
 from app.services.memory_service import MemoryService
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.tool_registry_service import ToolRegistryService
+from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
 
@@ -129,23 +131,133 @@ class ToolDispatcherService:
             contact_id = int(context.requested_by_contact_id)
             contact_resolution = {"status": "requester", "contact_id": contact_id}
 
+        query = str(arguments["query"]).strip()
+        normalized_query = normalize_text(query)
         limit = self._bounded_limit(arguments.get("limit"), default=5, maximum=20)
-        package = await self.memory.get_context_package(
-            contact_id,
-            query=str(arguments["query"]).strip(),
-            timeline_limit=limit,
-            summary_limit=min(3, limit),
-        )
+
+        memory = await self.memory.get_memory(contact_id)
+        profile = self._matching_profile(memory, contact_id, normalized_query)
+
+        fact_rows = (
+            await self.session.execute(
+                select(UserMemoryTimeline)
+                .where(UserMemoryTimeline.contact_id == contact_id)
+                .where(UserMemoryTimeline.is_enabled.is_(True))
+                .where(UserMemoryTimeline.memory_text.ilike(f"%{query}%"))
+                .order_by(
+                    UserMemoryTimeline.importance.desc(),
+                    UserMemoryTimeline.confidence.desc(),
+                    UserMemoryTimeline.updated_at.desc(),
+                )
+                .limit(limit)
+            )
+        ).scalars().all()
+        memory_facts = [self._memory_fact_dict(row) for row in fact_rows]
+
+        timeline_rows = await self.memory.search_timeline(contact_id, query=query, limit=limit)
+        timeline_entries = [self.memory._timeline_dict(row) for row in timeline_rows]
+
+        # Summary topics are JSON, so keep the search portable by filtering a bounded set
+        # in Python. Unlike conversational context assembly, there is no unrelated fallback.
+        recent_summaries = await self.memory.get_recent_summaries(contact_id, limit=max(50, limit))
+        summaries = []
+        for row in recent_summaries:
+            searchable = " ".join([row.summary, *[str(item) for item in (row.topics or [])]])
+            if normalized_query and normalized_query in normalize_text(searchable):
+                summaries.append(self.memory._summary_dict(row))
+            if len(summaries) >= limit:
+                break
+
+        used_sections: list[str] = []
+        if profile:
+            used_sections.append("Relationship Profile")
+        if memory_facts:
+            used_sections.append("Managed Memory Fact")
+        if timeline_entries:
+            used_sections.append("Timeline Entry")
+        if summaries:
+            used_sections.append("Summary Entry")
+
+        context_text = self._build_memory_search_context(profile, memory_facts, timeline_entries, summaries)
         return {
-            "contact_id": package.contact_id,
+            "contact_id": contact_id,
             "contact_resolution": contact_resolution,
-            "profile": package.profile,
-            "timeline_entries": package.timeline_entries,
-            "summaries": package.summaries,
-            "context_text": package.context_text,
-            "retrieved_item_count": package.retrieved_item_count,
-            "used_sections": package.used_sections,
+            "query_matched": bool(profile or memory_facts or timeline_entries or summaries),
+            "profile": profile,
+            "memory_facts": memory_facts,
+            "timeline_entries": timeline_entries,
+            "summaries": summaries,
+            "context_text": context_text,
+            "retrieved_item_count": (1 if profile else 0) + len(memory_facts) + len(timeline_entries) + len(summaries),
+            "used_sections": used_sections,
         }
+
+    @staticmethod
+    def _matching_profile(memory, contact_id: int, normalized_query: str) -> dict[str, Any]:
+        if not memory or not normalized_query:
+            return {}
+        searchable_fields = (
+            "user_name",
+            "preferences",
+            "context_notes",
+            "profession",
+            "interests",
+            "projects",
+            "goals",
+            "communication_style",
+            "relationship",
+            "relationship_type",
+            "personality_notes",
+        )
+        matches: dict[str, Any] = {}
+        for field in searchable_fields:
+            value = getattr(memory, field, None)
+            if value and normalized_query in normalize_text(str(value)):
+                matches[field] = value
+        if not matches:
+            return {}
+        return {
+            "contact_id": contact_id,
+            "display_name": getattr(memory, "display_name", None) or getattr(memory, "user_name", None),
+            **matches,
+        }
+
+    @staticmethod
+    def _memory_fact_dict(row: UserMemoryTimeline) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "contact_id": row.contact_id,
+            "memory_text": row.memory_text,
+            "source": row.source,
+            "memory_type": row.memory_type,
+            "importance": row.importance,
+            "confidence": row.confidence,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _build_memory_search_context(
+        profile: dict[str, Any],
+        memory_facts: list[dict[str, Any]],
+        timeline_entries: list[dict[str, Any]],
+        summaries: list[dict[str, Any]],
+    ) -> str:
+        lines: list[str] = []
+        if profile:
+            name = profile.get("display_name")
+            if name:
+                lines.append(f"Contact: {name}")
+            for key, value in profile.items():
+                if key not in {"contact_id", "display_name"} and value:
+                    lines.append(f"Profile {key}: {value}")
+        for fact in memory_facts:
+            lines.append(f"Memory fact: {fact['memory_text']}")
+        for entry in timeline_entries:
+            lines.append(f"Timeline: {entry['topic']}: {entry['summary']}")
+        for summary in summaries:
+            lines.append(f"Summary: {summary['summary']}")
+        return "\n".join(lines)[:4000]
 
     @staticmethod
     def _permission_allows(actual: str, required: str) -> bool:
