@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,15 @@ async def list_tools(db: AsyncSession = Depends(get_db_session)) -> dict[str, An
     service = ToolRegistryService(db)
     items = await service.list_tools()
     return {"count": len(items), "items": items}
+
+
+@router.get("/catalog/planner")
+async def planner_catalog(
+    permission: str = Query(default="owner", pattern="^(user|admin|owner)$"),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    items = await ToolRegistryService(db).planner_catalog(permission=permission)
+    return {"count": len(items), "permission": permission, "items": items}
 
 
 @router.get("/{tool_name:path}")
