@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import AuditLog
+from app.services.contact_intelligence_service import ContactIntelligenceService
+from app.services.memory_service import MemoryService
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.tool_registry_service import ToolRegistryService
 from app.utils.time import utcnow
@@ -24,17 +26,19 @@ class ToolExecutionContext:
 
 
 class ToolDispatcherService:
-    """Deterministic authority boundary between planners and Zina side effects.
+    """Deterministic authority boundary between planners and Zina subsystem tools.
 
     The registry defines which tools exist and their policy metadata. This dispatcher
     validates enablement, caller permission and arguments, then delegates execution to
-    the subsystem that already owns the side effect. It intentionally does not let an
-    LLM or parser call WAHA or persistence primitives directly.
+    the subsystem that already owns the requested capability. It intentionally does not
+    let an LLM or parser call WAHA or persistence primitives directly.
     """
 
     def __init__(self, session: AsyncSession):
         self.session = session
         self.registry = ToolRegistryService(session)
+        self.contacts = ContactIntelligenceService(session)
+        self.memory = MemoryService(session)
         self.scheduler = ScheduledActionService(session)
 
     async def execute(
@@ -58,21 +62,30 @@ class ToolDispatcherService:
 
         self._validate_arguments(tool, arguments)
 
-        if normalized == "whatsapp.send_message":
+        if normalized == "whatsapp.find_contact":
+            result = await self._execute_whatsapp_find_contact(arguments)
+        elif normalized == "whatsapp.send_message":
             result = await self._execute_whatsapp_send_message(arguments, context=context)
+        elif normalized == "memory.search":
+            result = await self._execute_memory_search(arguments, context=context)
         else:
             self._audit("tool_execution_denied", normalized, context, reason="handler_not_implemented", tool=tool)
             raise ValueError(f"tool {normalized} has no executable adapter")
 
+        result_id = self._result_id(result)
         self._audit(
             "tool_execution_accepted",
             normalized,
             context,
             tool=tool,
-            result_id=str(result.get("id")) if isinstance(result, dict) and result.get("id") is not None else None,
+            result_id=result_id,
         )
         await self.session.flush()
         return {"tool": normalized, "handler_target": tool["handler_target"], "result": result}
+
+    async def _execute_whatsapp_find_contact(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        limit = self._bounded_limit(arguments.get("limit"), default=5, maximum=20)
+        return await self.contacts.resolve(str(arguments["query"]).strip(), limit=limit)
 
     async def _execute_whatsapp_send_message(
         self,
@@ -91,6 +104,48 @@ class ToolDispatcherService:
             requested_by_contact_id=context.requested_by_contact_id,
             idempotency_key=context.idempotency_key,
         )
+
+    async def _execute_memory_search(
+        self,
+        arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext,
+    ) -> dict[str, Any]:
+        target_reference = str(arguments.get("contact") or "").strip()
+        if target_reference:
+            resolution = await self.contacts.resolve(target_reference, limit=5)
+            if resolution.get("status") != "resolved" or not resolution.get("match"):
+                raise ValueError(f"memory target contact is {resolution.get('status') or 'not_found'}")
+            contact_id = int(resolution["match"]["contact_id"])
+            contact_resolution = {
+                "status": "resolved",
+                "contact_id": contact_id,
+                "confidence": resolution.get("confidence"),
+                "matched_field": resolution["match"].get("matched_field"),
+            }
+        else:
+            if context.requested_by_contact_id is None:
+                raise ValueError("memory.search requires contact or requested_by_contact_id")
+            contact_id = int(context.requested_by_contact_id)
+            contact_resolution = {"status": "requester", "contact_id": contact_id}
+
+        limit = self._bounded_limit(arguments.get("limit"), default=5, maximum=20)
+        package = await self.memory.get_context_package(
+            contact_id,
+            query=str(arguments["query"]).strip(),
+            timeline_limit=limit,
+            summary_limit=min(3, limit),
+        )
+        return {
+            "contact_id": package.contact_id,
+            "contact_resolution": contact_resolution,
+            "profile": package.profile,
+            "timeline_entries": package.timeline_entries,
+            "summaries": package.summaries,
+            "context_text": package.context_text,
+            "retrieved_item_count": package.retrieved_item_count,
+            "used_sections": package.used_sections,
+        }
 
     @staticmethod
     def _permission_allows(actual: str, required: str) -> bool:
@@ -126,6 +181,21 @@ class ToolDispatcherService:
                 raise ValueError(f"invalid tool argument type: {field}")
             if "object" in allowed and not isinstance(value, dict):
                 raise ValueError(f"invalid tool argument type: {field}")
+            if isinstance(value, int) and not isinstance(value, bool):
+                minimum = definition.get("minimum")
+                maximum = definition.get("maximum")
+                if minimum is not None and value < int(minimum):
+                    raise ValueError(f"tool argument below minimum: {field}")
+                if maximum is not None and value > int(maximum):
+                    raise ValueError(f"tool argument above maximum: {field}")
+
+    @staticmethod
+    def _bounded_limit(value: Any, *, default: int, maximum: int) -> int:
+        if value is None:
+            return default
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError("limit must be an integer")
+        return max(1, min(value, maximum))
 
     @staticmethod
     def _parse_datetime(value: Any) -> datetime | None:
@@ -148,6 +218,17 @@ class ToolDispatcherService:
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             raise ValueError("scheduled_for must include a timezone offset")
         return parsed
+
+    @staticmethod
+    def _result_id(result: dict[str, Any]) -> str | None:
+        if result.get("id") is not None:
+            return str(result["id"])
+        match = result.get("match")
+        if isinstance(match, dict) and match.get("contact_id") is not None:
+            return str(match["contact_id"])
+        if result.get("contact_id") is not None:
+            return str(result["contact_id"])
+        return None
 
     def _audit(
         self,
