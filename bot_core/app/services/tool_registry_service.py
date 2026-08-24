@@ -18,6 +18,7 @@ class ToolDefinition:
     input_schema: dict[str, Any]
     handler_target: str
     default_enabled: bool = True
+    planner_exposed: bool = False
 
 
 DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
@@ -36,6 +37,7 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
             },
         },
         handler_target="contact_intelligence.resolve",
+        planner_exposed=True,
     ),
     ToolDefinition(
         name="whatsapp.send_message",
@@ -54,6 +56,7 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
             },
         },
         handler_target="scheduled_action.whatsapp_send_message",
+        planner_exposed=True,
     ),
     ToolDefinition(
         name="task.create",
@@ -98,11 +101,12 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
             },
         },
         handler_target="memory.search",
+        planner_exposed=True,
     ),
     ToolDefinition(
         name="chat.read",
         category="Conversation",
-        description="Read owner-authorized stored conversation history without mutating it.",
+        description="Read a bounded owner-authorized stored DM conversation without mutating it.",
         risk="low",
         permission="owner",
         input_schema={
@@ -110,10 +114,13 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
             "required": ["contact"],
             "properties": {
                 "contact": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                "after": {"type": ["string", "null"], "format": "date-time"},
+                "before": {"type": ["string", "null"], "format": "date-time"},
             },
         },
         handler_target="conversation.read",
+        planner_exposed=True,
     ),
     ToolDefinition(
         name="web.search",
@@ -141,6 +148,9 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
 )
 
 
+_PERMISSION_RANK = {"user": 10, "admin": 20, "owner": 30}
+
+
 class ToolRegistryService:
     """Central capability metadata and durable enable/disable state.
 
@@ -160,6 +170,30 @@ class ToolRegistryService:
             if permission and tool.permission != permission:
                 continue
             items.append(await self.serialize(tool))
+        return items
+
+    async def planner_catalog(self, *, permission: str) -> list[dict[str, Any]]:
+        """Return only enabled capabilities that are intentionally safe to expose to a planner.
+
+        This projection omits internal handler targets and non-executable placeholders so
+        a future LLM cannot infer authority from registry metadata alone.
+        """
+        actual_rank = _PERMISSION_RANK.get((permission or "").strip().lower(), 0)
+        items: list[dict[str, Any]] = []
+        for tool in DEFAULT_TOOLS:
+            required_rank = _PERMISSION_RANK.get(tool.permission, 10_000)
+            if not tool.planner_exposed or actual_rank < required_rank:
+                continue
+            if not await self.is_enabled(tool.name):
+                continue
+            items.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "risk": tool.risk,
+                    "input_schema": tool.input_schema,
+                }
+            )
         return items
 
     async def get_tool(self, name: str) -> dict[str, Any] | None:
@@ -193,6 +227,7 @@ class ToolRegistryService:
             "input_schema": tool.input_schema,
             "handler_target": tool.handler_target,
             "enabled": await self.is_enabled(tool.name),
+            "planner_exposed": tool.planner_exposed,
         }
 
     @staticmethod
