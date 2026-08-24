@@ -79,7 +79,36 @@ async def test_find_contact_is_executable_read_tool_with_resolution_provenance(d
 
 
 @pytest.mark.asyncio
-async def test_memory_search_uses_existing_contact_and_memory_context(db_session):
+async def test_find_contact_limit_one_preserves_ambiguity(db_session):
+    db_session.add_all(
+        [
+            Contact(
+                whatsapp_id="2348022222201@c.us",
+                display_name="Amanda James",
+                contact_name="Amanda James",
+            ),
+            Contact(
+                whatsapp_id="2348022222202@c.us",
+                display_name="Amanda Jones",
+                contact_name="Amanda Jones",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    result = await ToolDispatcherService(db_session).execute(
+        "whatsapp.find_contact",
+        {"query": "Amanda", "limit": 1},
+        context=ToolExecutionContext(permission="owner"),
+    )
+
+    assert result["result"]["status"] == "ambiguous"
+    assert result["result"]["match"] is None
+    assert len(result["result"]["candidates"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_search_uses_existing_contact_and_matching_memory_evidence(db_session):
     contact = Contact(
         whatsapp_id="2348033333333@c.us",
         display_name="Amanda Christabel",
@@ -113,10 +142,96 @@ async def test_memory_search_uses_existing_contact_and_memory_context(db_session
     assert result["handler_target"] == "memory.search"
     assert payload["contact_id"] == contact.id
     assert payload["contact_resolution"]["status"] == "resolved"
+    assert payload["query_matched"] is True
     assert payload["profile"]["display_name"] == "Amanda Christabel"
+    assert payload["profile"]["projects"] == "Datacube launch"
+    assert "interests" not in payload["profile"]
     assert any(item["topic"] == "Datacube launch" for item in payload["timeline_entries"])
     assert "Datacube launch" in payload["context_text"]
     assert payload["retrieved_item_count"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_memory_search_includes_enabled_managed_memory_facts(db_session):
+    contact = Contact(
+        whatsapp_id="2348033333399@c.us",
+        display_name="Amanda Christabel",
+        contact_name="Amanda Christabel",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    memory = MemoryService(db_session)
+    await memory.upsert_memory(contact.id, display_name="Amanda Christabel")
+    enabled = await memory.log_memory_fact(
+        contact.id,
+        memory_text="proposal status: Amanda already received the proposal",
+        source="owner_memory",
+        confidence=0.95,
+    )
+    disabled = await memory.log_memory_fact(
+        contact.id,
+        memory_text="proposal status: obsolete draft was not received",
+        source="owner_memory",
+        confidence=0.4,
+    )
+    disabled.is_enabled = False
+    await db_session.flush()
+
+    result = await ToolDispatcherService(db_session).execute(
+        "memory.search",
+        {"query": "proposal", "contact": "Amanda Christabel", "limit": 5},
+        context=ToolExecutionContext(permission="owner"),
+    )
+
+    payload = result["result"]
+    assert payload["query_matched"] is True
+    assert [item["id"] for item in payload["memory_facts"]] == [enabled.id]
+    assert "already received the proposal" in payload["context_text"]
+    assert "obsolete draft" not in payload["context_text"]
+    assert "Managed Memory Fact" in payload["used_sections"]
+
+
+@pytest.mark.asyncio
+async def test_memory_search_returns_no_unrelated_fallback_context(db_session):
+    contact = Contact(
+        whatsapp_id="2348033333388@c.us",
+        display_name="Amanda Christabel",
+        contact_name="Amanda Christabel",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    memory = MemoryService(db_session)
+    await memory.upsert_memory(contact.id, display_name="Amanda Christabel", projects="Datacube launch")
+    await memory.log_timeline_event(
+        contact.id,
+        topic="Datacube launch",
+        summary="Discussed the Datacube launch.",
+        importance_score=0.9,
+    )
+    await memory.create_summary(
+        contact.id,
+        summary="Amanda and Fabian discussed Datacube delivery.",
+        topics=["Datacube"],
+        message_count=20,
+    )
+
+    result = await ToolDispatcherService(db_session).execute(
+        "memory.search",
+        {"query": "nonexistent scholarship", "contact": "Amanda Christabel", "limit": 5},
+        context=ToolExecutionContext(permission="owner"),
+    )
+
+    payload = result["result"]
+    assert payload["query_matched"] is False
+    assert payload["profile"] == {}
+    assert payload["memory_facts"] == []
+    assert payload["timeline_entries"] == []
+    assert payload["summaries"] == []
+    assert payload["context_text"] == ""
+    assert payload["retrieved_item_count"] == 0
+    assert payload["used_sections"] == []
 
 
 @pytest.mark.asyncio
@@ -133,6 +248,7 @@ async def test_memory_search_defaults_to_requester_memory_and_requires_scope(db_
     )
     assert result["result"]["contact_id"] == owner.id
     assert result["result"]["contact_resolution"] == {"status": "requester", "contact_id": owner.id}
+    assert result["result"]["profile"]["projects"] == "AU MCP beta"
 
     with pytest.raises(ValueError, match="requires contact or requested_by_contact_id"):
         await ToolDispatcherService(db_session).execute(
