@@ -14,7 +14,7 @@
 <div class="wrap">
   <div class="top">
     <div><h1>Fabian Action Queue</h1><p>Private, evidence-backed actions from Zina's Conversation Engine handbacks.</p></div>
-    <a class="btn back" href="/admin/ui">Back to Admin</a>
+    <a class="btn back" href="/admin/ui#inspector">Back to Inspector</a>
   </div>
 
   <div class="panel">
@@ -40,7 +40,9 @@ const queueEl=document.getElementById('queue');
 const metaEl=document.getElementById('meta');
 const chatInput=document.getElementById('chatId');
 const filterButtons=[...document.querySelectorAll('[data-action]')];
-let activeAction='';
+const allowedActions=new Set(['','reply_now','review_today','informational']);
+const pageParams=new URLSearchParams(window.location.search);
+let activeAction=allowedActions.has(pageParams.get('action')||'')?(pageParams.get('action')||''):'';
 
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function prettyAction(action){return ({reply_now:'Reply now',review_today:'Review today',informational:'Informational'})[action]||action||'Unknown';}
@@ -63,9 +65,18 @@ function renderItem(item){
   </article>`;
 }
 
+function syncUrl(chatId){
+  const params=new URLSearchParams();
+  if(chatId)params.set('chat_id',chatId);
+  if(activeAction)params.set('action',activeAction);
+  const query=params.toString();
+  history.replaceState({chat_id:chatId,action:activeAction},'',query?`${location.pathname}?${query}`:location.pathname);
+}
+
 async function loadQueue(){
   const chatId=chatInput.value.trim();
   if(!chatId){metaEl.textContent='Enter a WhatsApp chat ID first.';chatInput.focus();return;}
+  syncUrl(chatId);
   queueEl.classList.add('loading');
   queueEl.innerHTML='<div class="empty">Loading action queue…</div>';
   const params=activeAction?`?action=${encodeURIComponent(activeAction)}`:'';
@@ -83,7 +94,12 @@ async function loadQueue(){
 
 document.getElementById('loadBtn').addEventListener('click',loadQueue);
 chatInput.addEventListener('keydown',e=>{if(e.key==='Enter')loadQueue();});
-filterButtons.forEach(btn=>btn.addEventListener('click',()=>{activeAction=btn.dataset.action;filterButtons.forEach(b=>b.classList.toggle('active',b===btn));if(chatInput.value.trim())loadQueue();}));
+filterButtons.forEach(btn=>btn.addEventListener('click',()=>{activeAction=btn.dataset.action;filterButtons.forEach(b=>b.classList.toggle('active',b===btn));if(chatInput.value.trim())loadQueue();else syncUrl('');}));
+
+const initialChatId=(pageParams.get('chat_id')||'').trim();
+chatInput.value=initialChatId;
+filterButtons.forEach(btn=>btn.classList.toggle('active',btn.dataset.action===activeAction));
+if(initialChatId)loadQueue();
 </script>
 </body>
 </html>
