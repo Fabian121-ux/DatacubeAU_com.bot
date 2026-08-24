@@ -170,6 +170,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
+                await ScheduledActionService(session).reconcile_outbound_delivery(message)
                 session.add(
                     AuditLog(
                         action="outbound_queue_sent",
@@ -195,6 +196,7 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
         message.status = "retrying"
         message.next_attempt_at = utcnow() + _retry_delay(next_retry_count)
 
+    await ScheduledActionService(session).reconcile_outbound_delivery(message)
     session.add(
         AuditLog(
             action="outbound_queue_delivery_failed",
