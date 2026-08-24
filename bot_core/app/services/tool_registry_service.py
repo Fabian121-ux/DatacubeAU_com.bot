@@ -27,7 +27,14 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
         description="Resolve a saved WhatsApp contact through Contact Intelligence.",
         risk="low",
         permission="owner",
-        input_schema={"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}},
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+        },
         handler_target="contact_intelligence.resolve",
     ),
     ToolDefinition(
@@ -81,7 +88,15 @@ DEFAULT_TOOLS: tuple[ToolDefinition, ...] = (
         description="Search Zina's existing managed memory for owner-authorized context.",
         risk="low",
         permission="owner",
-        input_schema={"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}},
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                "contact": {"type": ["string", "null"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+        },
         handler_target="memory.search",
     ),
     ToolDefinition(
