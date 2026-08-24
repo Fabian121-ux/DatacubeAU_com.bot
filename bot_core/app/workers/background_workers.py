@@ -12,6 +12,7 @@ from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
 
@@ -31,6 +32,20 @@ async def outbound_queue_delivery_worker() -> None:
         raise
     finally:
         await client.close()
+
+
+async def scheduled_action_worker() -> None:
+    """Release due owner-approved actions into the existing outbound queue."""
+    try:
+        while True:
+            async with SessionLocal() as session:
+                released = await ScheduledActionService(session).release_due(limit=25)
+                if released:
+                    await session.commit()
+                    log_event(logger, logging.INFO, "scheduled_actions_released", count=released)
+            await asyncio.sleep(1 if released else 3)
+    except asyncio.CancelledError:
+        raise
 
 
 async def conversation_takeover_worker() -> None:
