@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import AuditLog, ConversationSummary, UserMemoryTimeline
+from app.models.schema import AuditLog, Contact, Message, UserMemoryTimeline
 from app.services.contact_intelligence_service import ContactIntelligenceService
 from app.services.memory_service import MemoryService
 from app.services.scheduled_action_service import ScheduledActionService
@@ -70,6 +70,8 @@ class ToolDispatcherService:
             result = await self._execute_whatsapp_send_message(arguments, context=context)
         elif normalized == "memory.search":
             result = await self._execute_memory_search(arguments, context=context)
+        elif normalized == "chat.read":
+            result = await self._execute_chat_read(arguments)
         else:
             self._audit("tool_execution_denied", normalized, context, reason="handler_not_implemented", tool=tool)
             raise ValueError(f"tool {normalized} has no executable adapter")
@@ -157,8 +159,6 @@ class ToolDispatcherService:
         timeline_rows = await self.memory.search_timeline(contact_id, query=query, limit=limit)
         timeline_entries = [self.memory._timeline_dict(row) for row in timeline_rows]
 
-        # Summary topics are JSON, so keep the search portable by filtering a bounded set
-        # in Python. Unlike conversational context assembly, there is no unrelated fallback.
         recent_summaries = await self.memory.get_recent_summaries(contact_id, limit=max(50, limit))
         summaries = []
         for row in recent_summaries:
@@ -190,6 +190,75 @@ class ToolDispatcherService:
             "context_text": context_text,
             "retrieved_item_count": (1 if profile else 0) + len(memory_facts) + len(timeline_entries) + len(summaries),
             "used_sections": used_sections,
+        }
+
+    async def _execute_chat_read(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        target_reference = str(arguments["contact"]).strip()
+        resolution = await self.contacts.resolve(target_reference, limit=5)
+        if resolution.get("status") != "resolved" or not resolution.get("match"):
+            raise ValueError(f"chat target contact is {resolution.get('status') or 'not_found'}")
+
+        contact_id = int(resolution["match"]["contact_id"])
+        contact = await self.session.get(Contact, contact_id)
+        if not contact:
+            raise ValueError("chat target contact no longer exists")
+
+        limit = self._bounded_limit(arguments.get("limit"), default=50, maximum=200)
+        after = self._parse_datetime(arguments.get("after"))
+        before = self._parse_datetime(arguments.get("before"))
+        if after and before and after > before:
+            raise ValueError("chat.read after must not be later than before")
+
+        identity_chat_ids = {
+            value
+            for value in (contact.chat_id, contact.whatsapp_id, contact.waha_contact_id)
+            if value
+        }
+        scope_conditions = [Message.contact_id == contact_id]
+        if identity_chat_ids:
+            scope_conditions.append(Message.chat_id.in_(sorted(identity_chat_ids)))
+
+        stmt = (
+            select(Message)
+            .where(Message.chat_type == "dm")
+            .where(or_(*scope_conditions))
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+        if after:
+            stmt = stmt.where(Message.created_at >= after)
+        if before:
+            stmt = stmt.where(Message.created_at <= before)
+
+        rows = (await self.session.execute(stmt)).scalars().all()
+        rows = list(reversed(rows))
+        messages = [self._chat_message_dict(row) for row in rows]
+        return {
+            "contact_id": contact_id,
+            "contact_resolution": {
+                "status": "resolved",
+                "confidence": resolution.get("confidence"),
+                "matched_field": resolution["match"].get("matched_field"),
+            },
+            "message_count": len(messages),
+            "limit": limit,
+            "after": after,
+            "before": before,
+            "messages": messages,
+            "window": {
+                "oldest_at": messages[0]["created_at"] if messages else None,
+                "newest_at": messages[-1]["created_at"] if messages else None,
+            },
+        }
+
+    @staticmethod
+    def _chat_message_dict(row: Message) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "direction": row.direction,
+            "message_type": row.message_type,
+            "text": row.message_text,
+            "created_at": row.created_at,
         }
 
     @staticmethod
@@ -324,11 +393,11 @@ class ToolDispatcherService:
             try:
                 parsed = datetime.fromisoformat(raw)
             except ValueError as exc:
-                raise ValueError("scheduled_for must be an ISO 8601 datetime") from exc
+                raise ValueError("datetime tool arguments must be ISO 8601") from exc
         else:
-            raise ValueError("scheduled_for must be an ISO 8601 datetime")
+            raise ValueError("datetime tool arguments must be ISO 8601")
         if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise ValueError("scheduled_for must include a timezone offset")
+            raise ValueError("datetime tool arguments must include a timezone offset")
         return parsed
 
     @staticmethod
