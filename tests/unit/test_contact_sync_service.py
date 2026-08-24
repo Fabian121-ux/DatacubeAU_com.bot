@@ -82,6 +82,29 @@ async def test_sync_updates_existing_contact_without_overwriting_verified_displa
 
 
 @pytest.mark.asyncio
+async def test_lid_contact_requires_phone_identity_before_creating_person_row(db_session):
+    waha = _FakeWAHA(
+        [[
+            {"id": "123456789@lid", "name": "Amanda"},
+            {
+                "id": "987654321@lid",
+                "pn": "2348033333333@s.whatsapp.net",
+                "name": "Christabel",
+            },
+        ]]
+    )
+
+    result = await ContactSyncService(db_session, waha=waha).sync()
+
+    assert result == {"fetched": 2, "created": 1, "updated": 0, "skipped": 1}
+    contact = (await db_session.execute(select(Contact))).scalar_one()
+    assert contact.whatsapp_id == "2348033333333@c.us"
+    assert contact.waha_contact_id == "987654321@lid"
+    assert contact.waha_participant_id == "987654321@lid"
+    assert contact.normalized_phone == "2348033333333"
+
+
+@pytest.mark.asyncio
 async def test_sync_skips_non_person_contacts(db_session):
     waha = _FakeWAHA(
         [[
