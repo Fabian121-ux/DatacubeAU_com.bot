@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import admin, admin_auth, admin_ui, conversation_takeover_admin, health, inbound, knowledge
+from app.api import admin, admin_auth, admin_ui, contact_intelligence_admin, conversation_takeover_admin, health, inbound, knowledge
 from app.config import settings
 from app.db import SessionLocal, engine, ping_database
 from app.services.bot_config_service import BotConfigService
@@ -66,6 +66,7 @@ app.include_router(health.router)
 app.include_router(inbound.router)
 app.include_router(admin_auth.router)
 app.include_router(admin.router)
+app.include_router(contact_intelligence_admin.router)
 app.include_router(conversation_takeover_admin.router)
 app.include_router(knowledge.router)
 app.include_router(admin_ui.router)
