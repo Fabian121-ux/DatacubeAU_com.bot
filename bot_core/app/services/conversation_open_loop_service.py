@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from difflib import SequenceMatcher
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ SCAN_CURSOR_KEY = "memory_open_loop_scanner_last_message_id"
 OPEN_LOOP_PROJECTION_SOURCE = "open_loop_projection"
 SEMANTIC_RESOLUTION_MIN_SCORE = 0.60
 SEMANTIC_RESOLUTION_MIN_MARGIN = 0.20
+FUZZY_TOKEN_MIN_SIMILARITY = 0.85
 
 _REQUEST_PREFIXES = (
     "please ",
@@ -182,18 +184,67 @@ class ConversationOpenLoopService:
             useful.add(token)
         return useful
 
+    @staticmethod
+    def _token_similarity(left: str, right: str) -> float:
+        if left == right:
+            return 1.0
+        # Short tokens are too collision-prone for fuzzy matching. Exact
+        # matches above still work for them.
+        if min(len(left), len(right)) < 5:
+            return 0.0
+        return SequenceMatcher(None, left, right).ratio()
+
     @classmethod
-    def semantic_resolution_score(cls, resolution_text: str, loop_text: str) -> float:
+    def semantic_resolution_match_details(
+        cls,
+        resolution_text: str,
+        loop_text: str,
+    ) -> tuple[float, list[dict[str, object]]]:
         resolution_tokens = cls._semantic_tokens(resolution_text)
         loop_tokens = cls._semantic_tokens(loop_text)
         if not resolution_tokens or not loop_tokens:
-            return 0.0
-        overlap = resolution_tokens & loop_tokens
-        if not overlap:
-            return 0.0
-        # Coverage of the completion message is the conservative signal: it
-        # should clearly name the subject of one outstanding item.
-        return len(overlap) / len(resolution_tokens)
+            return 0.0, []
+
+        matched_resolution_tokens: set[str] = set()
+        used_loop_tokens: set[str] = set()
+        matches: list[dict[str, object]] = []
+        for resolution_token in sorted(resolution_tokens):
+            candidates = sorted(
+                (
+                    (cls._token_similarity(resolution_token, loop_token), loop_token)
+                    for loop_token in loop_tokens
+                    if loop_token not in used_loop_tokens
+                ),
+                reverse=True,
+            )
+            if not candidates:
+                continue
+            similarity, loop_token = candidates[0]
+            if similarity < FUZZY_TOKEN_MIN_SIMILARITY:
+                continue
+            matched_resolution_tokens.add(resolution_token)
+            used_loop_tokens.add(loop_token)
+            matches.append(
+                {
+                    "resolution_token": resolution_token,
+                    "loop_token": loop_token,
+                    "similarity": round(similarity, 4),
+                    "match_type": "exact" if similarity == 1.0 else "near_spelling",
+                }
+            )
+
+        if not matched_resolution_tokens:
+            return 0.0, []
+        # Coverage of the completion message remains the conservative signal:
+        # it should clearly name the subject of one outstanding item. Fuzzy
+        # matching only broadens spelling tolerance; it does not add synonyms.
+        score = len(matched_resolution_tokens) / len(resolution_tokens)
+        return score, matches
+
+    @classmethod
+    def semantic_resolution_score(cls, resolution_text: str, loop_text: str) -> float:
+        score, _ = cls.semantic_resolution_match_details(resolution_text, loop_text)
+        return score
 
     async def list_active(self, contact_id: int, *, limit: int = 8) -> list[ConversationOpenLoop]:
         stmt = (
@@ -270,6 +321,7 @@ class ConversationOpenLoopService:
             message,
             resolution_reason="contact_explicit_resolution",
             resolution_score=None,
+            resolution_matches=None,
         )
 
     async def _resolve_best_matching_loop(self, message: Message, normalized: str) -> bool:
@@ -278,11 +330,14 @@ class ConversationOpenLoopService:
             return False
 
         scored = sorted(
-            ((self.semantic_resolution_score(normalized, row.loop_text), row) for row in active),
-            key=lambda pair: (pair[0], pair[1].updated_at, pair[1].id),
+            (
+                (*self.semantic_resolution_match_details(normalized, row.loop_text), row)
+                for row in active
+            ),
+            key=lambda item: (item[0], item[2].updated_at, item[2].id),
             reverse=True,
         )
-        best_score, best = scored[0]
+        best_score, best_matches, best = scored[0]
         runner_up_score = scored[1][0] if len(scored) > 1 else 0.0
         if best_score < SEMANTIC_RESOLUTION_MIN_SCORE:
             return False
@@ -294,6 +349,7 @@ class ConversationOpenLoopService:
             message,
             resolution_reason="contact_semantic_resolution",
             resolution_score=round(best_score, 4),
+            resolution_matches=best_matches,
         )
 
     async def _mark_resolved(
@@ -303,6 +359,7 @@ class ConversationOpenLoopService:
         *,
         resolution_reason: str,
         resolution_score: float | None,
+        resolution_matches: Sequence[dict[str, object]] | None,
     ) -> bool:
         loop.status = "resolved"
         loop.resolution_message_id = message.id
@@ -313,6 +370,7 @@ class ConversationOpenLoopService:
         if resolution_score is not None:
             metadata["resolution_score"] = resolution_score
             metadata["resolution_evidence"] = (message.message_text or "").strip()[:500]
+            metadata["resolution_matches"] = list(resolution_matches or [])[:12]
         loop.metadata_json = metadata
         self.session.add(
             AuditLog(
@@ -325,6 +383,7 @@ class ConversationOpenLoopService:
                     "resolution_message_id": message.id,
                     "resolution_reason": resolution_reason,
                     "resolution_score": resolution_score,
+                    "resolution_matches": list(resolution_matches or [])[:12],
                     "source_message_id": loop.source_message_id,
                 },
             )
