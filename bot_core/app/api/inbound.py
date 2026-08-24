@@ -5,12 +5,16 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Request, status
 
+from app.core.message_normalizer import MessageNormalizer
 from app.core.router import InboundRouter
 from app.db import SessionLocal
+from app.models.schema import AuditLog
+from app.services.admin_management_service import AdminManagementService
 from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.logging_service import log_event
+from app.services.natural_action_planner_service import NaturalActionPlannerService
 
 
 logger = logging.getLogger(__name__)
@@ -57,11 +61,21 @@ async def waha_webhook(
     if _is_from_me(payload):
         chat_id = _resolve_chat_id(payload)
         handback_generated = False
+        natural_action_queued = False
+        natural_action_error: str | None = None
         if chat_id and not _is_group_chat(chat_id):
             async with SessionLocal() as db:
                 cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
                 handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
                 handback_generated = handback is not None
+                natural_action = await _plan_owner_natural_action(
+                    db,
+                    event=event,
+                    message_id=message_id,
+                    request_id=request_id,
+                )
+                natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
+                natural_action_error = natural_action.get("error") if natural_action else None
                 await db.commit()
             log_event(
                 logger,
@@ -71,6 +85,8 @@ async def waha_webhook(
                 chat_id=chat_id,
                 takeover_cancelled=cancelled,
                 handback_generated=handback_generated,
+                natural_action_queued=natural_action_queued,
+                natural_action_error=natural_action_error,
             )
         log_event(
             logger,
@@ -81,12 +97,16 @@ async def waha_webhook(
             message_id=message_id,
             reason="from_me",
             handback_generated=handback_generated,
+            natural_action_queued=natural_action_queued,
+            natural_action_error=natural_action_error,
         )
         return {
-            "status": "ignored",
-            "reason": "from_me",
+            "status": "accepted" if natural_action_queued else "ignored",
+            "reason": "owner_natural_action" if natural_action_queued else "from_me",
             "event_name": event_name or "message",
             "handback_generated": handback_generated,
+            "natural_action_queued": natural_action_queued,
+            "natural_action_error": natural_action_error,
         }
 
     idempotency_key = _build_idempotency_key(event, payload)
@@ -132,6 +152,71 @@ async def waha_webhook(
         "event_name": event_name or "message",
         "message_id": message_id,
     }
+
+
+async def _plan_owner_natural_action(
+    db,
+    *,
+    event: dict[str, Any],
+    message_id: str | None,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Plan a narrow owner-authored natural action without routing arbitrary fromMe text."""
+    normalized = MessageNormalizer().normalize(event)
+    if normalized.chat_type.value != "dm" or not normalized.message_text.strip():
+        return None
+
+    # Parsing is side-effect free and deliberately narrow. Non-actions stay normal owner activity.
+    try:
+        plan = NaturalActionPlannerService.parse(normalized.message_text)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if plan is None:
+        return None
+
+    admin_service = AdminManagementService(db)
+    if not await admin_service.is_admin_message(normalized):
+        db.add(
+            AuditLog(
+                action="owner_natural_action_denied",
+                entity_type="scheduled_actions",
+                details_json={"request_id": request_id, "transport_message_id": message_id},
+            )
+        )
+        return {"error": "owner authorization failed"}
+
+    try:
+        result = await NaturalActionPlannerService(db).create_from_instruction(
+            normalized.message_text,
+            source_message_id=None,
+            requested_by_contact_id=None,
+            idempotency_key=_owner_action_idempotency_key(event, normalized.payload),
+        )
+    except ValueError as exc:
+        resolution = getattr(exc, "resolution", None)
+        db.add(
+            AuditLog(
+                action="owner_natural_action_rejected",
+                entity_type="scheduled_actions",
+                details_json={
+                    "request_id": request_id,
+                    "transport_message_id": message_id,
+                    "reason": str(exc),
+                    "resolution_status": resolution.get("status") if isinstance(resolution, dict) else None,
+                },
+            )
+        )
+        return {"error": str(exc)}
+
+    db.add(
+        AuditLog(
+            action="owner_natural_action_accepted",
+            entity_type="scheduled_actions",
+            entity_id=str(result["scheduled_action"]["id"]) if result else None,
+            details_json={"request_id": request_id, "transport_message_id": message_id},
+        )
+    )
+    return result
 
 
 async def _process_event_async(
@@ -240,6 +325,11 @@ def _build_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> st
     session_name = _resolve_session_name(event, payload) or "default"
     chat_id = _resolve_chat_id(payload) or "unknown-chat"
     return f"{session_name}:{chat_id}:{message_id}"
+
+
+def _owner_action_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    base = _build_idempotency_key(event, payload)
+    return f"owner-natural-action:{base}" if base else None
 
 
 def _is_from_me(payload: dict[str, Any]) -> bool:
