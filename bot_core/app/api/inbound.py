@@ -26,7 +26,6 @@ async def waha_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    # Parse body defensively — never return 422 to WAHA or it retries aggressively
     try:
         event = await request.json()
     except Exception:  # noqa: BLE001
@@ -40,22 +39,10 @@ async def waha_webhook(
     event_name = _resolve_event_name(event)
     payload = _resolve_payload(event)
     message_id = _resolve_message_id(payload)
-    request_id = (
-        request.headers.get("x-webhook-request-id")
-        or request.headers.get("x-request-id")
-        or message_id
-        or "waha-webhook"
-    )
+    request_id = request.headers.get("x-webhook-request-id") or request.headers.get("x-request-id") or message_id or "waha-webhook"
 
     if event_name and event_name not in {"message", "message.any"}:
-        log_event(
-            logger,
-            logging.INFO,
-            "webhook_ignored",
-            request_id=request_id,
-            event_name=event_name,
-            reason="unsupported_event",
-        )
+        log_event(logger, logging.INFO, "webhook_ignored", request_id=request_id, event_name=event_name, reason="unsupported_event")
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
     if _is_from_me(payload):
@@ -68,105 +55,32 @@ async def waha_webhook(
                 cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
                 handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
                 handback_generated = handback is not None
-                natural_action = await _plan_owner_natural_action(
-                    db,
-                    event=event,
-                    message_id=message_id,
-                    request_id=request_id,
-                )
+                natural_action = await _plan_owner_natural_action(db, event=event, message_id=message_id, request_id=request_id)
                 natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
                 natural_action_error = natural_action.get("error") if natural_action else None
                 await db.commit()
-            log_event(
-                logger,
-                logging.INFO,
-                "conversation_owner_activity",
-                request_id=request_id,
-                chat_id=chat_id,
-                takeover_cancelled=cancelled,
-                handback_generated=handback_generated,
-                natural_action_queued=natural_action_queued,
-                natural_action_error=natural_action_error,
-            )
-        log_event(
-            logger,
-            logging.INFO,
-            "webhook_ignored",
-            request_id=request_id,
-            event_name=event_name or "message",
-            message_id=message_id,
-            reason="from_me",
-            handback_generated=handback_generated,
-            natural_action_queued=natural_action_queued,
-            natural_action_error=natural_action_error,
-        )
-        return {
-            "status": "accepted" if natural_action_queued else "ignored",
-            "reason": "owner_natural_action" if natural_action_queued else "from_me",
-            "event_name": event_name or "message",
-            "handback_generated": handback_generated,
-            "natural_action_queued": natural_action_queued,
-            "natural_action_error": natural_action_error,
-        }
+            log_event(logger, logging.INFO, "conversation_owner_activity", request_id=request_id, chat_id=chat_id, takeover_cancelled=cancelled, handback_generated=handback_generated, natural_action_queued=natural_action_queued, natural_action_error=natural_action_error)
+        log_event(logger, logging.INFO, "webhook_ignored", request_id=request_id, event_name=event_name or "message", message_id=message_id, reason="from_me", handback_generated=handback_generated, natural_action_queued=natural_action_queued, natural_action_error=natural_action_error)
+        return {"status": "accepted" if natural_action_queued else "ignored", "reason": "owner_natural_action" if natural_action_queued else "from_me", "event_name": event_name or "message", "handback_generated": handback_generated, "natural_action_queued": natural_action_queued, "natural_action_error": natural_action_error}
 
     idempotency_key = _build_idempotency_key(event, payload)
     if idempotency_key:
-        receipt = InboundReceipt(
-            event_key=idempotency_key,
-            session_name=_resolve_session_name(event, payload),
-            chat_id=_resolve_chat_id(payload),
-            message_id=message_id,
-        )
+        receipt = InboundReceipt(event_key=idempotency_key, session_name=_resolve_session_name(event, payload), chat_id=_resolve_chat_id(payload), message_id=message_id)
         async with SessionLocal() as db:
             claimed = await InboundIdempotencyService(db).claim(receipt)
         if not claimed:
-            log_event(
-                logger,
-                logging.INFO,
-                "webhook_duplicate_ignored",
-                request_id=request_id,
-                event_name=event_name or "message",
-                message_id=message_id,
-                idempotency_key=idempotency_key,
-            )
-            return {
-                "status": "duplicate",
-                "request_id": request_id,
-                "event_name": event_name or "message",
-                "message_id": message_id,
-            }
+            log_event(logger, logging.INFO, "webhook_duplicate_ignored", request_id=request_id, event_name=event_name or "message", message_id=message_id, idempotency_key=idempotency_key)
+            return {"status": "duplicate", "request_id": request_id, "event_name": event_name or "message", "message_id": message_id}
 
     background_tasks.add_task(_process_event_async, event, request_id, idempotency_key)
-    log_event(
-        logger,
-        logging.INFO,
-        "webhook_queued",
-        request_id=request_id,
-        event_name=event_name or "message",
-        message_id=message_id,
-        idempotency_key=idempotency_key,
-    )
-    return {
-        "status": "accepted",
-        "request_id": request_id,
-        "event_name": event_name or "message",
-        "message_id": message_id,
-    }
+    log_event(logger, logging.INFO, "webhook_queued", request_id=request_id, event_name=event_name or "message", message_id=message_id, idempotency_key=idempotency_key)
+    return {"status": "accepted", "request_id": request_id, "event_name": event_name or "message", "message_id": message_id}
 
 
-async def _plan_owner_natural_action(
-    db,
-    *,
-    event: dict[str, Any],
-    message_id: str | None,
-    request_id: str,
-) -> dict[str, Any] | None:
-    """Plan a narrow owner-authored natural action without routing arbitrary fromMe text."""
+async def _plan_owner_natural_action(db, *, event: dict[str, Any], message_id: str | None, request_id: str) -> dict[str, Any] | None:
     normalized = MessageNormalizer().normalize(event)
     if normalized.chat_type.value != "dm" or not normalized.message_text.strip():
         return None
-
-    # Parsing is side-effect free and deliberately narrow. Non-actions stay normal owner activity.
     try:
         plan = NaturalActionPlannerService.parse(normalized.message_text)
     except ValueError as exc:
@@ -174,56 +88,29 @@ async def _plan_owner_natural_action(
     if plan is None:
         return None
 
-    admin_service = AdminManagementService(db)
-    if not await admin_service.is_admin_message(normalized):
-        db.add(
-            AuditLog(
-                action="owner_natural_action_denied",
-                entity_type="scheduled_actions",
-                details_json={"request_id": request_id, "transport_message_id": message_id},
-            )
-        )
+    admin = await AdminManagementService(db).resolve_admin_message(normalized)
+    if not admin:
+        db.add(AuditLog(action="owner_natural_action_denied", entity_type="scheduled_actions", details_json={"request_id": request_id, "transport_message_id": message_id}))
         return {"error": "owner authorization failed"}
 
     try:
         result = await NaturalActionPlannerService(db).create_from_instruction(
             normalized.message_text,
+            actor_permission=admin.permission_level,
             source_message_id=None,
             requested_by_contact_id=None,
             idempotency_key=_owner_action_idempotency_key(event, normalized.payload),
         )
     except ValueError as exc:
         resolution = getattr(exc, "resolution", None)
-        db.add(
-            AuditLog(
-                action="owner_natural_action_rejected",
-                entity_type="scheduled_actions",
-                details_json={
-                    "request_id": request_id,
-                    "transport_message_id": message_id,
-                    "reason": str(exc),
-                    "resolution_status": resolution.get("status") if isinstance(resolution, dict) else None,
-                },
-            )
-        )
+        db.add(AuditLog(action="owner_natural_action_rejected", entity_type="scheduled_actions", details_json={"request_id": request_id, "transport_message_id": message_id, "reason": str(exc), "resolution_status": resolution.get("status") if isinstance(resolution, dict) else None, "permission": admin.permission_level}))
         return {"error": str(exc)}
 
-    db.add(
-        AuditLog(
-            action="owner_natural_action_accepted",
-            entity_type="scheduled_actions",
-            entity_id=str(result["scheduled_action"]["id"]) if result else None,
-            details_json={"request_id": request_id, "transport_message_id": message_id},
-        )
-    )
+    db.add(AuditLog(action="owner_natural_action_accepted", entity_type="scheduled_actions", entity_id=str(result["scheduled_action"]["id"]) if result else None, details_json={"request_id": request_id, "transport_message_id": message_id, "permission": admin.permission_level}))
     return result
 
 
-async def _process_event_async(
-    event: dict[str, Any],
-    request_id: str,
-    idempotency_key: str | None = None,
-) -> None:
+async def _process_event_async(event: dict[str, Any], request_id: str, idempotency_key: str | None = None) -> None:
     async with SessionLocal() as db:
         inbound_router = InboundRouter(db)
         result: dict[str, Any] | None = None
@@ -243,14 +130,7 @@ async def _process_event_async(
             chat_id = _resolve_chat_id(payload)
             if chat_id and not _is_group_chat(chat_id):
                 reply_deferred = bool(result.get("reply_deferred"))
-                takeover_scheduled = await ConversationTakeoverService(db).schedule_if_eligible(
-                    chat_id=chat_id,
-                    chat_type=str(result.get("chat_type") or ""),
-                    message_id=_resolve_message_id(payload),
-                    router_replied=bool(result.get("outbound_message_id") or result.get("outbound_queue_id")),
-                    reply_deferred=reply_deferred,
-                    outbound_queue_id=(int(result["outbound_queue_id"]) if result.get("outbound_queue_id") else None),
-                )
+                takeover_scheduled = await ConversationTakeoverService(db).schedule_if_eligible(chat_id=chat_id, chat_type=str(result.get("chat_type") or ""), message_id=_resolve_message_id(payload), router_replied=bool(result.get("outbound_message_id") or result.get("outbound_queue_id")), reply_deferred=reply_deferred, outbound_queue_id=(int(result["outbound_queue_id"]) if result.get("outbound_queue_id") else None))
             if idempotency_key:
                 await InboundIdempotencyService(db).mark_completed(idempotency_key)
             else:
@@ -258,20 +138,7 @@ async def _process_event_async(
         finally:
             await inbound_router.close()
 
-        log_event(
-            logger,
-            logging.INFO if error_text is None else logging.ERROR,
-            "webhook_processing_completed",
-            request_id=request_id,
-            status=result.get("status") if result else "error",
-            action=result.get("action") if result else None,
-            inbound_message_id=result.get("inbound_message_id") if result else None,
-            outbound_message_id=result.get("outbound_message_id") if result else None,
-            error=error_text,
-            idempotency_key=idempotency_key,
-            takeover_scheduled=takeover_scheduled,
-            reply_deferred=result.get("reply_deferred") if result else None,
-        )
+        log_event(logger, logging.INFO if error_text is None else logging.ERROR, "webhook_processing_completed", request_id=request_id, status=result.get("status") if result else "error", action=result.get("action") if result else None, inbound_message_id=result.get("inbound_message_id") if result else None, outbound_message_id=result.get("outbound_message_id") if result else None, error=error_text, idempotency_key=idempotency_key, takeover_scheduled=takeover_scheduled, reply_deferred=result.get("reply_deferred") if result else None)
 
 
 def _resolve_event_name(event: dict[str, Any]) -> str | None:
@@ -283,9 +150,7 @@ def _resolve_event_name(event: dict[str, Any]) -> str | None:
 
 def _resolve_payload(event: dict[str, Any]) -> dict[str, Any]:
     payload = event.get("payload")
-    if isinstance(payload, dict):
-        return payload
-    return event
+    return payload if isinstance(payload, dict) else event
 
 
 def _resolve_message_id(payload: dict[str, Any]) -> str | None:
@@ -318,7 +183,6 @@ def _resolve_session_name(event: dict[str, Any], payload: dict[str, Any]) -> str
 
 
 def _build_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
-    """Build a stable key shared by `message` and `message.any` deliveries."""
     message_id = _resolve_message_id(payload)
     if not message_id:
         return None
