@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType
+from app.models.scheduled_action import ScheduledAction
 from app.models.schema import (
     AICall,
     AIUsageEvent,
@@ -27,6 +28,7 @@ from app.models.schema import (
     InternetCache,
     InternetUsageEvent,
     Message,
+    OutboundMessage,
     CommandCatalogEntry,
     UserTrigger,
     UserMemory,
@@ -49,7 +51,6 @@ async def setup_test_database():
     await engine.dispose()
 
 
-
 @pytest_asyncio.fixture
 async def db_session():
     database_url = os.environ.get(
@@ -67,6 +68,8 @@ async def db_session():
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with Session() as session:
         for model in (
+            ScheduledAction,
+            OutboundMessage,
             AIUsageEvent,
             InternetUsageEvent,
             InternetCache,
@@ -92,6 +95,8 @@ async def db_session():
         yield session
         await session.rollback()
         for model in (
+            ScheduledAction,
+            OutboundMessage,
             AIUsageEvent,
             InternetUsageEvent,
             InternetCache,
