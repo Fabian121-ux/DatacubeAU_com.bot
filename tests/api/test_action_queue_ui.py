@@ -30,3 +30,19 @@ def test_action_queue_ui_renders_private_evidence_view():
         assert "credentials:'same-origin'" in response.text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_action_queue_ui_supports_shareable_chat_and_filter_deep_links():
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    try:
+        client = TestClient(app)
+        response = client.get("/admin/action-queue?chat_id=15550001101%40c.us&action=review_today")
+        assert response.status_code == 200
+        assert "new URLSearchParams(window.location.search)" in response.text
+        assert "pageParams.get('chat_id')" in response.text
+        assert "pageParams.get('action')" in response.text
+        assert "if(initialChatId)loadQueue();" in response.text
+        assert "history.replaceState" in response.text
+        assert 'href="/admin/ui#inspector"' in response.text
+    finally:
+        app.dependency_overrides.clear()
