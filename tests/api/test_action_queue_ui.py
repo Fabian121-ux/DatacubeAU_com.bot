@@ -46,3 +46,39 @@ def test_action_queue_ui_supports_shareable_chat_and_filter_deep_links():
         assert 'href="/admin/ui#inspector"' in response.text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_admin_ui_injects_authenticated_inspector_action_queue_extension():
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    try:
+        client = TestClient(app)
+        response = client.get("/admin/ui#inspector")
+        assert response.status_code == 200
+        assert '<script src="/admin/inspector-action-queue.js"></script>' in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_inspector_action_queue_extension_requires_admin_session():
+    app.dependency_overrides.clear()
+    client = TestClient(app, follow_redirects=False)
+    response = client.get("/admin/inspector-action-queue.js")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"
+
+
+def test_inspector_action_queue_extension_links_dm_rows_to_evidence_queue():
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    try:
+        client = TestClient(app)
+        response = client.get("/admin/inspector-action-queue.js")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/javascript")
+        assert "window.loadConversationInspector" in response.text
+        assert "m.whatsapp_id" in response.text
+        assert "new URLSearchParams({ chat_id: chatId, action: allowedAction })" in response.text
+        assert "Action Queue" in response.text
+        assert "DM only" in response.text
+        assert "/admin/action-queue?" in response.text
+    finally:
+        app.dependency_overrides.clear()
