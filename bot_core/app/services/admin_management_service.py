@@ -75,14 +75,32 @@ class AdminManagementService:
     async def is_admin_message(self, message: Any) -> bool:
         return await self.resolve_admin_message(message) is not None
 
-    async def create_admin(self, *, name: str, whatsapp_number: str, role: str = "admin", permission_level: str = "owner", is_primary: bool = False) -> AdminAccount:
+    async def create_admin(
+        self,
+        *,
+        name: str,
+        whatsapp_number: str,
+        role: str = "admin",
+        permission_level: str = "owner",
+        is_primary: bool = False,
+    ) -> AdminAccount:
         normalized = self.normalize_whatsapp_id(whatsapp_number)
         if not normalized:
             raise ValueError("A valid WhatsApp number is required.")
         existing = await self._get_by_normalized(normalized)
         if existing:
             raise ValueError("An administrator with that WhatsApp number already exists.")
-        row = AdminAccount(name=self._clean_name(name) or normalized, whatsapp_number=whatsapp_number.strip(), normalized_whatsapp_id=normalized, role=role.strip() or "admin", permission_level=permission_level.strip() or "owner", is_primary=False, is_enabled=True, created_at=utcnow(), updated_at=utcnow())
+        row = AdminAccount(
+            name=self._clean_name(name) or normalized,
+            whatsapp_number=whatsapp_number.strip(),
+            normalized_whatsapp_id=normalized,
+            role=role.strip() or "admin",
+            permission_level=permission_level.strip() or "owner",
+            is_primary=False,
+            is_enabled=True,
+            created_at=utcnow(),
+            updated_at=utcnow(),
+        )
         self.session.add(row)
         await self.session.flush()
         if is_primary:
@@ -156,11 +174,29 @@ class AdminManagementService:
         return row
 
     async def _get_by_normalized(self, normalized: str) -> AdminAccount | None:
-        return (await self.session.execute(select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == normalized).limit(1))).scalar_one_or_none()
+        return (
+            await self.session.execute(
+                select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == normalized).limit(1)
+            )
+        ).scalar_one_or_none()
 
     @classmethod
     def serialize(cls, row: AdminAccount) -> dict[str, Any]:
-        return {"id": row.id, "name": row.name, "whatsapp_number": row.whatsapp_number, "normalized_whatsapp_id": row.normalized_whatsapp_id, "role": row.role, "permission_level": row.permission_level, "is_primary": row.is_primary, "primary": row.is_primary, "is_enabled": row.is_enabled, "enabled": row.is_enabled, "last_active_at": row.last_active_at, "created_at": row.created_at, "updated_at": row.updated_at}
+        return {
+            "id": row.id,
+            "name": row.name,
+            "whatsapp_number": row.whatsapp_number,
+            "normalized_whatsapp_id": row.normalized_whatsapp_id,
+            "role": row.role,
+            "permission_level": row.permission_level,
+            "is_primary": row.is_primary,
+            "primary": row.is_primary,
+            "is_enabled": row.is_enabled,
+            "enabled": row.is_enabled,
+            "last_active_at": row.last_active_at,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
 
     @classmethod
     def identity_keys_for_message(cls, message: Any) -> set[str]:
