@@ -38,6 +38,14 @@ class _FakeResolver:
         }
 
 
+class _FakeSync:
+    def __init__(self, _db):
+        pass
+
+    async def sync(self):
+        return {"fetched": 4, "created": 2, "updated": 1, "skipped": 1}
+
+
 class _FakeDb:
     def __init__(self):
         self.added = []
@@ -54,11 +62,15 @@ async def _fake_db():
     yield _FakeDb()
 
 
-def test_contact_resolution_admin_endpoint_uses_explainable_resolver(monkeypatch):
-    monkeypatch.setattr(contact_intelligence_admin, "ContactIntelligenceService", _FakeResolver)
+def _client_with_admin_override():
     app.dependency_overrides[require_admin_session] = lambda: object()
     app.dependency_overrides[get_db_session] = _fake_db
-    client = TestClient(app)
+    return TestClient(app)
+
+
+def test_contact_resolution_admin_endpoint_uses_explainable_resolver(monkeypatch):
+    monkeypatch.setattr(contact_intelligence_admin, "ContactIntelligenceService", _FakeResolver)
+    client = _client_with_admin_override()
     try:
         response = client.get(
             "/admin/contact-intelligence/resolve",
@@ -75,11 +87,26 @@ def test_contact_resolution_admin_endpoint_uses_explainable_resolver(monkeypatch
 
 def test_contact_resolution_admin_endpoint_rejects_empty_query(monkeypatch):
     monkeypatch.setattr(contact_intelligence_admin, "ContactIntelligenceService", _FakeResolver)
-    app.dependency_overrides[require_admin_session] = lambda: object()
-    app.dependency_overrides[get_db_session] = _fake_db
-    client = TestClient(app)
+    client = _client_with_admin_override()
     try:
         response = client.get("/admin/contact-intelligence/resolve", params={"q": ""})
         assert response.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_contact_sync_admin_endpoint_returns_sync_counts(monkeypatch):
+    monkeypatch.setattr(contact_intelligence_admin, "ContactSyncService", _FakeSync)
+    client = _client_with_admin_override()
+    try:
+        response = client.post("/admin/contact-intelligence/sync")
+        assert response.status_code == 200
+        assert response.json() == {
+            "ok": True,
+            "fetched": 4,
+            "created": 2,
+            "updated": 1,
+            "skipped": 1,
+        }
     finally:
         app.dependency_overrides.clear()
