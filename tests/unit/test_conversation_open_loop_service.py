@@ -135,6 +135,84 @@ async def test_ambiguous_resolution_does_not_close_multiple_loops(db_session, te
 
 
 @pytest.mark.asyncio
+async def test_semantic_completion_resolves_matching_loop_with_multiple_open_items(db_session, test_contact) -> None:
+    await _reset_open_loop_state(db_session)
+    db_session.add_all(
+        [
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Can Fabian send the proposal?"),
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Please send me the venue address"),
+        ]
+    )
+    await db_session.flush()
+    service = ConversationOpenLoopService(db_session)
+    await service.scan_once()
+
+    completion = _inbound(test_contact.id, test_contact.whatsapp_id, "I already received the proposal")
+    db_session.add(completion)
+    await db_session.flush()
+    result = await service.scan_once()
+
+    assert result["resolved"] == 1
+    loops = (await db_session.execute(select(ConversationOpenLoop).order_by(ConversationOpenLoop.id))).scalars().all()
+    proposal = next(row for row in loops if "proposal" in row.normalized_text)
+    venue = next(row for row in loops if "venue" in row.normalized_text)
+    assert proposal.status == "resolved"
+    assert proposal.resolution_message_id == completion.id
+    assert proposal.resolution_reason == "contact_semantic_resolution"
+    assert proposal.metadata_json["resolution_score"] >= 0.60
+    assert proposal.metadata_json["resolution_evidence"] == "I already received the proposal"
+    assert venue.status == "open"
+
+    projection = (
+        await db_session.execute(
+            select(ConversationSummary).where(ConversationSummary.source == OPEN_LOOP_PROJECTION_SOURCE)
+        )
+    ).scalar_one()
+    assert "venue address" in projection.summary.lower()
+    assert "proposal" not in projection.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_semantic_completion_stays_open_when_two_loops_match_equally(db_session, test_contact) -> None:
+    await _reset_open_loop_state(db_session)
+    db_session.add_all(
+        [
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Can Fabian send the proposal draft?"),
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Can Fabian review the proposal draft?"),
+        ]
+    )
+    await db_session.flush()
+    service = ConversationOpenLoopService(db_session)
+    await service.scan_once()
+
+    db_session.add(_inbound(test_contact.id, test_contact.whatsapp_id, "I already received the proposal draft"))
+    await db_session.flush()
+    result = await service.scan_once()
+
+    assert result["resolved"] == 0
+    active = await service.list_active(test_contact.id)
+    assert len(active) == 2
+
+
+@pytest.mark.asyncio
+async def test_completion_language_without_subject_overlap_does_not_resolve(db_session, test_contact) -> None:
+    await _reset_open_loop_state(db_session)
+    db_session.add(_inbound(test_contact.id, test_contact.whatsapp_id, "Please send me the venue address"))
+    await db_session.flush()
+    service = ConversationOpenLoopService(db_session)
+    await service.scan_once()
+
+    db_session.add(_inbound(test_contact.id, test_contact.whatsapp_id, "I already received the proposal"))
+    await db_session.flush()
+    result = await service.scan_once()
+
+    assert result["resolved"] == 0
+    active = await service.list_active(test_contact.id)
+    assert len(active) == 1
+    assert "venue" in active[0].normalized_text
+
+
+@pytest.mark.asyncio
 async def test_scan_cursor_prevents_reprocessing_non_loop_messages(db_session, test_contact) -> None:
     await _reset_open_loop_state(db_session)
     db_session.add(_inbound(test_contact.id, test_contact.whatsapp_id, "Good morning"))
@@ -156,3 +234,11 @@ def test_open_loop_classifier_is_conservative() -> None:
     assert classify("hello") is None
     assert classify("thanks") is None
     assert classify("that is sorted") is None
+
+
+def test_semantic_resolution_scoring_is_grounded_and_conservative() -> None:
+    score = ConversationOpenLoopService.semantic_resolution_score
+    assert score("I already received the proposal", "Can Fabian send the proposal?") == 1.0
+    assert score("I already received the proposal", "Please send me the venue address") == 0.0
+    assert ConversationOpenLoopService.is_semantic_resolution_candidate("i already received the proposal") is True
+    assert ConversationOpenLoopService.is_semantic_resolution_candidate("i was thinking about the proposal") is False
