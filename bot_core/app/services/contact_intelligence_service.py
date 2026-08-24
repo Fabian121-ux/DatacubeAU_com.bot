@@ -51,18 +51,22 @@ class ContactIntelligenceService:
             )
         ).scalars().all()
 
-        candidates = [candidate for row in rows if (candidate := self._score_contact(row, cleaned)) is not None]
-        candidates.sort(key=lambda item: (-item.score, item.contact_id))
-        candidates = candidates[: max(1, min(limit, 20))]
+        ranked = [candidate for row in rows if (candidate := self._score_contact(row, cleaned)) is not None]
+        ranked.sort(key=lambda item: (-item.score, item.contact_id))
 
-        if not candidates:
+        if not ranked:
             return {"query": query, "status": "not_found", "confidence": 0.0, "match": None, "candidates": []}
 
-        best = candidates[0]
-        runner_up = candidates[1].score if len(candidates) > 1 else 0.0
+        # Ambiguity is a safety property and must not depend on how many candidates the
+        # caller wants rendered. Always compare the two strongest matches before applying
+        # the output limit so ``limit=1`` can never turn an ambiguous name into a match.
+        best = ranked[0]
+        runner_up = ranked[1].score if len(ranked) > 1 else 0.0
         margin = best.score - runner_up
-        resolved = best.score >= self.RESOLVE_THRESHOLD and (len(candidates) == 1 or margin >= self.AMBIGUITY_MARGIN)
+        resolved = best.score >= self.RESOLVE_THRESHOLD and (len(ranked) == 1 or margin >= self.AMBIGUITY_MARGIN)
 
+        output_limit = max(1, min(limit, 20))
+        candidates = ranked[:output_limit]
         return {
             "query": query,
             "status": "resolved" if resolved else "ambiguous",
@@ -160,7 +164,7 @@ class ContactIntelligenceService:
     @staticmethod
     def _clean_query(value: str) -> str:
         cleaned = (value or "").strip()
-        if cleaned.startswith("@"): 
+        if cleaned.startswith("@"):
             cleaned = cleaned[1:]
         return cleaned.strip()
 
