@@ -205,6 +205,79 @@ class ScheduledActionService:
         await self.session.flush()
         return released
 
+    async def reconcile_outbound_delivery(self, outbound: OutboundMessage) -> dict[str, Any] | None:
+        """Project the authoritative outbound queue result back onto its scheduled action."""
+        if not outbound.id:
+            return None
+        row = (
+            await self.session.execute(
+                select(ScheduledAction)
+                .where(ScheduledAction.outbound_queue_id == outbound.id)
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not row:
+            return None
+
+        now = utcnow()
+        previous_status = row.status
+        row.retry_count = int(outbound.retry_count or 0)
+        row.last_error = outbound.error_message
+        row.updated_at = now
+        metadata = dict(row.metadata_json or {})
+        delivery = dict(metadata.get("delivery") or {})
+        delivery.update(
+            {
+                "outbound_queue_id": outbound.id,
+                "status": outbound.status,
+                "retry_count": row.retry_count,
+                "updated_at": now.isoformat(),
+            }
+        )
+
+        if outbound.status == "sent":
+            row.status = "completed"
+            row.is_enabled = False
+            row.last_error = None
+            delivery["completed_at"] = now.isoformat()
+            if previous_status != "completed":
+                self._audit(
+                    "scheduled_action_completed",
+                    row,
+                    {"outbound_queue_id": outbound.id, "retry_count": row.retry_count},
+                )
+        elif outbound.status == "failed":
+            row.status = "failed"
+            row.is_enabled = False
+            delivery["failed_at"] = now.isoformat()
+            if previous_status != "failed":
+                self._audit(
+                    "scheduled_action_delivery_failed",
+                    row,
+                    {
+                        "outbound_queue_id": outbound.id,
+                        "retry_count": row.retry_count,
+                        "max_retries": outbound.max_retries,
+                    },
+                )
+        elif outbound.status == "retrying":
+            row.status = "queued"
+            self._audit(
+                "scheduled_action_delivery_retrying",
+                row,
+                {
+                    "outbound_queue_id": outbound.id,
+                    "retry_count": row.retry_count,
+                    "max_retries": outbound.max_retries,
+                },
+            )
+
+        metadata["delivery"] = delivery
+        row.metadata_json = metadata
+        await self.session.flush()
+        return self.serialize(row)
+
     def _audit(self, action: str, row: ScheduledAction, details: dict[str, Any] | None = None) -> None:
         self.session.add(
             AuditLog(
