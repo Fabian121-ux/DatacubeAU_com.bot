@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import admin, admin_auth, admin_ui, contact_intelligence_admin, conversation_takeover_admin, health, inbound, knowledge
+from app.api import admin, admin_auth, admin_ui, contact_intelligence_admin, conversation_takeover_admin, health, inbound, knowledge, scheduled_actions_admin
 from app.config import settings
 from app.db import SessionLocal, engine, ping_database
 from app.services.bot_config_service import BotConfigService
@@ -18,6 +18,7 @@ from app.workers.background_workers import (
     conversation_open_loop_worker,
     conversation_takeover_worker,
     outbound_queue_delivery_worker,
+    scheduled_action_worker,
     waha_monitor_worker,
 )
 
@@ -35,6 +36,7 @@ async def lifespan(_: FastAPI):
         await ping_database()
     await _sync_core_faq()
     tasks.append(asyncio.create_task(outbound_queue_delivery_worker(), name="outbound-queue-delivery"))
+    tasks.append(asyncio.create_task(scheduled_action_worker(), name="scheduled-actions"))
     tasks.append(asyncio.create_task(conversation_takeover_worker(), name="conversation-takeover"))
     tasks.append(asyncio.create_task(conversation_open_loop_worker(), name="conversation-open-loops"))
     tasks.append(asyncio.create_task(waha_monitor_worker(), name="waha-monitor"))
@@ -67,6 +69,7 @@ app.include_router(inbound.router)
 app.include_router(admin_auth.router)
 app.include_router(admin.router)
 app.include_router(contact_intelligence_admin.router)
+app.include_router(scheduled_actions_admin.router)
 app.include_router(conversation_takeover_admin.router)
 app.include_router(knowledge.router)
 app.include_router(admin_ui.router)
