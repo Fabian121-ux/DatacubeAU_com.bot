@@ -92,7 +92,11 @@ class NaturalActionPlannerService:
         if not command_text or not message_text:
             return None
 
-        match = next((pattern.match(command_text) for pattern in cls._SCHEDULE_PATTERNS if pattern.match(command_text)), None)
+        match = None
+        for pattern in cls._SCHEDULE_PATTERNS:
+            match = pattern.match(command_text)
+            if match:
+                break
         if not match:
             return None
 
@@ -162,10 +166,10 @@ class NaturalActionPlannerService:
             left = text[: tell_match.start()].strip()
             body = text[tell_match.end() :].strip()
             return (left or None, body or None)
-        colon_index = text.find(":")
-        if colon_index > 0:
-            left = text[:colon_index].strip()
-            body = text[colon_index + 1 :].strip()
+        colon_match = re.search(r":\s+(?=\S)", text)
+        if colon_match:
+            left = text[: colon_match.start()].strip()
+            body = text[colon_match.end() :].strip()
             return (left or None, body or None)
         return None, None
 
@@ -196,7 +200,10 @@ class NaturalActionPlannerService:
             except ValueError as exc:
                 raise ValueError("invalid scheduled date") from exc
             if len(tokens) == 2 and candidate <= now:
-                candidate = candidate.replace(year=year + 1)
+                try:
+                    candidate = candidate.replace(year=year + 1)
+                except ValueError as exc:
+                    raise ValueError("invalid scheduled date") from exc
             return candidate
 
         return datetime(date_value.year, date_value.month, date_value.day, hour, minute, tzinfo=tz)
