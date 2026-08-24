@@ -242,3 +242,77 @@ def test_semantic_resolution_scoring_is_grounded_and_conservative() -> None:
     assert score("I already received the proposal", "Please send me the venue address") == 0.0
     assert ConversationOpenLoopService.is_semantic_resolution_candidate("i already received the proposal") is True
     assert ConversationOpenLoopService.is_semantic_resolution_candidate("i was thinking about the proposal") is False
+
+
+@pytest.mark.asyncio
+async def test_near_spelling_completion_resolves_grounded_loop(db_session, test_contact) -> None:
+    await _reset_open_loop_state(db_session)
+    db_session.add_all(
+        [
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Can Fabian send the proposal?"),
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Please send me the venue address"),
+        ]
+    )
+    await db_session.flush()
+    service = ConversationOpenLoopService(db_session)
+    await service.scan_once()
+
+    completion = _inbound(test_contact.id, test_contact.whatsapp_id, "I already received the proposel")
+    db_session.add(completion)
+    await db_session.flush()
+    result = await service.scan_once()
+
+    assert result["resolved"] == 1
+    loops = (await db_session.execute(select(ConversationOpenLoop).order_by(ConversationOpenLoop.id))).scalars().all()
+    proposal = next(row for row in loops if "proposal" in row.normalized_text)
+    venue = next(row for row in loops if "venue" in row.normalized_text)
+    assert proposal.status == "resolved"
+    assert venue.status == "open"
+    matches = proposal.metadata_json["resolution_matches"]
+    assert any(
+        row["resolution_token"] == "proposel"
+        and row["loop_token"] == "proposal"
+        and row["match_type"] == "near_spelling"
+        for row in matches
+    )
+
+
+@pytest.mark.asyncio
+async def test_near_spelling_completion_remains_open_when_ambiguous(db_session, test_contact) -> None:
+    await _reset_open_loop_state(db_session)
+    db_session.add_all(
+        [
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Can Fabian send the proposal draft?"),
+            _inbound(test_contact.id, test_contact.whatsapp_id, "Can Fabian review the proposal draft?"),
+        ]
+    )
+    await db_session.flush()
+    service = ConversationOpenLoopService(db_session)
+    await service.scan_once()
+
+    db_session.add(_inbound(test_contact.id, test_contact.whatsapp_id, "I already received the proposel draft"))
+    await db_session.flush()
+    result = await service.scan_once()
+
+    assert result["resolved"] == 0
+    assert len(await service.list_active(test_contact.id)) == 2
+
+
+def test_near_spelling_match_is_traceable_and_does_not_add_synonyms() -> None:
+    score, matches = ConversationOpenLoopService.semantic_resolution_match_details(
+        "I already received the proposel",
+        "Can Fabian send the proposal?",
+    )
+    assert score == 1.0
+    assert matches == [
+        {
+            "resolution_token": "proposel",
+            "loop_token": "proposal",
+            "similarity": 0.875,
+            "match_type": "near_spelling",
+        }
+    ]
+    assert ConversationOpenLoopService.semantic_resolution_score(
+        "I already received the document",
+        "Can Fabian send the proposal?",
+    ) == 0.0
