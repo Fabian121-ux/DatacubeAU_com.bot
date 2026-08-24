@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.scheduled_action import ScheduledAction
-from app.models.schema import Contact, OutboundMessage
+from app.models.schema import AuditLog, Contact, OutboundMessage
 from app.services.scheduled_action_service import ScheduledActionService
 from app.utils.time import utcnow
 
@@ -126,3 +126,114 @@ async def test_run_now_makes_future_action_due(db_session):
     run_now = await service.run_now(item["id"])
     assert run_now["status"] == "scheduled"
     assert await service.release_due() == 1
+
+
+async def _released_action_and_outbound(db_session, *, suffix: str):
+    contact = Contact(whatsapp_id=f"23480555555{suffix}@c.us", contact_name=f"Delivery {suffix}")
+    db_session.add(contact)
+    await db_session.flush()
+    service = ScheduledActionService(db_session)
+    await service.create_whatsapp_message(
+        target_reference=f"Delivery {suffix}",
+        text="Delivery reconciliation test",
+        scheduled_for=utcnow() - timedelta(seconds=1),
+        timezone="Africa/Lagos",
+        idempotency_key=f"delivery-reconciliation-{suffix}",
+    )
+    assert await service.release_due() == 1
+    action = (
+        await db_session.execute(
+            select(ScheduledAction).where(ScheduledAction.idempotency_key == f"delivery-reconciliation-{suffix}")
+        )
+    ).scalar_one()
+    outbound = await db_session.get(OutboundMessage, action.outbound_queue_id)
+    return service, action, outbound
+
+
+@pytest.mark.asyncio
+async def test_successful_outbound_delivery_completes_scheduled_action(db_session):
+    service, action, outbound = await _released_action_and_outbound(db_session, suffix="1")
+    outbound.status = "sent"
+    outbound.retry_count = 1
+    outbound.error_message = None
+
+    result = await service.reconcile_outbound_delivery(outbound)
+
+    assert result["status"] == "completed"
+    assert result["is_enabled"] is False
+    assert result["retry_count"] == 1
+    assert result["last_error"] is None
+    assert result["metadata"]["delivery"]["status"] == "sent"
+    assert result["metadata"]["delivery"]["completed_at"]
+    audits = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "scheduled_action_completed",
+                AuditLog.entity_id == str(action.id),
+            )
+        )
+    ).scalars().all()
+    assert len(audits) == 1
+
+    await service.reconcile_outbound_delivery(outbound)
+    audits = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "scheduled_action_completed",
+                AuditLog.entity_id == str(action.id),
+            )
+        )
+    ).scalars().all()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_retrying_outbound_delivery_keeps_action_queued_with_attempt_evidence(db_session):
+    service, action, outbound = await _released_action_and_outbound(db_session, suffix="2")
+    outbound.status = "retrying"
+    outbound.retry_count = 2
+    outbound.error_message = "temporary WAHA timeout"
+
+    result = await service.reconcile_outbound_delivery(outbound)
+
+    assert result["status"] == "queued"
+    assert result["is_enabled"] is True
+    assert result["retry_count"] == 2
+    assert result["last_error"] == "temporary WAHA timeout"
+    assert result["metadata"]["delivery"]["status"] == "retrying"
+    audit = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "scheduled_action_delivery_retrying",
+                AuditLog.entity_id == str(action.id),
+            )
+        )
+    ).scalar_one()
+    assert audit.details_json["retry_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_terminal_outbound_failure_fails_and_disables_scheduled_action(db_session):
+    service, action, outbound = await _released_action_and_outbound(db_session, suffix="3")
+    outbound.status = "failed"
+    outbound.retry_count = 4
+    outbound.max_retries = 3
+    outbound.error_message = "WAHA delivery exhausted retries"
+
+    result = await service.reconcile_outbound_delivery(outbound)
+
+    assert result["status"] == "failed"
+    assert result["is_enabled"] is False
+    assert result["retry_count"] == 4
+    assert result["last_error"] == "WAHA delivery exhausted retries"
+    assert result["metadata"]["delivery"]["status"] == "failed"
+    assert result["metadata"]["delivery"]["failed_at"]
+    audit = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "scheduled_action_delivery_failed",
+                AuditLog.entity_id == str(action.id),
+            )
+        )
+    ).scalar_one()
+    assert audit.details_json["max_retries"] == 3
