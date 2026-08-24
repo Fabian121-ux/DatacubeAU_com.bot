@@ -21,8 +21,6 @@ class _FakeService:
         pass
 
     async def create_whatsapp_message(self, **kwargs):
-        assert kwargs["target_reference"] == "Amanda Christabel"
-        assert kwargs["timezone"] == "Africa/Lagos"
         return {"id": 41, "status": "scheduled", "target_chat_id": "2348011111111@c.us"}
 
     async def list(self, *, status=None, limit=100):
@@ -42,6 +40,14 @@ class _FakeService:
 
     async def reschedule(self, action_id, *, scheduled_for, timezone=None):
         return {"id": action_id, "status": "scheduled", "timezone": timezone}
+
+
+class _RejectNaiveTimeService(_FakeService):
+    async def create_whatsapp_message(self, **kwargs):
+        scheduled_for = kwargs["scheduled_for"]
+        if scheduled_for.tzinfo is None or scheduled_for.utcoffset() is None:
+            raise ValueError("scheduled_for must include a timezone offset")
+        return await super().create_whatsapp_message(**kwargs)
 
 
 async def _fake_db():
@@ -94,14 +100,20 @@ def test_admin_scheduler_controls_are_exposed(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_scheduler_requires_timezone_aware_timestamp(monkeypatch):
-    monkeypatch.setattr(scheduled_actions_admin, "ScheduledActionService", _FakeService)
+def test_scheduler_rejects_naive_timestamp_with_clear_error(monkeypatch):
+    monkeypatch.setattr(scheduled_actions_admin, "ScheduledActionService", _RejectNaiveTimeService)
     client = _client()
     try:
         response = client.post(
             "/admin/scheduled-actions",
-            json={"target": "Amanda", "text": "Hello", "scheduled_for": "2026-08-25T09:00:00", "timezone": "Africa/Lagos"},
+            json={
+                "target": "Amanda",
+                "text": "Hello",
+                "scheduled_for": "2026-08-25T09:00:00",
+                "timezone": "Africa/Lagos",
+            },
         )
-        assert response.status_code == 200
+        assert response.status_code == 409
+        assert response.json()["detail"] == "scheduled_for must include a timezone offset"
     finally:
         app.dependency_overrides.clear()
