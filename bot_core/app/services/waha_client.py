@@ -155,7 +155,10 @@ class WAHAClient:
                 f"WAHA contact sync returned a non-list response for {name}"
             )
 
-        if any(not isinstance(item, dict) for item in contacts):
+        if any(
+            not isinstance(item, dict) or not self._contact_entry_has_person_identifier(item)
+            for item in contacts
+        ):
             raise WahaClientError(
                 f"WAHA contact sync returned a malformed contact entry for {name}"
             )
@@ -241,6 +244,36 @@ class WAHAClient:
             return await self._request("POST", url, headers=headers, json=payload)
         except (httpx.HTTPError, RuntimeError) as exc:
             raise WahaClientError(f"WAHA typing presence failed for {chat_id}: {exc}") from exc
+
+    @classmethod
+    def _contact_entry_has_person_identifier(cls, item: dict[str, Any]) -> bool:
+        candidates = (
+            item.get("id"),
+            item.get("contactId"),
+            cls._nested_value(item, "_data", "id", "_serialized"),
+            cls._nested_value(item, "_data", "id"),
+            item.get("jid"),
+        )
+        for value in candidates:
+            if isinstance(value, dict):
+                value = value.get("_serialized") or value.get("id")
+            text = str(value or "").strip().lower()
+            if not text:
+                continue
+            if text.endswith("@c.us") or text.endswith("@s.whatsapp.net") or text.endswith("@lid"):
+                return True
+            if text.endswith("@g.us") or text == "status@broadcast" or text.endswith("@newsletter") or text.endswith("@broadcast"):
+                return True
+        return False
+
+    @staticmethod
+    def _nested_value(payload: dict[str, Any], *path: str) -> Any:
+        current: Any = payload
+        for key in path:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
 
     @staticmethod
     def _should_retry_status(status_code: int) -> bool:
