@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import AuditLog, Contact, Message, UserMemoryTimeline
+from app.models.schema import AuditLog, Contact, Message, OutboundMessage, UserMemoryTimeline
 from app.services.contact_intelligence_service import ContactIntelligenceService
 from app.services.memory_service import MemoryService
 from app.services.scheduled_action_service import ScheduledActionService
@@ -211,28 +211,69 @@ class ToolDispatcherService:
 
         identity_chat_ids = {
             value
-            for value in (contact.chat_id, contact.whatsapp_id, contact.waha_contact_id)
+            for value in (
+                contact.chat_id,
+                contact.whatsapp_id,
+                contact.waha_contact_id,
+                contact.waha_participant_id,
+            )
             if value
         }
         scope_conditions = [Message.contact_id == contact_id]
         if identity_chat_ids:
             scope_conditions.append(Message.chat_id.in_(sorted(identity_chat_ids)))
 
-        stmt = (
+        inbound_stmt = (
             select(Message)
             .where(Message.chat_type == "dm")
+            .where(Message.direction == "inbound")
+            .where(or_(*scope_conditions))
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+        legacy_outbound_stmt = (
+            select(Message)
+            .where(Message.chat_type == "dm")
+            .where(Message.direction == "outbound")
             .where(or_(*scope_conditions))
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
         )
         if after:
-            stmt = stmt.where(Message.created_at >= after)
+            inbound_stmt = inbound_stmt.where(Message.created_at >= after)
+            legacy_outbound_stmt = legacy_outbound_stmt.where(Message.created_at >= after)
         if before:
-            stmt = stmt.where(Message.created_at <= before)
+            inbound_stmt = inbound_stmt.where(Message.created_at <= before)
+            legacy_outbound_stmt = legacy_outbound_stmt.where(Message.created_at <= before)
 
-        rows = (await self.session.execute(stmt)).scalars().all()
-        rows = list(reversed(rows))
-        messages = [self._chat_message_dict(row) for row in rows]
+        inbound_rows = (await self.session.execute(inbound_stmt)).scalars().all()
+        legacy_outbound_rows = (await self.session.execute(legacy_outbound_stmt)).scalars().all()
+
+        delivered_outbound_rows: list[OutboundMessage] = []
+        if identity_chat_ids:
+            delivered_stmt = (
+                select(OutboundMessage)
+                .where(OutboundMessage.chat_id.in_(sorted(identity_chat_ids)))
+                .where(OutboundMessage.status == "sent")
+                .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
+                .limit(limit)
+            )
+            if after:
+                delivered_stmt = delivered_stmt.where(OutboundMessage.updated_at >= after)
+            if before:
+                delivered_stmt = delivered_stmt.where(OutboundMessage.updated_at <= before)
+            delivered_outbound_rows = (await self.session.execute(delivered_stmt)).scalars().all()
+
+        messages = [self._chat_message_dict(row) for row in inbound_rows]
+        messages.extend(
+            self._chat_message_dict(row)
+            for row in legacy_outbound_rows
+            if not self._message_outbound_queue_id(row)
+        )
+        messages.extend(self._outbound_queue_chat_message_dict(row) for row in delivered_outbound_rows)
+        messages.sort(key=lambda item: (item["created_at"], str(item["id"])))
+        messages = messages[-limit:]
+
         return {
             "contact_id": contact_id,
             "contact_resolution": {
@@ -252,13 +293,35 @@ class ToolDispatcherService:
         }
 
     @staticmethod
+    def _message_outbound_queue_id(row: Message) -> int | None:
+        payload = row.raw_payload_json if isinstance(row.raw_payload_json, dict) else {}
+        value = payload.get("outbound_queue_id")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _chat_message_dict(row: Message) -> dict[str, Any]:
         return {
             "id": row.id,
+            "source": "message",
             "direction": row.direction,
             "message_type": row.message_type,
             "text": row.message_text,
             "created_at": row.created_at,
+        }
+
+    @staticmethod
+    def _outbound_queue_chat_message_dict(row: OutboundMessage) -> dict[str, Any]:
+        return {
+            "id": f"outbound_queue:{row.id}",
+            "source": "outbound_queue",
+            "direction": "outbound",
+            "message_type": row.media_type or "text",
+            "text": row.message_text,
+            "created_at": row.updated_at,
+            "delivery_status": row.status,
         }
 
     @staticmethod
