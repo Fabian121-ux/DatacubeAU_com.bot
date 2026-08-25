@@ -52,9 +52,8 @@ class ContactSyncService:
 
                 for payload in contacts:
                     result.fetched += 1
-                    outcome, seen_id = await self._sync_one(payload, sync_at=sync_at)
-                    if seen_id:
-                        seen_person_ids.add(seen_id)
+                    outcome, seen_ids = await self._sync_one(payload, sync_at=sync_at)
+                    seen_person_ids.update(seen_ids)
                     if outcome == "created":
                         result.created += 1
                     elif outcome == "updated":
@@ -71,7 +70,10 @@ class ContactSyncService:
             # configured safety cap is reached, absence is not proof that a contact
             # was removed from Fabian's address book.
             if complete_scan:
-                await self._reconcile_absent_saved_contacts(seen_person_ids, sync_at=sync_at)
+                result.updated += await self._reconcile_absent_saved_contacts(
+                    seen_person_ids,
+                    sync_at=sync_at,
+                )
 
             await self.session.flush()
             return {
@@ -84,9 +86,9 @@ class ContactSyncService:
             if self._owns_waha:
                 await self.waha.close()
 
-    async def _sync_one(self, payload: dict[str, Any], *, sync_at: datetime) -> tuple[str, str | None]:
+    async def _sync_one(self, payload: dict[str, Any], *, sync_at: datetime) -> tuple[str, set[str]]:
         if not isinstance(payload, dict):
-            return "skipped", None
+            return "skipped", set()
 
         raw_id = self._first_text(
             payload.get("id"),
@@ -96,7 +98,7 @@ class ContactSyncService:
             payload.get("jid"),
         )
         if not raw_id or self._is_non_person_chat(raw_id):
-            return "skipped", None
+            return "skipped", set()
 
         lid = raw_id if raw_id.endswith("@lid") else self._first_text(payload.get("lid"), payload.get("LID"))
         pn_id = self._first_person_jid(
@@ -106,11 +108,6 @@ class ContactSyncService:
             payload.get("jid"),
             raw_id,
         )
-        if raw_id.endswith("@lid") and not pn_id:
-            # A bare LID is not a phone number. Do not create a second person row
-            # until WAHA supplies a PN mapping that can be reconciled safely.
-            return "skipped", None
-
         whatsapp_id = self._canonical_whatsapp_id(pn_id or raw_id)
         phone = self._first_text(
             payload.get("phone"),
@@ -126,9 +123,6 @@ class ContactSyncService:
             payload.get("is_my_contact"),
             self._nested(payload, "_data", "isMyContact"),
         )
-        # Modern WAHA exposes `isMyContact`. Older/mocked payloads may not, so retain
-        # the old address-book-name inference only as a compatibility fallback.
-        is_saved_contact = explicit_saved if explicit_saved is not None else bool(contact_name)
 
         row = await self._find_existing(
             whatsapp_id=whatsapp_id,
@@ -136,16 +130,41 @@ class ContactSyncService:
             lid=lid,
             normalized_phone=normalized_phone,
         )
+
+        # A bare LID is not a phone number. It may still identify an existing person,
+        # so preserve that row as seen during a complete scan, but never create a
+        # second person row until WAHA supplies a PN mapping.
+        if raw_id.endswith("@lid") and not pn_id and row is None:
+            return "skipped", set()
+
+        prior_saved = self._saved_marker_value(row.identity_json if row else None)
+        if explicit_saved is not None:
+            is_saved_contact = explicit_saved
+        elif contact_name:
+            # Compatibility path for older WAHA payloads that expose the address-book
+            # name but omit the explicit saved-contact boolean.
+            is_saved_contact = True
+        elif prior_saved is not None:
+            # Unknown is not evidence of removal. Preserve the last authoritative
+            # marker until an explicit false value or complete-scan absence says otherwise.
+            is_saved_contact = prior_saved
+        else:
+            is_saved_contact = False
+
         created = row is None
         if row is None:
             # Do not grow Zina's address book from WAHA-only unsaved contacts. Those
             # people are learned through the normal inbound Contact pipeline instead.
             if not is_saved_contact:
-                return "skipped", whatsapp_id
+                return "skipped", self._identity_keys_from_values(whatsapp_id, raw_id, lid)
             row = Contact(whatsapp_id=whatsapp_id, updated_at=sync_at)
             self.session.add(row)
 
-        if contact_name:
+        if is_saved_contact is False:
+            # A false marker or completed absence reconciliation must be able to
+            # override stale address-book-name evidence. Push/display names remain.
+            row.contact_name = contact_name[:180] if contact_name else None
+        elif contact_name:
             row.contact_name = contact_name[:180]
         if push_name:
             row.push_name = push_name[:180]
@@ -154,7 +173,7 @@ class ContactSyncService:
             if preferred_name:
                 row.display_name = preferred_name[:180]
 
-        row.chat_id = row.chat_id or whatsapp_id
+        row.chat_id = row.chat_id or (whatsapp_id if not whatsapp_id.endswith("@lid") else row.chat_id)
         row.waha_contact_id = raw_id[:120]
         if lid:
             row.waha_participant_id = lid[:120]
@@ -176,21 +195,27 @@ class ContactSyncService:
         )
         row.updated_at = sync_at
         await self.session.flush()
-        return ("created" if created else "updated"), whatsapp_id
+        return ("created" if created else "updated"), self._row_identity_keys(row, whatsapp_id, raw_id, lid)
 
-    async def _reconcile_absent_saved_contacts(self, seen_person_ids: set[str], *, sync_at: datetime) -> None:
+    async def _reconcile_absent_saved_contacts(self, seen_person_ids: set[str], *, sync_at: datetime) -> int:
         rows = (await self.session.execute(select(Contact))).scalars().all()
+        updated = 0
         for row in rows:
-            if not self._saved_marker(row.identity_json):
+            if not self._has_saved_evidence(row):
                 continue
-            if self._canonical_whatsapp_id(row.whatsapp_id) in seen_person_ids:
+            if self._row_identity_keys(row) & seen_person_ids:
                 continue
             identity = dict(row.identity_json) if isinstance(row.identity_json, dict) else {}
             identity["is_saved_contact"] = False
             identity["saved_contact_synced_at"] = sync_at.isoformat()
             identity["saved_contact_reconciled_reason"] = "absent_from_full_waha_contact_scan"
             row.identity_json = identity
+            # contact_name is dedicated address-book evidence. Clear it on confirmed
+            # removal so a later inbound identity refresh cannot resurrect legacy saved state.
+            row.contact_name = None
             row.updated_at = sync_at
+            updated += 1
+        return updated
 
     async def _find_existing(
         self,
@@ -249,10 +274,48 @@ class ContactSyncService:
         return identity
 
     @staticmethod
-    def _saved_marker(identity_json: dict[str, Any] | None) -> bool:
-        if not isinstance(identity_json, dict):
-            return False
-        return identity_json.get("is_saved_contact") is True
+    def _saved_marker_value(identity_json: dict[str, Any] | None) -> bool | None:
+        if not isinstance(identity_json, dict) or "is_saved_contact" not in identity_json:
+            return None
+        value = identity_json.get("is_saved_contact")
+        return value if isinstance(value, bool) else None
+
+    @classmethod
+    def _has_saved_evidence(cls, row: Contact) -> bool:
+        marker = cls._saved_marker_value(row.identity_json)
+        if marker is not None:
+            return marker
+        # Legacy compatibility: before the explicit marker existed, contact_name was
+        # the dedicated WAHA address-book evidence. A completed reconciliation clears it.
+        return bool((row.contact_name or "").strip())
+
+    @classmethod
+    def _row_identity_keys(cls, row: Contact, *extra: str | None) -> set[str]:
+        identity = row.identity_json if isinstance(row.identity_json, dict) else {}
+        return cls._identity_keys_from_values(
+            row.whatsapp_id,
+            row.waha_contact_id,
+            row.waha_participant_id,
+            row.chat_id,
+            identity.get("whatsapp_id"),
+            identity.get("waha_contact_id"),
+            identity.get("waha_participant_id"),
+            *extra,
+        )
+
+    @classmethod
+    def _identity_keys_from_values(cls, *values: Any) -> set[str]:
+        keys: set[str] = set()
+        for value in values:
+            text = cls._first_text(value)
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered.endswith("@s.whatsapp.net") or lowered.endswith("@c.us"):
+                keys.add(cls._canonical_whatsapp_id(lowered))
+            elif lowered.endswith("@lid"):
+                keys.add(lowered)
+        return keys
 
     @staticmethod
     def _canonical_whatsapp_id(value: str) -> str:
