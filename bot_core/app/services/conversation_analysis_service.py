@@ -27,14 +27,14 @@ class ConversationAnalysisService:
     MAX_IMPORTANT_DATES = 25
 
     _COMMITMENT_START = re.compile(
-        r"\b(?:i will|i(?:'|’)ll|i can|i shall|i promise(?: to)?|"
+        r"\b(?:i will|i(?:'|’)ll|i can(?!['’]t\b)(?!\s+not\b)\b|i shall|i promise(?: to)?|"
         r"let me\s+(?!(?:know|see)\b)(?:send|check|call|share|handle|review|prepare|forward|"
         r"bring|pay|book|arrange|fix|update|confirm|look|follow\s+up|take\s+care\s+of|sort\s+out)\b)",
         re.IGNORECASE,
     )
     _SENTENCE_END = re.compile(r"[.!?;]+")
     _TRAILING_CONJUNCTION = re.compile(r"(?:,?\s+(?:and|then))\s*$", re.IGNORECASE)
-    _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
+    _WORD_RE = re.compile(r"\w+(?:\+\+|#)?", re.UNICODE)
 
     def __init__(self, session: AsyncSession):
         self.session = session
