@@ -257,3 +257,9 @@ def test_deployment_smoke_sends_waha_authentication_header():
     smoke = open("deploy/scripts/smoke-test.sh", encoding="utf-8").read()
     assert 'if [ -z "${WAHA_API_KEY:-}" ]' in smoke
     assert '-H "X-Api-Key: ${WAHA_API_KEY}"' in smoke
+
+
+def test_deployment_guide_manual_webhooks_send_waha_authentication_header():
+    guide = open("deploy/DEPLOYMENT_GUIDE.md", encoding="utf-8").read()
+    assert guide.count('-H "X-Api-Key: ${WAHA_API_KEY}"') >= 2
+    assert guide.count(". ./.env.production") >= 2
