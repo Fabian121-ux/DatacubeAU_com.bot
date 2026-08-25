@@ -67,6 +67,57 @@ async def test_stale_processing_receipt_can_be_reclaimed(db_session):
 
 
 @pytest.mark.asyncio
+async def test_stale_worker_cannot_release_replacement_claim(db_session):
+    event_key = "default:chat:fenced"
+    await db_session.execute(text("DELETE FROM inbound_webhook_receipts WHERE event_key = :key"), {"key": event_key})
+    await db_session.commit()
+
+    service = InboundIdempotencyService(db_session)
+    assert await service.claim(
+        InboundReceipt(
+            event_key=event_key,
+            session_name="default",
+            chat_id="chat",
+            message_id="fenced",
+        )
+    ) is True
+
+    original_token = (
+        await db_session.execute(
+            text("SELECT claim_token FROM inbound_webhook_receipts WHERE event_key = :key"),
+            {"key": event_key},
+        )
+    ).scalar_one()
+    assert original_token
+
+    replacement_token = "replacement-generation-token"
+    await db_session.execute(
+        text(
+            """
+            UPDATE inbound_webhook_receipts
+            SET claim_token = :replacement, status = 'processing', updated_at = NOW()
+            WHERE event_key = :key
+            """
+        ),
+        {"replacement": replacement_token, "key": event_key},
+    )
+    await db_session.commit()
+
+    # This service still carries the original claim token in its task context. The
+    # generation predicate must prevent it deleting the replacement worker's lease.
+    await service.release_failed(event_key)
+
+    row = (
+        await db_session.execute(
+            text("SELECT status, claim_token FROM inbound_webhook_receipts WHERE event_key = :key"),
+            {"key": event_key},
+        )
+    ).one()
+    assert row.status == "processing"
+    assert row.claim_token == replacement_token
+
+
+@pytest.mark.asyncio
 async def test_primary_owner_lookup_accepts_historical_mixed_case_permission(db_session):
     await db_session.execute(delete(AdminAccount))
     owner = AdminAccount(
