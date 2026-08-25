@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -85,7 +85,9 @@ async def test_analysis_composes_zina_chat_export_without_llm():
     assert analysis["recurring_topics"][0] == {
         "topic": "Proposal",
         "summary_count": 2,
+        "dm_message_count": 2,
         "source_summary_ids": [31, 32],
+        "source_message_ids": [10, "delivery:21"],
     }
     assert analysis["important_dates"][0]["scheduled_action_id"] == 51
     kinds = [item["kind"] for item in analysis["recommended_follow_ups"]]
@@ -100,6 +102,7 @@ def test_analysis_does_not_invent_commitments_from_inbound_or_non_commitment_out
                 {"id": 1, "direction": "inbound", "text": "I will send the file."},
                 {"id": 2, "direction": "outbound", "text": "Thanks, noted."},
                 {"id": 3, "direction": "inbound", "text": "Will you send it tomorrow?"},
+                {"id": 4, "direction": "outbound", "text": "Let me know if you need anything."},
             ]
         },
         "memory": {"summaries": []},
@@ -112,6 +115,88 @@ def test_analysis_does_not_invent_commitments_from_inbound_or_non_commitment_out
     assert analysis["explicit_commitments"] == []
     assert analysis["recurring_topics"] == []
     assert analysis["recommended_follow_ups"] == []
+
+
+def test_commitments_accept_curly_apostrophe_and_split_multiple_sentence_bounded_clauses():
+    messages = [
+        {
+            "id": "delivery:1",
+            "direction": "outbound",
+            "text": "I’ll send it tomorrow. How is your family? I can call you later; I promise to update Amanda.",
+            "created_at": datetime(2026, 8, 20, 8, 0, tzinfo=timezone.utc),
+        }
+    ]
+
+    commitments = ConversationAnalysisService._commitments(messages)
+
+    assert [item["text"] for item in commitments] == [
+        "I’ll send it tomorrow",
+        "I can call you later",
+        "I promise to update Amanda",
+    ]
+    assert all(item["source_message_id"] == "delivery:1" for item in commitments)
+
+
+def test_recurring_topics_require_two_summary_mentions_and_two_dm_message_matches():
+    summaries = [
+        {"id": 1, "topics": ["Proposal", "Group Only"]},
+        {"id": 2, "topics": ["Proposal", "Group Only"]},
+        {"id": 3, "topics": ["Invoice"]},
+    ]
+    messages = [
+        {"id": 10, "direction": "inbound", "text": "The proposal is ready."},
+        {"id": 11, "direction": "outbound", "text": "I reviewed the proposal."},
+        {"id": 12, "direction": "inbound", "text": "The invoice arrived."},
+    ]
+
+    topics = ConversationAnalysisService._recurring_topics(summaries, messages)
+
+    assert [item["topic"] for item in topics] == ["Proposal"]
+    assert topics[0]["source_message_ids"] == [10, 11]
+
+
+def test_recurring_topics_return_all_bounded_summary_evidence_ids():
+    summaries = [{"id": index, "topics": ["Proposal"]} for index in range(1, 16)]
+    messages = [
+        {"id": 101, "direction": "inbound", "text": "Proposal update"},
+        {"id": 102, "direction": "outbound", "text": "Proposal received"},
+    ]
+
+    topics = ConversationAnalysisService._recurring_topics(summaries, messages)
+
+    assert topics[0]["summary_count"] == 15
+    assert topics[0]["source_summary_ids"] == list(range(1, 16))
+
+
+def test_important_dates_filter_active_actions_sort_by_schedule_then_apply_cap():
+    base = datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc)
+    completed = [
+        {
+            "id": f"completed-{index}",
+            "action_type": "whatsapp.send_message",
+            "status": "completed",
+            "scheduled_for": base - timedelta(days=index + 1),
+        }
+        for index in range(30)
+    ]
+    active = [
+        {
+            "id": 200,
+            "action_type": "whatsapp.send_message",
+            "status": "scheduled",
+            "scheduled_for": base + timedelta(hours=2),
+        },
+        {
+            "id": 199,
+            "action_type": "whatsapp.send_message",
+            "status": "queued",
+            "scheduled_for": base + timedelta(hours=1),
+        },
+    ]
+
+    dates = ConversationAnalysisService._important_dates(completed + active)
+
+    assert [item["scheduled_action_id"] for item in dates] == [199, 200]
 
 
 class _FakeExporter:
