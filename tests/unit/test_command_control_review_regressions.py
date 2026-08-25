@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import BackgroundTasks
 from sqlalchemy import delete, select, text
@@ -94,6 +96,37 @@ def test_command_parser_preserves_multiline_arguments():
         "/teach",
         "Question:\nWho is Amanda?\nAnswer:\nA contact",
     )
+
+
+@pytest.mark.asyncio
+async def test_multiline_command_reaches_existing_handler_with_dispatchable_prefix(db_session, monkeypatch):
+    await db_session.execute(delete(AdminAccount))
+    db_session.add(_owner("2348000000001", primary=True))
+    await db_session.flush()
+
+    captured: dict[str, str] = {}
+
+    async def _fake_handle(_service, message, _contact):
+        captured["text"] = message.message_text
+        return SimpleNamespace(reply_text="captured")
+
+    monkeypatch.setattr("app.services.command_control_service.OwnerCommandService.handle", _fake_handle)
+
+    message = MessageNormalizer().normalize(
+        _event(
+            "@Zina /teach\nQuestion:\nWho is Amanda?\nAnswer:\nA contact",
+            chat_id="2348000000001@c.us",
+            message_id="MULTILINE-DISPATCH",
+        )
+    )
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="MULTILINE-DISPATCH",
+        request_id="MULTILINE-DISPATCH",
+    )
+
+    assert result is not None and result.consumed is True
+    assert captured["text"] == "/teach Question:\nWho is Amanda?\nAnswer:\nA contact"
 
 
 @pytest.mark.asyncio
