@@ -228,7 +228,7 @@ class OwnerManagementCommandService:
         rows = await self._person_contacts()
         saved = [row for row in rows if self._is_saved(row)]
         unsaved = [row for row in rows if not self._is_saved(row)]
-        last_sync = max((row.updated_at for row in rows if row.identity_source == "waha_contact_sync"), default=None)
+        last_sync = max((row.updated_at for row in rows if row.contact_name), default=None)
 
         if mode == "summary":
             return (
@@ -236,7 +236,7 @@ class OwnerManagementCommandService:
                 f"Known people: {len(rows)}\n"
                 f"Saved: {len(saved)}\n"
                 f"Unsaved: {len(unsaved)}\n"
-                f"Last saved-contact sync: {last_sync.isoformat() if last_sync else 'never'}\n\n"
+                f"Last saved-contact evidence: {last_sync.isoformat() if last_sync else 'never'}\n\n"
                 "Use .contacts saved 20, .contacts unsaved 20, .contacts recent 20, "
                 ".contact <name>, or .contactsync."
             )
@@ -332,9 +332,12 @@ class OwnerManagementCommandService:
 
     @staticmethod
     def _is_saved(row: Contact) -> bool:
-        # WAHA's saved-contact sync populates contact_name from address-book name.
-        # push_name/display_name alone are not enough to call a number saved.
-        return bool((row.contact_name or "").strip() and row.identity_source == "waha_contact_sync")
+        # `contact_name` is the dedicated WAHA address-book name field. Inbound
+        # identity refreshes may legitimately change `identity_source`, so requiring
+        # the source marker here would make a real saved contact become "unsaved"
+        # immediately after they message Fabian. Push/display names remain separate
+        # and are deliberately insufficient for saved-contact classification.
+        return bool((row.contact_name or "").strip())
 
     @classmethod
     def _bounded_limit(cls, value: str) -> int:
