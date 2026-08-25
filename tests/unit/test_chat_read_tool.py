@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
-from app.models.schema import AuditLog, Contact, Message
+from app.models.schema import AuditLog, Contact, Message, OutboundMessage
 from app.services.tool_dispatcher_service import ToolDispatcherService, ToolExecutionContext
 
 
@@ -20,6 +20,7 @@ def _message(
     created_at: datetime,
     direction: str = "inbound",
     chat_type: str = "dm",
+    raw_payload_json: dict | None = None,
 ) -> Message:
     return Message(
         contact_id=contact_id,
@@ -29,7 +30,27 @@ def _message(
         message_text=text,
         normalized_text=text.lower(),
         message_type="text",
+        raw_payload_json=raw_payload_json,
         created_at=created_at,
+    )
+
+
+def _outbound(
+    *,
+    chat_id: str,
+    text: str,
+    status: str,
+    updated_at: datetime,
+) -> OutboundMessage:
+    return OutboundMessage(
+        chat_id=chat_id,
+        message_text=text,
+        status=status,
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=updated_at,
+        created_at=updated_at,
+        updated_at=updated_at,
     )
 
 
@@ -113,6 +134,85 @@ async def test_chat_read_returns_bounded_chronological_dm_history_for_resolved_c
         )
     ).scalar_one()
     assert "proposal" not in str(audit.details_json).lower()
+
+
+@pytest.mark.asyncio
+async def test_chat_read_reconciles_authoritative_outbound_delivery_state(db_session):
+    amanda = Contact(
+        whatsapp_id="2348055555566@c.us",
+        display_name="Amanda Delivery",
+        contact_name="Amanda Delivery",
+        chat_id="2348055555566@c.us",
+    )
+    db_session.add(amanda)
+    await db_session.flush()
+
+    cancelled = _outbound(
+        chat_id=amanda.whatsapp_id,
+        text="deferred reply that Fabian cancelled",
+        status="cancelled",
+        updated_at=datetime(2026, 8, 24, 8, 2, tzinfo=UTC),
+    )
+    delivered_router = _outbound(
+        chat_id=amanda.whatsapp_id,
+        text="delivered router reply",
+        status="sent",
+        updated_at=datetime(2026, 8, 24, 8, 4, tzinfo=UTC),
+    )
+    delivered_scheduled = _outbound(
+        chat_id=amanda.whatsapp_id,
+        text="scheduled message delivered through WAHA",
+        status="sent",
+        updated_at=datetime(2026, 8, 24, 8, 6, tzinfo=UTC),
+    )
+    db_session.add_all([cancelled, delivered_router, delivered_scheduled])
+    await db_session.flush()
+
+    db_session.add_all(
+        [
+            _message(
+                contact_id=amanda.id,
+                chat_id=amanda.whatsapp_id,
+                text="Amanda asked for an update",
+                created_at=datetime(2026, 8, 24, 8, 0, tzinfo=UTC),
+            ),
+            _message(
+                contact_id=amanda.id,
+                chat_id=amanda.whatsapp_id,
+                text=cancelled.message_text,
+                created_at=datetime(2026, 8, 24, 8, 1, tzinfo=UTC),
+                direction="outbound",
+                raw_payload_json={"source": "router_queue", "outbound_queue_id": cancelled.id},
+            ),
+            _message(
+                contact_id=amanda.id,
+                chat_id=amanda.whatsapp_id,
+                text=delivered_router.message_text,
+                created_at=datetime(2026, 8, 24, 8, 3, tzinfo=UTC),
+                direction="outbound",
+                raw_payload_json={"source": "router_queue", "outbound_queue_id": delivered_router.id},
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    result = await ToolDispatcherService(db_session).execute(
+        "chat.read",
+        {"contact": "Amanda Delivery", "limit": 10},
+        context=ToolExecutionContext(permission="owner"),
+    )
+
+    messages = result["result"]["messages"]
+    assert [item["text"] for item in messages] == [
+        "Amanda asked for an update",
+        "delivered router reply",
+        "scheduled message delivered through WAHA",
+    ]
+    assert "deferred reply that Fabian cancelled" not in [item["text"] for item in messages]
+    assert [item["text"] for item in messages].count("delivered router reply") == 1
+    assert messages[1]["source"] == "outbound_queue"
+    assert messages[1]["delivery_status"] == "sent"
+    assert messages[2]["id"] == f"outbound_queue:{delivered_scheduled.id}"
 
 
 @pytest.mark.asyncio
