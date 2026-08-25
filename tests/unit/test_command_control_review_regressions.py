@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import BackgroundTasks
 from sqlalchemy import delete, select, text
 
+from app.api.inbound import waha_webhook
 from app.core.message_normalizer import MessageNormalizer
-from app.main import app
+from app.db import SessionLocal
 from app.models.schema import AdminAccount, OutboundMessage
 from app.services.command_control_service import CommandControlService
 
@@ -34,6 +35,15 @@ def _owner(number: str, *, primary: bool) -> AdminAccount:
         is_primary=primary,
         is_enabled=True,
     )
+
+
+class _Request:
+    def __init__(self, event: dict):
+        self._event = event
+        self.headers: dict[str, str] = {}
+
+    async def json(self):
+        return self._event
 
 
 @pytest.mark.asyncio
@@ -79,13 +89,16 @@ async def test_at_zina_direct_slash_is_canonicalized_before_existing_handler(db_
 
 
 @pytest.mark.asyncio
-async def test_duplicate_from_me_webhook_executes_owner_command_once(db_session):
-    await db_session.execute(delete(AdminAccount))
-    await db_session.execute(delete(OutboundMessage))
-    await db_session.execute(text("DELETE FROM inbound_webhook_receipts"))
-    owner = _owner("2348000000001", primary=True)
-    db_session.add(owner)
-    await db_session.commit()
+async def test_duplicate_from_me_webhook_executes_owner_command_once():
+    # Exercise the real webhook and its global SessionLocal in this pytest event loop.
+    # Explicit cleanup keeps this committed idempotency test isolated from the rest
+    # of the suite (the ordinary db_session fixture intentionally rolls back inserts).
+    async with SessionLocal() as db:
+        await db.execute(delete(OutboundMessage))
+        await db.execute(delete(AdminAccount))
+        await db.execute(text("DELETE FROM inbound_webhook_receipts"))
+        db.add(_owner("2348000000001", primary=True))
+        await db.commit()
 
     first_event = _event(
         "@Zina .status",
@@ -100,16 +113,21 @@ async def test_duplicate_from_me_webhook_executes_owner_command_once(db_session)
         event_name="message",
     )
 
-    client = TestClient(app)
-    first = client.post("/webhooks/waha", json=first_event)
-    second = client.post("/webhooks/waha", json=duplicate_variant)
+    try:
+        first = await waha_webhook(_Request(first_event), BackgroundTasks())
+        second = await waha_webhook(_Request(duplicate_variant), BackgroundTasks())
 
-    assert first.status_code == 202
-    assert first.json()["command_consumed"] is True
-    assert second.status_code == 202
-    assert second.json()["status"] == "duplicate"
+        assert first["status"] == "accepted"
+        assert first["command_consumed"] is True
+        assert second["status"] == "duplicate"
 
-    db_session.expire_all()
-    queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
-    assert len(queued) == 1
-    assert queued[0].formatting_json["source"] == "command_control"
+        async with SessionLocal() as db:
+            queued = (await db.execute(select(OutboundMessage))).scalars().all()
+            assert len(queued) == 1
+            assert queued[0].formatting_json["source"] == "command_control"
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(OutboundMessage))
+            await db.execute(delete(AdminAccount))
+            await db.execute(text("DELETE FROM inbound_webhook_receipts"))
+            await db.commit()
