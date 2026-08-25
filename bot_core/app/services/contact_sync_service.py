@@ -66,9 +66,11 @@ class ContactSyncService:
                     break
                 offset += len(contacts)
 
-            # Only reconcile contacts missing from WAHA after a complete scan. If the
-            # configured safety cap is reached, absence is not proof that a contact
-            # was removed from Fabian's address book.
+            # Only reconcile contacts missing from WAHA after a complete, validated
+            # scan. WAHAClient rejects malformed/unrecognized page shapes instead of
+            # converting them to [], so transport/schema errors cannot masquerade as
+            # an empty address book. If the safety cap is reached, absence is also not
+            # proof that a contact was removed.
             if complete_scan:
                 result.updated += await self._reconcile_absent_saved_contacts(
                     seen_person_ids,
@@ -130,6 +132,14 @@ class ContactSyncService:
             lid=lid,
             normalized_phone=normalized_phone,
         )
+
+        # A stale overlapping sync must never overwrite evidence written by a newer
+        # scan. This makes final saved state depend on newest WAHA evidence rather than
+        # whichever request happened to finish last.
+        if row is not None:
+            newer_evidence_at = self._saved_evidence_at(row.identity_json)
+            if newer_evidence_at is not None and newer_evidence_at > sync_at:
+                return "skipped", self._row_identity_keys(row, whatsapp_id, raw_id, lid)
 
         # A bare LID is not a phone number. It may still identify an existing person,
         # so preserve that row as seen during a complete scan, but never create a
@@ -205,6 +215,11 @@ class ContactSyncService:
                 continue
             if self._row_identity_keys(row) & seen_person_ids:
                 continue
+            newer_evidence_at = self._saved_evidence_at(row.identity_json)
+            if newer_evidence_at is not None and newer_evidence_at > sync_at:
+                # Another sync that started later has already written fresher evidence.
+                # An older scan finishing last must not demote that contact.
+                continue
             identity = dict(row.identity_json) if isinstance(row.identity_json, dict) else {}
             identity["is_saved_contact"] = False
             identity["saved_contact_synced_at"] = sync_at.isoformat()
@@ -279,6 +294,18 @@ class ContactSyncService:
             return None
         value = identity_json.get("is_saved_contact")
         return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _saved_evidence_at(identity_json: dict[str, Any] | None) -> datetime | None:
+        if not isinstance(identity_json, dict):
+            return None
+        raw = identity_json.get("saved_contact_synced_at")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     @classmethod
     def _has_saved_evidence(cls, row: Contact) -> bool:
