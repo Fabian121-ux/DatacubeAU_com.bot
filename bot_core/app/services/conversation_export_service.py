@@ -27,6 +27,7 @@ class ConversationExportService:
     MAX_SUMMARIES = 20
     MAX_OPEN_LOOPS = 100
     MAX_ACTIONS = 50
+    ACTIVE_ACTION_STATUSES = ("scheduled", "pending", "queued", "retrying", "paused")
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -215,14 +216,34 @@ class ConversationExportService:
         ]
 
     async def _scheduled_actions(self, contact_id: int) -> list[dict[str, Any]]:
-        rows = (
+        # Active owner-approved actions must not disappear merely because many newer
+        # completed/cancelled records consumed the export cap. Select active actions
+        # first, ordered by execution time, then fill any remaining slots with recent
+        # inactive history for context.
+        active_rows = (
             await self.session.execute(
                 select(ScheduledAction)
                 .where(ScheduledAction.target_contact_id == contact_id)
-                .order_by(ScheduledAction.updated_at.desc(), ScheduledAction.id.desc())
+                .where(ScheduledAction.status.in_(self.ACTIVE_ACTION_STATUSES))
+                .order_by(ScheduledAction.scheduled_for.asc(), ScheduledAction.id.asc())
                 .limit(self.MAX_ACTIONS)
             )
         ).scalars().all()
+
+        remaining = max(0, self.MAX_ACTIONS - len(active_rows))
+        historical_rows: list[ScheduledAction] = []
+        if remaining:
+            historical_rows = (
+                await self.session.execute(
+                    select(ScheduledAction)
+                    .where(ScheduledAction.target_contact_id == contact_id)
+                    .where(ScheduledAction.status.notin_(self.ACTIVE_ACTION_STATUSES))
+                    .order_by(ScheduledAction.updated_at.desc(), ScheduledAction.id.desc())
+                    .limit(remaining)
+                )
+            ).scalars().all()
+
+        rows = [*active_rows, *historical_rows]
         return [
             {
                 "id": row.id,
