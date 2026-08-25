@@ -61,6 +61,10 @@ services:
       WHATSAPP_API_KEY: ${WAHA_API_KEY}
       WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://api:8080/webhooks/waha}
       WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message}
+      # WAHA supports arbitrary global webhook custom headers. Reuse the existing
+      # WAHA API secret on the internal service-to-service webhook so FastAPI can
+      # authenticate inbound events before trusting caller-controlled `fromMe` data.
+      WHATSAPP_HOOK_CUSTOM_HEADERS: X-Api-Key:${WAHA_API_KEY}
       WHATSAPP_HOOK_RETRIES_POLICY: ${WHATSAPP_HOOK_RETRIES_POLICY:-linear}
       WHATSAPP_HOOK_RETRIES_DELAY_SECONDS: ${WHATSAPP_HOOK_RETRIES_DELAY_SECONDS:-2}
       WHATSAPP_HOOK_RETRIES_ATTEMPTS: ${WHATSAPP_HOOK_RETRIES_ATTEMPTS:-6}
