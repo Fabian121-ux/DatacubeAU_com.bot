@@ -10,6 +10,7 @@ from app.core.router import InboundRouter
 from app.db import SessionLocal
 from app.models.schema import AuditLog
 from app.services.admin_management_service import AdminManagementService
+from app.services.command_control_service import CommandControlService
 from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
@@ -61,6 +62,10 @@ async def waha_webhook(
     if _is_from_me(payload):
         chat_id = _resolve_chat_id(payload)
         handback_generated = False
+        command_consumed = False
+        command_name: str | None = None
+        command_error: str | None = None
+        command_outbound_queue_id: int | None = None
         natural_action_queued = False
         natural_action_error: str | None = None
         if chat_id and not _is_group_chat(chat_id):
@@ -68,14 +73,27 @@ async def waha_webhook(
                 cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
                 handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
                 handback_generated = handback is not None
-                natural_action = await _plan_owner_natural_action(
-                    db,
-                    event=event,
-                    message_id=message_id,
+
+                normalized = MessageNormalizer().normalize(event)
+                command_result = await CommandControlService(db).handle_from_me(
+                    normalized,
+                    transport_message_id=message_id,
                     request_id=request_id,
                 )
-                natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
-                natural_action_error = natural_action.get("error") if natural_action else None
+                if command_result is not None and command_result.consumed:
+                    command_consumed = True
+                    command_name = command_result.command
+                    command_error = command_result.error
+                    command_outbound_queue_id = command_result.outbound_queue_id
+                else:
+                    natural_action = await _plan_owner_natural_action(
+                        db,
+                        event=event,
+                        message_id=message_id,
+                        request_id=request_id,
+                    )
+                    natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
+                    natural_action_error = natural_action.get("error") if natural_action else None
                 await db.commit()
             log_event(
                 logger,
@@ -85,26 +103,40 @@ async def waha_webhook(
                 chat_id=chat_id,
                 takeover_cancelled=cancelled,
                 handback_generated=handback_generated,
+                command_consumed=command_consumed,
+                command_name=command_name,
+                command_error=command_error,
+                command_outbound_queue_id=command_outbound_queue_id,
                 natural_action_queued=natural_action_queued,
                 natural_action_error=natural_action_error,
             )
+        accepted = command_consumed or natural_action_queued
+        reason = "owner_command_control" if command_consumed else "owner_natural_action" if natural_action_queued else "from_me"
         log_event(
             logger,
             logging.INFO,
-            "webhook_ignored",
+            "webhook_ignored" if not accepted else "webhook_owner_action_accepted",
             request_id=request_id,
             event_name=event_name or "message",
             message_id=message_id,
-            reason="from_me",
+            reason=reason,
             handback_generated=handback_generated,
+            command_consumed=command_consumed,
+            command_name=command_name,
+            command_error=command_error,
+            command_outbound_queue_id=command_outbound_queue_id,
             natural_action_queued=natural_action_queued,
             natural_action_error=natural_action_error,
         )
         return {
-            "status": "accepted" if natural_action_queued else "ignored",
-            "reason": "owner_natural_action" if natural_action_queued else "from_me",
+            "status": "accepted" if accepted else "ignored",
+            "reason": reason,
             "event_name": event_name or "message",
             "handback_generated": handback_generated,
+            "command_consumed": command_consumed,
+            "command": command_name,
+            "command_error": command_error,
+            "command_outbound_queue_id": command_outbound_queue_id,
             "natural_action_queued": natural_action_queued,
             "natural_action_error": natural_action_error,
         }
