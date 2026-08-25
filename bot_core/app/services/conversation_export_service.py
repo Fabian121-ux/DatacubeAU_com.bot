@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_open_loop import ConversationOpenLoop
@@ -41,10 +41,7 @@ class ConversationExportService:
         before: datetime | None = None,
         requested_by_contact_id: int | None = None,
     ) -> dict[str, Any]:
-        arguments: dict[str, Any] = {
-            "contact": contact_reference,
-            "limit": limit,
-        }
+        arguments: dict[str, Any] = {"contact": contact_reference, "limit": limit}
         if after is not None:
             arguments["after"] = after.isoformat()
         if before is not None:
@@ -64,17 +61,11 @@ class ConversationExportService:
         if not contact:
             raise ValueError("resolved contact no longer exists")
 
-        relationship = await self._relationship(contact_id)
-        facts = await self._memory_facts(contact_id)
-        summaries = await self._summaries(contact_id)
-        open_loops = await self._open_loops(contact_id)
-        actions = await self._scheduled_actions(contact_id)
-
         return {
             "schema_version": self.SCHEMA_VERSION,
             "generated_at": utcnow(),
             "contact": self._contact_payload(contact),
-            "relationship": relationship,
+            "relationship": await self._relationship(contact_id),
             "conversation": {
                 "message_count": chat["message_count"],
                 "limit": chat["limit"],
@@ -84,12 +75,12 @@ class ConversationExportService:
                 "messages": chat["messages"],
             },
             "memory": {
-                "facts": facts,
-                "summaries": summaries,
+                "facts": await self._memory_facts(contact_id),
+                "summaries": await self._summaries(contact_id),
             },
-            "open_loops": open_loops,
+            "open_loops": await self._open_loops(contact_id),
             "zina_activity": {
-                "scheduled_actions": actions,
+                "scheduled_actions": await self._scheduled_actions(contact_id),
             },
             "analysis": {
                 "status": "not_generated",
@@ -193,11 +184,19 @@ class ConversationExportService:
         ]
 
     async def _open_loops(self, contact_id: int) -> list[dict[str, Any]]:
+        # The export is a private DM projection. A contact may also appear in group
+        # threads, so do not let group/status/newsletter open loops leak into it.
+        dm_chat = or_(
+            ConversationOpenLoop.chat_id.ilike("%@c.us"),
+            ConversationOpenLoop.chat_id.ilike("%@s.whatsapp.net"),
+            ConversationOpenLoop.chat_id.ilike("%@lid"),
+        )
         rows = (
             await self.session.execute(
                 select(ConversationOpenLoop)
                 .where(ConversationOpenLoop.contact_id == contact_id)
                 .where(ConversationOpenLoop.status == "open")
+                .where(dm_chat)
                 .order_by(ConversationOpenLoop.updated_at.desc(), ConversationOpenLoop.id.desc())
                 .limit(self.MAX_OPEN_LOOPS)
             )
