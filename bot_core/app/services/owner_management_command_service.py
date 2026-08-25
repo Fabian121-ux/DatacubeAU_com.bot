@@ -186,8 +186,8 @@ class OwnerManagementCommandService:
         return f"{canonical} is now {'enabled' if updated.is_enabled else 'disabled'}."
 
     async def _config(self, args: str) -> str:
-        text = (args or "").strip()
-        if not text:
+        text_value = (args or "").strip()
+        if not text_value:
             lines = ["ZINA SAFE CONFIG"]
             for key, spec in SAFE_CONFIG.items():
                 value = await self.config.get(key, spec.default)
@@ -195,7 +195,7 @@ class OwnerManagementCommandService:
             lines.append("\nUse .config get <key> or .config set <key> <value>.")
             return "\n".join(lines)
 
-        action, _, remainder = text.partition(" ")
+        action, _, remainder = text_value.partition(" ")
         action = action.lower()
         remainder = remainder.strip()
         if action == "get":
@@ -247,7 +247,7 @@ class OwnerManagementCommandService:
         selected = selected[:limit]
         lines = [f"CONTACTS — {mode.upper()} ({len(selected)} shown)"]
         for row in selected:
-            name = row.contact_name or row.display_name or row.push_name or "Unsaved"
+            name = row.contact_name or row.display_name or row.push_name or "Unknown"
             identity = row.normalized_phone or row.whatsapp_phone or row.whatsapp_id
             lines.append(f"• {name} — {identity}")
         if not selected:
@@ -337,9 +337,6 @@ class OwnerManagementCommandService:
         identity = row.identity_json if isinstance(row.identity_json, dict) else {}
         if "is_saved_contact" in identity:
             return identity.get("is_saved_contact") is True
-        # Legacy rows created before explicit saved-state evidence existed may only
-        # have the dedicated WAHA address-book name. Keep that compatibility path
-        # until a complete contact sync writes an explicit true/false marker.
         return bool((row.contact_name or "").strip())
 
     @staticmethod
