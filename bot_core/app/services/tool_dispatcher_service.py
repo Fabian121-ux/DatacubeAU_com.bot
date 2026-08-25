@@ -295,6 +295,15 @@ class ToolDispatcherService:
                 continue
             delivery_audits_by_queue.setdefault(queue_id, []).append(audit)
 
+        missing_audit_queue_ids = sorted(set(delivery_audits_by_queue) - set(outbound_by_id))
+        if missing_audit_queue_ids:
+            audited_queue_rows = (
+                await self.session.execute(
+                    select(OutboundMessage).where(OutboundMessage.id.in_(missing_audit_queue_ids))
+                )
+            ).scalars().all()
+            outbound_by_id.update({int(row.id): row for row in audited_queue_rows if row.id is not None})
+
         messages = [self._chat_message_dict(row) for row in inbound_rows]
         messages.extend(self._chat_message_dict(row) for row in legacy_outbound_rows)
 
@@ -358,7 +367,7 @@ class ToolDispatcherService:
         offset = 0
         page_size = min(max(limit, _CHAT_READ_PAGE_SIZE), 200)
         candidate_limit = min(
-            max(limit * _CHAT_READ_CANDIDATE_MULTIPLIER, _CHAT_READ_PAGE_SIZE),
+            max(limit * _CHAT_READ_CANDIDATE_MULTIPLIER, _CHAT_READ_PAGE_SIZE * 2),
             _CHAT_READ_MAX_CANDIDATES,
         )
         linked_map_limit = candidate_limit
