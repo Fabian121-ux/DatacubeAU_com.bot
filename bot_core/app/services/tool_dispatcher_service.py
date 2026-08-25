@@ -17,6 +17,7 @@ from app.utils.time import utcnow
 
 
 _PERMISSION_RANK = {"user": 10, "admin": 20, "owner": 30}
+_SUCCESSFUL_OUTBOUND_STATUSES = {"sent", "delivered"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +229,7 @@ class ToolDispatcherService:
             select(Message)
             .where(Message.chat_type == "dm")
             .where(Message.direction == "inbound")
+            .where(*self._dm_message_chat_conditions())
             .where(or_(*scope_conditions))
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
@@ -236,6 +238,7 @@ class ToolDispatcherService:
             select(Message)
             .where(Message.chat_type == "dm")
             .where(Message.direction == "outbound")
+            .where(*self._dm_message_chat_conditions())
             .where(or_(*scope_conditions))
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
@@ -250,20 +253,32 @@ class ToolDispatcherService:
         inbound_rows = (await self.session.execute(inbound_stmt)).scalars().all()
         legacy_outbound_rows = (await self.session.execute(legacy_outbound_stmt)).scalars().all()
 
-        delivered_outbound_rows: list[OutboundMessage] = []
+        outbound_rows: list[OutboundMessage] = []
+        delivery_audits_by_queue: dict[int, list[AuditLog]] = {}
         if dm_outbound_chat_ids:
-            delivered_stmt = (
+            outbound_stmt = (
                 select(OutboundMessage)
                 .where(OutboundMessage.chat_id.in_(sorted(dm_outbound_chat_ids)))
-                .where(OutboundMessage.status == "sent")
                 .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
-                .limit(limit)
             )
-            if after:
-                delivered_stmt = delivered_stmt.where(OutboundMessage.updated_at >= after)
-            if before:
-                delivered_stmt = delivered_stmt.where(OutboundMessage.updated_at <= before)
-            delivered_outbound_rows = (await self.session.execute(delivered_stmt)).scalars().all()
+            outbound_rows = (await self.session.execute(outbound_stmt)).scalars().all()
+            queue_ids = [row.id for row in outbound_rows if row.id is not None]
+            if queue_ids:
+                delivery_audits = (
+                    await self.session.execute(
+                        select(AuditLog)
+                        .where(AuditLog.action == "outbound_queue_sent")
+                        .where(AuditLog.entity_type == "outbound_queue")
+                        .where(AuditLog.entity_id.in_([str(queue_id) for queue_id in queue_ids]))
+                        .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+                    )
+                ).scalars().all()
+                for audit in delivery_audits:
+                    try:
+                        queue_id = int(audit.entity_id or "")
+                    except (TypeError, ValueError):
+                        continue
+                    delivery_audits_by_queue.setdefault(queue_id, []).append(audit)
 
         messages = [self._chat_message_dict(row) for row in inbound_rows]
         messages.extend(
@@ -271,7 +286,28 @@ class ToolDispatcherService:
             for row in legacy_outbound_rows
             if not self._message_outbound_queue_id(row)
         )
-        messages.extend(self._outbound_queue_chat_message_dict(row) for row in delivered_outbound_rows)
+        for row in outbound_rows:
+            audits = delivery_audits_by_queue.get(int(row.id), []) if row.id is not None else []
+            if audits:
+                for audit in audits:
+                    if not self._timestamp_in_window(audit.created_at, after=after, before=before):
+                        continue
+                    messages.append(
+                        self._outbound_queue_chat_message_dict(
+                            row,
+                            delivered_at=audit.created_at,
+                            delivery_event_id=audit.id,
+                            delivery_status="sent",
+                        )
+                    )
+                continue
+            if row.status in _SUCCESSFUL_OUTBOUND_STATUSES and self._timestamp_in_window(
+                row.updated_at,
+                after=after,
+                before=before,
+            ):
+                messages.append(self._outbound_queue_chat_message_dict(row))
+
         messages.sort(key=self._chat_message_sort_key)
         messages = messages[-limit:]
 
@@ -314,16 +350,23 @@ class ToolDispatcherService:
         }
 
     @staticmethod
-    def _outbound_queue_chat_message_dict(row: OutboundMessage) -> dict[str, Any]:
+    def _outbound_queue_chat_message_dict(
+        row: OutboundMessage,
+        *,
+        delivered_at: datetime | None = None,
+        delivery_event_id: int | None = None,
+        delivery_status: str | None = None,
+    ) -> dict[str, Any]:
         delivered_text = (row.media_caption or row.message_text) if row.media_type else row.message_text
+        event_suffix = f":delivery:{delivery_event_id}" if delivery_event_id is not None else ""
         return {
-            "id": f"outbound_queue:{row.id}",
+            "id": f"outbound_queue:{row.id}{event_suffix}",
             "source": "outbound_queue",
             "direction": "outbound",
             "message_type": row.media_type or "text",
             "text": delivered_text,
-            "created_at": row.updated_at,
-            "delivery_status": row.status,
+            "created_at": delivered_at or row.updated_at,
+            "delivery_status": delivery_status or row.status,
         }
 
     @staticmethod
@@ -339,6 +382,28 @@ class ToolDispatcherService:
         )
 
     @staticmethod
+    def _dm_message_chat_conditions() -> tuple[Any, ...]:
+        return (
+            Message.chat_id != "status@broadcast",
+            ~Message.chat_id.ilike("%@g.us"),
+            ~Message.chat_id.ilike("%@broadcast"),
+            ~Message.chat_id.ilike("%@newsletter"),
+        )
+
+    @staticmethod
+    def _timestamp_in_window(
+        timestamp: datetime,
+        *,
+        after: datetime | None,
+        before: datetime | None,
+    ) -> bool:
+        if after and timestamp < after:
+            return False
+        if before and timestamp > before:
+            return False
+        return True
+
+    @staticmethod
     def _chat_message_sort_key(item: dict[str, Any]) -> tuple[Any, int, int]:
         source = item.get("source")
         raw_id = item.get("id")
@@ -348,8 +413,8 @@ class ToolDispatcherService:
         else:
             source_rank = 1
             try:
-                numeric_id = int(str(raw_id).rsplit(":", 1)[-1])
-            except (TypeError, ValueError):
+                numeric_id = int(str(raw_id).split(":")[1])
+            except (TypeError, ValueError, IndexError):
                 numeric_id = 0
         return item["created_at"], source_rank, numeric_id
 
