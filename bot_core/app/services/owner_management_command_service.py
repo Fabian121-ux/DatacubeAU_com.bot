@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -228,7 +229,8 @@ class OwnerManagementCommandService:
         rows = await self._person_contacts()
         saved = [row for row in rows if self._is_saved(row)]
         unsaved = [row for row in rows if not self._is_saved(row)]
-        last_sync = max((row.updated_at for row in rows if row.contact_name), default=None)
+        saved_evidence_times = [self._saved_evidence_at(row) for row in rows]
+        last_sync = max((value for value in saved_evidence_times if value is not None), default=None)
 
         if mode == "summary":
             return (
@@ -236,7 +238,7 @@ class OwnerManagementCommandService:
                 f"Known people: {len(rows)}\n"
                 f"Saved: {len(saved)}\n"
                 f"Unsaved: {len(unsaved)}\n"
-                f"Last saved-contact evidence: {last_sync.isoformat() if last_sync else 'never'}\n\n"
+                f"Last saved-contact sync evidence: {last_sync.isoformat() if last_sync else 'never'}\n\n"
                 "Use .contacts saved 20, .contacts unsaved 20, .contacts recent 20, "
                 ".contact <name>, or .contactsync."
             )
@@ -332,12 +334,24 @@ class OwnerManagementCommandService:
 
     @staticmethod
     def _is_saved(row: Contact) -> bool:
-        # `contact_name` is the dedicated WAHA address-book name field. Inbound
-        # identity refreshes may legitimately change `identity_source`, so requiring
-        # the source marker here would make a real saved contact become "unsaved"
-        # immediately after they message Fabian. Push/display names remain separate
-        # and are deliberately insufficient for saved-contact classification.
+        identity = row.identity_json if isinstance(row.identity_json, dict) else {}
+        if "is_saved_contact" in identity:
+            return identity.get("is_saved_contact") is True
+        # Legacy rows created before explicit saved-state evidence existed may only
+        # have the dedicated WAHA address-book name. Keep that compatibility path
+        # until a complete contact sync writes an explicit true/false marker.
         return bool((row.contact_name or "").strip())
+
+    @staticmethod
+    def _saved_evidence_at(row: Contact):
+        identity = row.identity_json if isinstance(row.identity_json, dict) else {}
+        raw = identity.get("saved_contact_synced_at")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     @classmethod
     def _bounded_limit(cls, value: str) -> int:
