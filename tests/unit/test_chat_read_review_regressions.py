@@ -159,7 +159,49 @@ async def test_legacy_outbound_projection_scan_stops_at_candidate_budget(db_sess
     )
 
     assert rows == []
-    assert len(linked) == 100
+    assert len(linked) == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_read_keeps_queue_context_for_audited_resend_in_pending_state(db_session):
+    amanda = Contact(
+        whatsapp_id="2348055555706@c.us",
+        display_name="Amanda Audited Resend",
+        contact_name="Amanda Audited Resend",
+    )
+    db_session.add(amanda)
+    await db_session.flush()
+
+    delivered_at = datetime(2026, 8, 25, 2, 0, tzinfo=UTC)
+    queue_row = OutboundMessage(
+        chat_id=amanda.whatsapp_id,
+        message_text="message delivered before resend",
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=delivered_at + timedelta(hours=1),
+        created_at=delivered_at - timedelta(minutes=5),
+        updated_at=delivered_at + timedelta(hours=1),
+    )
+    db_session.add(queue_row)
+    await db_session.flush()
+    db_session.add(
+        AuditLog(
+            action="outbound_queue_sent",
+            entity_type="outbound_queue",
+            entity_id=str(queue_row.id),
+            details_json={"chat_id": amanda.whatsapp_id},
+            created_at=delivered_at,
+        )
+    )
+    await db_session.flush()
+
+    result = await _read_chat(db_session, "Amanda Audited Resend", limit=1)
+
+    messages = result["result"]["messages"]
+    assert len(messages) == 1
+    assert messages[0]["text"] == "message delivered before resend"
+    assert messages[0]["created_at"] == delivered_at
 
 
 @pytest.mark.asyncio
