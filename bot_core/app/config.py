@@ -101,6 +101,8 @@ class Settings(BaseSettings):
             errors.append("WAHA_SERVICE_URL is required.")
         if not self.waha_session_name:
             errors.append("WAHA_SESSION_NAME is required.")
+        if self.environment == "production" and not self.waha_api_key:
+            errors.append("WAHA_API_KEY is required in production for authenticated webhook delivery.")
         if not self.admin_username:
             errors.append("ADMIN_USERNAME is required.")
         if not self.admin_password:
