@@ -27,14 +27,16 @@ class ConversationAnalysisService:
     MAX_IMPORTANT_DATES = 25
 
     _COMMITMENT_START = re.compile(
-        r"\b(?:i will|i(?:'|’)ll|i can(?!['’]t\b)(?!\s+not\b)\b|i shall|i promise(?: to)?|"
-        r"let me\s+(?!(?:know|see)\b)(?:send|check|call|share|handle|review|prepare|forward|"
-        r"bring|pay|book|arrange|fix|update|confirm|look|follow\s+up|take\s+care\s+of|sort\s+out)\b)",
+        r"\b(?:i will\b|i(?:'|’)ll\b|i can(?!['’]t\b)(?!\s+not\b)\b|i shall\b|"
+        r"i promise(?:\s+to)?\b|let me\s+(?!(?:know|see)\b)(?:send|check|call|share|"
+        r"handle|review|prepare|forward|bring|pay|book|arrange|fix|update|confirm|look|"
+        r"follow\s+up|take\s+care\s+of|sort\s+out)\b)",
         re.IGNORECASE,
     )
-    _SENTENCE_END = re.compile(r"[.!?;]+")
     _TRAILING_CONJUNCTION = re.compile(r"(?:,?\s+(?:and|then))\s*$", re.IGNORECASE)
     _WORD_RE = re.compile(r"\w+(?:\+\+|#)?", re.UNICODE)
+    _DOTTED_ABBREVIATION = re.compile(r"(?:\b[A-Za-z]\.)+[A-Za-z]$")
+    _QUEUE_DELIVERY_ID = re.compile(r"^outbound_queue:(\d+)(?::delivery:\d+)?$")
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -105,8 +107,8 @@ class ConversationAnalysisService:
             "important_dates": important_dates,
             "recommended_follow_ups": follow_ups,
             "limitations": [
-                "Commitments are reported only when Fabian's delivered outbound text contains a bounded explicit first-person commitment clause.",
-                "Recurring topics use existing Memory Engine summary labels only when at least two delivered DM messages independently corroborate the label.",
+                "Commitments are reported only when Fabian's delivered outbound text contains a bounded explicit first-person commitment clause outside quoted speech.",
+                "Recurring topics use existing Memory Engine summary labels only when at least two distinct delivered DM messages independently corroborate the label.",
                 "Recommended follow-ups are projections of unresolved open loops and active scheduled actions, not autonomous advice.",
                 "No LLM is used in this analysis version.",
             ],
@@ -122,13 +124,13 @@ class ConversationAnalysisService:
             if not text:
                 continue
             normalized = " ".join(text.split())
-            for statement in cls._commitment_clauses(normalized):
+            for statement, start, end in cls._commitment_clause_spans(normalized):
                 items.append(
                     {
                         "text": statement[:300],
                         "source_message_id": message.get("id"),
                         "created_at": message.get("created_at"),
-                        "evidence_text": normalized[:400],
+                        "evidence_text": cls._evidence_text(normalized, start=start, end=end),
                     }
                 )
                 if len(items) >= cls.MAX_COMMITMENTS:
@@ -137,20 +139,81 @@ class ConversationAnalysisService:
 
     @classmethod
     def _commitment_clauses(cls, text: str) -> list[str]:
-        starts = list(cls._COMMITMENT_START.finditer(text))
-        clauses: list[str] = []
+        return [statement for statement, _, _ in cls._commitment_clause_spans(text)]
+
+    @classmethod
+    def _commitment_clause_spans(cls, text: str) -> list[tuple[str, int, int]]:
+        quoted_spans = cls._quoted_spans(text)
+        starts = [match for match in cls._COMMITMENT_START.finditer(text) if not cls._in_spans(match.start(), quoted_spans)]
+        clauses: list[tuple[str, int, int]] = []
         for index, match in enumerate(starts):
             start = match.start()
             candidate_ends = [starts[index + 1].start()] if index + 1 < len(starts) else []
-            sentence_end = cls._SENTENCE_END.search(text, match.end())
-            if sentence_end:
-                candidate_ends.append(sentence_end.start())
+            sentence_end = cls._find_sentence_end(text, match.end())
+            if sentence_end is not None:
+                candidate_ends.append(sentence_end)
             end = min(candidate_ends) if candidate_ends else len(text)
             statement = text[start:end].strip(" \t\r\n,.:;!?")
             statement = cls._TRAILING_CONJUNCTION.sub("", statement).strip(" \t\r\n,.:;!?")
             if statement:
-                clauses.append(statement)
+                statement_end = start + len(text[start:end].rstrip(" \t\r\n,.:;!?"))
+                clauses.append((statement, start, statement_end))
         return clauses
+
+    @classmethod
+    def _find_sentence_end(cls, text: str, start: int) -> int | None:
+        for index in range(start, len(text)):
+            char = text[index]
+            if char in "!?;":
+                return index
+            if char != ".":
+                continue
+            previous = text[index - 1] if index > 0 else ""
+            following = text[index + 1] if index + 1 < len(text) else ""
+            if previous.isalnum() and following.isalnum():
+                continue
+            prefix = text[:index]
+            if cls._DOTTED_ABBREVIATION.search(prefix):
+                next_nonspace = next((c for c in text[index + 1 :] if not c.isspace()), "")
+                if next_nonspace and next_nonspace.islower():
+                    continue
+            return index
+        return None
+
+    @staticmethod
+    def _quoted_spans(text: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        for opener, closer in (("“", "”"), ('"', '"'), ("«", "»")):
+            cursor = 0
+            while cursor < len(text):
+                start = text.find(opener, cursor)
+                if start < 0:
+                    break
+                end = text.find(closer, start + len(opener))
+                if end < 0:
+                    spans.append((start, len(text)))
+                    break
+                spans.append((start, end + len(closer)))
+                cursor = end + len(closer)
+        return spans
+
+    @staticmethod
+    def _in_spans(index: int, spans: list[tuple[int, int]]) -> bool:
+        return any(start <= index < end for start, end in spans)
+
+    @staticmethod
+    def _evidence_text(text: str, *, start: int, end: int, limit: int = 400) -> str:
+        if len(text) <= limit:
+            return text
+        required_end = min(len(text), max(end, start + 300))
+        required_length = min(limit, max(0, required_end - start))
+        prefix_budget = max(0, limit - required_length)
+        window_start = max(0, start - min(80, prefix_budget))
+        window_end = min(len(text), window_start + limit)
+        if window_end < required_end:
+            window_end = required_end
+            window_start = max(0, window_end - limit)
+        return text[window_start:window_end]
 
     @classmethod
     def _recurring_topics(
@@ -163,11 +226,13 @@ class ConversationAnalysisService:
         labels: dict[str, str] = {}
         for summary in summaries:
             summary_id = summary.get("id")
+            unique_topics: dict[str, str] = {}
             for raw_topic in summary.get("topics") or []:
                 topic = " ".join(str(raw_topic).split()).strip()
                 key = topic.casefold()
-                if not key:
-                    continue
+                if key:
+                    unique_topics.setdefault(key, topic)
+            for key, topic in unique_topics.items():
                 counts[key] += 1
                 labels.setdefault(key, topic)
                 if summary_id is not None:
@@ -175,15 +240,16 @@ class ConversationAnalysisService:
 
         dm_evidence: dict[str, list[int | str]] = {}
         for key, label in labels.items():
-            matched_ids: list[int | str] = []
+            matched_by_logical_message: dict[str, int | str] = {}
             for message in messages:
                 message_id = message.get("id")
                 text = str(message.get("text") or "")
                 if message_id is None or not text:
                     continue
                 if cls._topic_matches_text(label, text):
-                    matched_ids.append(message_id)
-            dm_evidence[key] = matched_ids
+                    logical_key = cls._logical_message_key(message_id)
+                    matched_by_logical_message.setdefault(logical_key, message_id)
+            dm_evidence[key] = list(matched_by_logical_message.values())
 
         ranked = sorted(
             (
@@ -203,6 +269,14 @@ class ConversationAnalysisService:
             }
             for key in ranked[: cls.MAX_TOPICS]
         ]
+
+    @classmethod
+    def _logical_message_key(cls, message_id: int | str) -> str:
+        value = str(message_id)
+        match = cls._QUEUE_DELIVERY_ID.fullmatch(value)
+        if match:
+            return f"outbound_queue:{match.group(1)}"
+        return f"message:{value}"
 
     @classmethod
     def _topic_matches_text(cls, topic: str, text: str) -> bool:
