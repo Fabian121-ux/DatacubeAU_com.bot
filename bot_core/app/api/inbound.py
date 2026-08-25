@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hmac
 import logging
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Request, status
 
+from app.config import settings
 from app.core.message_normalizer import MessageNormalizer
 from app.core.router import InboundRouter
 from app.db import SessionLocal
@@ -27,7 +29,14 @@ async def waha_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    # Parse body defensively — never return 422 to WAHA or it retries aggressively
+    # Privileged `fromMe` commands must never trust caller-controlled payload identity
+    # alone. Reuse the configured WAHA API key as a shared webhook header secret.
+    # Non-production environments may omit the key for local test compatibility.
+    if not _webhook_authenticated(request):
+        log_event(logger, logging.WARNING, "webhook_ignored", reason="unauthorized_webhook")
+        return {"status": "ignored", "reason": "unauthorized_webhook"}
+
+    # Parse body defensively — never return 422 to WAHA or it retries aggressively.
     try:
         event = await request.json()
     except Exception:  # noqa: BLE001
@@ -58,6 +67,20 @@ async def waha_webhook(
             reason="unsupported_event",
         )
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
+
+    # Bind privileged owner-authored events to the configured WAHA session. A valid
+    # shared secret from another/old session is not enough to execute owner commands.
+    if _is_from_me(payload) and not _session_matches_config(event, payload):
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook_ignored",
+            request_id=request_id,
+            event_name=event_name or "message",
+            message_id=message_id,
+            reason="unexpected_session",
+        )
+        return {"status": "ignored", "reason": "unexpected_session", "event_name": event_name or "message"}
 
     # Claim every message event before *any* command/action side effect. WAHA may
     # deliver the same message as both `message` and `message.any`, and webhook
@@ -125,6 +148,11 @@ async def waha_webhook(
                         )
                         natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
                         natural_action_error = natural_action.get("error") if natural_action else None
+
+                    # Side effects and receipt completion must commit atomically. If
+                    # this transaction fails, release_failed can safely permit retry.
+                    if idempotency_key:
+                        await InboundIdempotencyService(db).mark_completed(idempotency_key, commit=False)
                     await db.commit()
                 log_event(
                     logger,
@@ -141,7 +169,9 @@ async def waha_webhook(
                     natural_action_queued=natural_action_queued,
                     natural_action_error=natural_action_error,
                 )
-            if idempotency_key:
+            elif idempotency_key:
+                # Group/unknown `fromMe` events have no owner command side effects,
+                # but still complete their durable receipt.
                 async with SessionLocal() as db:
                     await InboundIdempotencyService(db).mark_completed(idempotency_key)
         except Exception:  # noqa: BLE001
@@ -323,6 +353,28 @@ async def _process_event_async(
             takeover_scheduled=takeover_scheduled,
             reply_deferred=result.get("reply_deferred") if result else None,
         )
+
+
+def _webhook_authenticated(request: Request) -> bool:
+    configured = (settings.waha_api_key or "").strip()
+    if not configured:
+        return settings.environment.strip().lower() != "production"
+    supplied = (
+        request.headers.get("x-api-key")
+        or request.headers.get("x-waha-api-key")
+        or ""
+    ).strip()
+    if not supplied:
+        authorization = (request.headers.get("authorization") or "").strip()
+        if authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, configured)
+
+
+def _session_matches_config(event: dict[str, Any], payload: dict[str, Any]) -> bool:
+    actual = (_resolve_session_name(event, payload) or "").strip()
+    expected = (settings.waha_session_name or "").strip()
+    return bool(actual and expected and hmac.compare_digest(actual, expected))
 
 
 def _resolve_event_name(event: dict[str, Any]) -> str | None:
