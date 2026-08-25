@@ -95,13 +95,15 @@ class Settings(BaseSettings):
 
     def validate_runtime(self) -> None:
         errors: list[str] = []
+        environment = self.environment.strip().lower()
+        waha_api_key = self.waha_api_key.strip()
         if not self.database_url:
             errors.append("DATABASE_URL is required.")
         if not self.waha_service_url:
             errors.append("WAHA_SERVICE_URL is required.")
         if not self.waha_session_name:
             errors.append("WAHA_SESSION_NAME is required.")
-        if self.environment == "production" and not self.waha_api_key:
+        if environment == "production" and not waha_api_key:
             errors.append("WAHA_API_KEY is required in production for authenticated webhook delivery.")
         if not self.admin_username:
             errors.append("ADMIN_USERNAME is required.")
@@ -112,7 +114,7 @@ class Settings(BaseSettings):
         if self.admin_session_secret:
             if len(self.admin_session_secret) < 32 or self.admin_session_secret.startswith("replace-with-"):
                 errors.append("ADMIN_SESSION_SECRET must be at least 32 characters and must not be the example placeholder.")
-        elif self.environment == "production":
+        elif environment == "production":
             errors.append("ADMIN_SESSION_SECRET is required in production.")
         if self.admin_session_ttl_seconds <= 0:
             errors.append("ADMIN_SESSION_TTL_SECONDS must be greater than 0.")
@@ -158,30 +160,35 @@ class Settings(BaseSettings):
         return {
             "app_name": self.app_name,
             "environment": self.environment,
+            "log_level": self.log_level,
             "api_host": self.api_host,
             "api_port": self.api_port,
-            "database_url_configured": bool(self.database_url),
-            "startup_validate_db": self.startup_validate_db,
             "waha_service_url": self.waha_service_url,
             "waha_base_url": self.waha_base_url,
             "waha_session_name": self.waha_session_name,
             "waha_send_path": self.waha_send_path,
             "waha_send_image_path": self.waha_send_image_path,
+            "waha_session_status_path": self.waha_session_status_path,
             "waha_chats_path": self.waha_chats_path,
+            "waha_request_timeout_seconds": self.waha_request_timeout_seconds,
             "waha_request_retry_count": self.waha_request_retry_count,
             "waha_request_retry_backoff_seconds": self.waha_request_retry_backoff_seconds,
+            "bot_wa_number": self.bot_wa_number,
             "enable_auto_reply": self.enable_auto_reply,
-            "owner_whatsapp_ids_configured": bool(self.owner_whatsapp_ids),
             "group_default_reply_mode": self.group_default_reply_mode,
             "group_default_cooldown_seconds": self.group_default_cooldown_seconds,
             "dm_default_cooldown_seconds": self.dm_default_cooldown_seconds,
             "kb_max_chunks": self.kb_max_chunks,
             "kb_min_score": self.kb_min_score,
+            "kb_reply_max_chars": self.kb_reply_max_chars,
+            "recent_items_limit": self.recent_items_limit,
             "ai_enabled": self.ai_enabled,
-            "openrouter_base_url": self.openrouter_base_url if self.ai_enabled else "",
-            "openrouter_model_light": self.openrouter_model_light if self.ai_enabled else "",
-            "openrouter_model_deep": self.openrouter_model_deep if self.ai_enabled else "",
-            "openrouter_max_tokens": self.openrouter_max_tokens if self.ai_enabled else 0,
+            "openrouter_base_url": self.openrouter_base_url,
+            "openrouter_model_light": self.openrouter_model_light,
+            "openrouter_model_deep": self.openrouter_model_deep,
+            "openrouter_timeout_seconds": self.openrouter_timeout_seconds,
+            "openrouter_retry_count": self.openrouter_retry_count,
+            "openrouter_max_tokens": self.openrouter_max_tokens,
             "internet_enabled": self.internet_enabled,
             "web_search_enabled": self.web_search_enabled,
             "news_enabled": self.news_enabled,
@@ -191,16 +198,9 @@ class Settings(BaseSettings):
             "image_search_enabled": self.image_search_enabled,
             "sticker_search_enabled": self.sticker_search_enabled,
             "internet_provider": self.internet_provider,
-            "searxng_url": self.searxng_url,
             "internet_daily_limit_per_user": self.internet_daily_limit_per_user,
             "internet_cache_ttl_seconds": self.internet_cache_ttl_seconds,
             "internet_smart_detection_enabled": self.internet_smart_detection_enabled,
-            "brave_search_api_key_configured": bool(self.brave_search_api_key),
-            "tavily_api_key_configured": bool(self.tavily_api_key),
-            "openweather_api_key_configured": bool(self.openweather_api_key),
-            "exchangerate_api_key_configured": bool(self.exchangerate_api_key),
-            "youtube_api_key_configured": bool(self.youtube_api_key),
-            "giphy_api_key_configured": bool(self.giphy_api_key),
             "typing_delay_enabled": self.typing_delay_enabled,
             "min_typing_delay_seconds": self.min_typing_delay_seconds,
             "max_typing_delay_seconds": self.max_typing_delay_seconds,
@@ -208,12 +208,6 @@ class Settings(BaseSettings):
             "show_context_badges": self.show_context_badges,
             "enable_signature_style": self.enable_signature_style,
             "whatsapp_message_format": self.whatsapp_message_format,
-            "admin_api_token_configured": bool(self.admin_api_token),
-            "admin_username": self.admin_username,
-            "admin_session_ttl_seconds": self.admin_session_ttl_seconds,
-            "admin_login_max_failures": self.admin_login_max_failures,
-            "admin_login_lockout_seconds": self.admin_login_lockout_seconds,
-            "admin_cookie_secure": self.admin_cookie_secure,
         }
 
 
