@@ -104,7 +104,14 @@ class WAHAClient:
         limit: int = 500,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Return one paginated WAHA contact page without introducing another address book."""
+        """Return one validated paginated WAHA contact page.
+
+        WAHA currently documents `/api/contacts/all` as a JSON array. Wrapper keys are
+        retained for backward compatibility, but an unrecognized/malformed successful
+        payload is an error rather than an empty address book. This prevents callers
+        from treating a response-shape change as proof that every saved contact was
+        removed.
+        """
         name = session_name or settings.waha_session_name
         query = urlencode(
             {
@@ -124,14 +131,35 @@ class WAHAClient:
         except (httpx.HTTPError, RuntimeError) as exc:
             raise WahaClientError(f"WAHA contact sync failed for {name}: {exc}") from exc
 
+        contacts: Any
         if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
-        if isinstance(payload, dict):
+            contacts = payload
+        elif isinstance(payload, dict):
+            contacts = None
             for key in ("data", "contacts", "items"):
+                if key not in payload:
+                    continue
                 value = payload.get(key)
-                if isinstance(value, list):
-                    return [item for item in value if isinstance(item, dict)]
-        return []
+                if not isinstance(value, list):
+                    raise WahaClientError(
+                        f"WAHA contact sync returned malformed '{key}' page for {name}"
+                    )
+                contacts = value
+                break
+            if contacts is None:
+                raise WahaClientError(
+                    f"WAHA contact sync returned an unrecognized response shape for {name}"
+                )
+        else:
+            raise WahaClientError(
+                f"WAHA contact sync returned a non-list response for {name}"
+            )
+
+        if any(not isinstance(item, dict) for item in contacts):
+            raise WahaClientError(
+                f"WAHA contact sync returned a malformed contact entry for {name}"
+            )
+        return contacts
 
     async def start_session(self, session_name: str | None = None) -> dict[str, Any]:
         name = session_name or settings.waha_session_name
