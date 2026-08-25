@@ -55,7 +55,13 @@ class InboundIdempotencyService:
         await self.session.commit()
         return claimed
 
-    async def mark_completed(self, event_key: str) -> None:
+    async def mark_completed(self, event_key: str, *, commit: bool = True) -> None:
+        """Mark a claim completed, optionally inside the caller's transaction.
+
+        Command-control side effects use commit=False so durable side effects and the
+        receipt completion are committed atomically. Background routing retains the
+        historical commit=True behavior.
+        """
         await self.session.execute(
             text(
                 """
@@ -66,7 +72,8 @@ class InboundIdempotencyService:
             ),
             {"event_key": event_key},
         )
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
 
     async def release_failed(self, event_key: str) -> None:
         """Release a failed claim so a later WAHA retry may safely reprocess it."""
