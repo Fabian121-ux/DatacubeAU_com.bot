@@ -11,10 +11,10 @@ from app.models.schema import AdminAccount, OutboundMessage
 from app.services.command_control_service import CommandControlService
 
 
-def _event(body: str, *, chat_id: str, message_id: str = "CMD-REVIEW-1", event_name: str = "message.any") -> dict:
+def _event(body: str, *, chat_id: str, message_id: str = "CMD-REVIEW-1", event_name: str = "message.any", session: str = "default") -> dict:
     return {
         "event": event_name,
-        "session": "default",
+        "session": session,
         "payload": {
             "id": message_id,
             "chatId": chat_id,
@@ -38,9 +38,9 @@ def _owner(number: str, *, primary: bool) -> AdminAccount:
 
 
 class _Request:
-    def __init__(self, event: dict):
+    def __init__(self, event: dict, *, headers: dict[str, str] | None = None):
         self._event = event
-        self.headers: dict[str, str] = {}
+        self.headers: dict[str, str] = headers or {}
 
     async def json(self):
         return self._event
@@ -88,6 +88,49 @@ async def test_at_zina_direct_slash_is_canonicalized_before_existing_handler(db_
     assert "Online and ready" in (result.reply_text or "")
 
 
+def test_command_parser_preserves_multiline_arguments():
+    parsed = CommandControlService.parse("@Zina /teach\nQuestion:\nWho is Amanda?\nAnswer:\nA contact")
+    assert parsed == (
+        "/teach",
+        "Question:\nWho is Amanda?\nAnswer:\nA contact",
+    )
+
+
+@pytest.mark.asyncio
+async def test_forged_owner_webhook_is_rejected_when_waha_key_configured(monkeypatch):
+    import app.api.inbound as inbound_module
+
+    monkeypatch.setattr(inbound_module.settings, "waha_api_key", "test-waha-secret")
+    monkeypatch.setattr(inbound_module.settings, "environment", "production")
+
+    event = _event("@Zina .status", chat_id="2348000000001@c.us", message_id="FORGED")
+    result = await waha_webhook(_Request(event), BackgroundTasks())
+
+    assert result == {"status": "ignored", "reason": "unauthorized_webhook"}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_owner_webhook_rejects_unexpected_session(monkeypatch):
+    import app.api.inbound as inbound_module
+
+    monkeypatch.setattr(inbound_module.settings, "waha_api_key", "test-waha-secret")
+    monkeypatch.setattr(inbound_module.settings, "waha_session_name", "default")
+
+    event = _event(
+        "@Zina .status",
+        chat_id="2348000000001@c.us",
+        message_id="WRONG-SESSION",
+        session="other-session",
+    )
+    result = await waha_webhook(
+        _Request(event, headers={"x-api-key": "test-waha-secret"}),
+        BackgroundTasks(),
+    )
+
+    assert result["status"] == "ignored"
+    assert result["reason"] == "unexpected_session"
+
+
 @pytest.mark.asyncio
 async def test_duplicate_from_me_webhook_executes_owner_command_once():
     # Exercise the real webhook and its global SessionLocal in this pytest event loop.
@@ -125,6 +168,16 @@ async def test_duplicate_from_me_webhook_executes_owner_command_once():
             queued = (await db.execute(select(OutboundMessage))).scalars().all()
             assert len(queued) == 1
             assert queued[0].formatting_json["source"] == "command_control"
+            receipt_status = (
+                await db.execute(
+                    text(
+                        "SELECT status FROM inbound_webhook_receipts "
+                        "WHERE event_key = :key"
+                    ),
+                    {"key": "default:2348000000001@c.us:DUP-OWNER-CMD"},
+                )
+            ).scalar_one()
+            assert receipt_status == "completed"
     finally:
         async with SessionLocal() as db:
             await db.execute(delete(OutboundMessage))
