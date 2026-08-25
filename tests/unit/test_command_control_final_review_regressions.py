@@ -107,8 +107,6 @@ async def test_stale_worker_cannot_release_replacement_claim(db_session):
     )
     await db_session.commit()
 
-    # This service still carries the original claim token in its task context. The
-    # generation predicate must prevent it deleting the replacement worker's lease.
     await service.release_failed(event_key)
 
     row = (
@@ -137,12 +135,10 @@ async def test_stale_worker_aborts_before_committing_side_effects(db_session):
         )
     ) is True
 
-    # Simulate side effects accumulated in the stale worker's transaction.
     await db_session.execute(
         text("INSERT INTO audit_logs (action, entity_type, details_json) VALUES ('stale_side_effect', 'test', '{}'::jsonb)")
     )
 
-    # A retry has reclaimed the receipt with a new generation before stale completion.
     replacement_token = "replacement-generation-token-2"
     await db_session.execute(
         text(
@@ -156,8 +152,6 @@ async def test_stale_worker_aborts_before_committing_side_effects(db_session):
     )
     await db_session.commit()
 
-    # Add another uncommitted side effect after the reclaim so mark_completed() must
-    # roll it back when its fenced UPDATE proves that this worker no longer owns work.
     await db_session.execute(
         text("INSERT INTO audit_logs (action, entity_type, details_json) VALUES ('must_rollback', 'test', '{}'::jsonb)")
     )
@@ -194,8 +188,6 @@ async def test_commit_false_retains_token_for_failure_release(db_session):
     ) is True
 
     await service.mark_completed(event_key, commit=False)
-    # Simulate the caller transaction failing before commit. The UPDATE to completed
-    # rolls back, and the task-local token must still be present for release_failed().
     await db_session.rollback()
     await service.release_failed(event_key)
 
@@ -242,13 +234,31 @@ def test_natural_action_parser_preserves_multiline_message_body():
     assert plan.message_text == "First line\nSecond line\nThird line"
 
 
+def _production_settings(**overrides) -> Settings:
+    values = {
+        "ENVIRONMENT": "production",
+        "ADMIN_PASSWORD": "long-enough-admin-password",
+        "ADMIN_SESSION_SECRET": "x" * 32,
+        "WAHA_API_KEY": "valid-webhook-key",
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
 def test_production_runtime_requires_waha_webhook_secret():
-    settings = Settings(
-        ENVIRONMENT="production",
-        ADMIN_PASSWORD="long-enough-admin-password",
-        ADMIN_SESSION_SECRET="x" * 32,
-        WAHA_API_KEY="",
-    )
+    settings = _production_settings(WAHA_API_KEY="")
+    with pytest.raises(RuntimeError, match="WAHA_API_KEY is required in production"):
+        settings.validate_runtime()
+
+
+def test_production_runtime_normalizes_environment_before_secret_validation():
+    settings = _production_settings(ENVIRONMENT="  Production  ", WAHA_API_KEY="")
+    with pytest.raises(RuntimeError, match="WAHA_API_KEY is required in production"):
+        settings.validate_runtime()
+
+
+def test_production_runtime_rejects_whitespace_only_waha_secret():
+    settings = _production_settings(WAHA_API_KEY="   \t  ")
     with pytest.raises(RuntimeError, match="WAHA_API_KEY is required in production"):
         settings.validate_runtime()
 
