@@ -10,7 +10,11 @@ from app.config import Settings
 from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount
 from app.services.command_control_service import CommandControlService
-from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
+from app.services.inbound_idempotency_service import (
+    InboundClaimLostError,
+    InboundIdempotencyService,
+    InboundReceipt,
+)
 from app.services.natural_action_planner_service import NaturalActionPlannerService
 
 
@@ -115,6 +119,92 @@ async def test_stale_worker_cannot_release_replacement_claim(db_session):
     ).one()
     assert row.status == "processing"
     assert row.claim_token == replacement_token
+
+
+@pytest.mark.asyncio
+async def test_stale_worker_aborts_before_committing_side_effects(db_session):
+    event_key = "default:chat:lease-lost-before-commit"
+    await db_session.execute(text("DELETE FROM inbound_webhook_receipts WHERE event_key = :key"), {"key": event_key})
+    await db_session.commit()
+
+    service = InboundIdempotencyService(db_session)
+    assert await service.claim(
+        InboundReceipt(
+            event_key=event_key,
+            session_name="default",
+            chat_id="chat",
+            message_id="lease-lost-before-commit",
+        )
+    ) is True
+
+    # Simulate side effects accumulated in the stale worker's transaction.
+    await db_session.execute(
+        text("INSERT INTO audit_logs (action, entity_type, details_json) VALUES ('stale_side_effect', 'test', '{}'::jsonb)")
+    )
+
+    # A retry has reclaimed the receipt with a new generation before stale completion.
+    replacement_token = "replacement-generation-token-2"
+    await db_session.execute(
+        text(
+            """
+            UPDATE inbound_webhook_receipts
+            SET claim_token = :replacement, status = 'processing', updated_at = NOW()
+            WHERE event_key = :key
+            """
+        ),
+        {"replacement": replacement_token, "key": event_key},
+    )
+    await db_session.commit()
+
+    # Add another uncommitted side effect after the reclaim so mark_completed() must
+    # roll it back when its fenced UPDATE proves that this worker no longer owns work.
+    await db_session.execute(
+        text("INSERT INTO audit_logs (action, entity_type, details_json) VALUES ('must_rollback', 'test', '{}'::jsonb)")
+    )
+    with pytest.raises(InboundClaimLostError, match="lease lost"):
+        await service.mark_completed(event_key, commit=False)
+
+    assert (
+        await db_session.execute(text("SELECT COUNT(*) FROM audit_logs WHERE action = 'must_rollback'"))
+    ).scalar_one() == 0
+    row = (
+        await db_session.execute(
+            text("SELECT status, claim_token FROM inbound_webhook_receipts WHERE event_key = :key"),
+            {"key": event_key},
+        )
+    ).one()
+    assert row.status == "processing"
+    assert row.claim_token == replacement_token
+
+
+@pytest.mark.asyncio
+async def test_commit_false_retains_token_for_failure_release(db_session):
+    event_key = "default:chat:commit-failure-release"
+    await db_session.execute(text("DELETE FROM inbound_webhook_receipts WHERE event_key = :key"), {"key": event_key})
+    await db_session.commit()
+
+    service = InboundIdempotencyService(db_session)
+    assert await service.claim(
+        InboundReceipt(
+            event_key=event_key,
+            session_name="default",
+            chat_id="chat",
+            message_id="commit-failure-release",
+        )
+    ) is True
+
+    await service.mark_completed(event_key, commit=False)
+    # Simulate the caller transaction failing before commit. The UPDATE to completed
+    # rolls back, and the task-local token must still be present for release_failed().
+    await db_session.rollback()
+    await service.release_failed(event_key)
+
+    assert (
+        await db_session.execute(
+            text("SELECT COUNT(*) FROM inbound_webhook_receipts WHERE event_key = :key"),
+            {"key": event_key},
+        )
+    ).scalar_one() == 0
 
 
 @pytest.mark.asyncio
