@@ -351,7 +351,20 @@ class InboundRouter:
             if identity.get("normalized_phone")
             else model.identity_source
         )
-        model.identity_json = identity or model.identity_json
+        previous_identity = dict(model.identity_json) if isinstance(model.identity_json, dict) else {}
+        merged_identity = dict(identity) if isinstance(identity, dict) else {}
+        # Saved-address-book provenance belongs to Contact Intelligence, not to an
+        # individual inbound message. Preserve the latest explicit true/false marker,
+        # sync timestamp and reconciliation reason when normal sender identity refreshes
+        # do not carry those fields.
+        for key in (
+            "is_saved_contact",
+            "saved_contact_synced_at",
+            "saved_contact_reconciled_reason",
+        ):
+            if key not in merged_identity and key in previous_identity:
+                merged_identity[key] = previous_identity[key]
+        model.identity_json = merged_identity or model.identity_json
         model.last_active_at = utcnow()
 
     async def _save_inbound_message(self, msg: NormalizedMessage, contact_id: int) -> Message:
