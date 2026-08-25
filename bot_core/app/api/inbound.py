@@ -59,6 +59,36 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
+    # Claim every message event before *any* command/action side effect. WAHA may
+    # deliver the same message as both `message` and `message.any`, and webhook
+    # retries must not execute owner commands twice.
+    idempotency_key = _build_idempotency_key(event, payload)
+    if idempotency_key:
+        receipt = InboundReceipt(
+            event_key=idempotency_key,
+            session_name=_resolve_session_name(event, payload),
+            chat_id=_resolve_chat_id(payload),
+            message_id=message_id,
+        )
+        async with SessionLocal() as db:
+            claimed = await InboundIdempotencyService(db).claim(receipt)
+        if not claimed:
+            log_event(
+                logger,
+                logging.INFO,
+                "webhook_duplicate_ignored",
+                request_id=request_id,
+                event_name=event_name or "message",
+                message_id=message_id,
+                idempotency_key=idempotency_key,
+            )
+            return {
+                "status": "duplicate",
+                "request_id": request_id,
+                "event_name": event_name or "message",
+                "message_id": message_id,
+            }
+
     if _is_from_me(payload):
         chat_id = _resolve_chat_id(payload)
         handback_generated = False
@@ -68,48 +98,58 @@ async def waha_webhook(
         command_outbound_queue_id: int | None = None
         natural_action_queued = False
         natural_action_error: str | None = None
-        if chat_id and not _is_group_chat(chat_id):
-            async with SessionLocal() as db:
-                cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
-                handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
-                handback_generated = handback is not None
+        try:
+            if chat_id and not _is_group_chat(chat_id):
+                async with SessionLocal() as db:
+                    cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
+                    handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
+                    handback_generated = handback is not None
 
-                normalized = MessageNormalizer().normalize(event)
-                command_result = await CommandControlService(db).handle_from_me(
-                    normalized,
-                    transport_message_id=message_id,
-                    request_id=request_id,
-                )
-                if command_result is not None and command_result.consumed:
-                    command_consumed = True
-                    command_name = command_result.command
-                    command_error = command_result.error
-                    command_outbound_queue_id = command_result.outbound_queue_id
-                else:
-                    natural_action = await _plan_owner_natural_action(
-                        db,
-                        event=event,
-                        message_id=message_id,
+                    normalized = MessageNormalizer().normalize(event)
+                    command_result = await CommandControlService(db).handle_from_me(
+                        normalized,
+                        transport_message_id=message_id,
                         request_id=request_id,
                     )
-                    natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
-                    natural_action_error = natural_action.get("error") if natural_action else None
-                await db.commit()
-            log_event(
-                logger,
-                logging.INFO,
-                "conversation_owner_activity",
-                request_id=request_id,
-                chat_id=chat_id,
-                takeover_cancelled=cancelled,
-                handback_generated=handback_generated,
-                command_consumed=command_consumed,
-                command_name=command_name,
-                command_error=command_error,
-                command_outbound_queue_id=command_outbound_queue_id,
-                natural_action_queued=natural_action_queued,
-                natural_action_error=natural_action_error,
-            )
+                    if command_result is not None and command_result.consumed:
+                        command_consumed = True
+                        command_name = command_result.command
+                        command_error = command_result.error
+                        command_outbound_queue_id = command_result.outbound_queue_id
+                    else:
+                        natural_action = await _plan_owner_natural_action(
+                            db,
+                            event=event,
+                            message_id=message_id,
+                            request_id=request_id,
+                        )
+                        natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
+                        natural_action_error = natural_action.get("error") if natural_action else None
+                    await db.commit()
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "conversation_owner_activity",
+                    request_id=request_id,
+                    chat_id=chat_id,
+                    takeover_cancelled=cancelled,
+                    handback_generated=handback_generated,
+                    command_consumed=command_consumed,
+                    command_name=command_name,
+                    command_error=command_error,
+                    command_outbound_queue_id=command_outbound_queue_id,
+                    natural_action_queued=natural_action_queued,
+                    natural_action_error=natural_action_error,
+                )
+            if idempotency_key:
+                async with SessionLocal() as db:
+                    await InboundIdempotencyService(db).mark_completed(idempotency_key)
+        except Exception:  # noqa: BLE001
+            if idempotency_key:
+                async with SessionLocal() as db:
+                    await InboundIdempotencyService(db).release_failed(idempotency_key)
+            raise
+
         accepted = command_consumed or natural_action_queued
         reason = "owner_command_control" if command_consumed else "owner_natural_action" if natural_action_queued else "from_me"
         log_event(
@@ -140,33 +180,6 @@ async def waha_webhook(
             "natural_action_queued": natural_action_queued,
             "natural_action_error": natural_action_error,
         }
-
-    idempotency_key = _build_idempotency_key(event, payload)
-    if idempotency_key:
-        receipt = InboundReceipt(
-            event_key=idempotency_key,
-            session_name=_resolve_session_name(event, payload),
-            chat_id=_resolve_chat_id(payload),
-            message_id=message_id,
-        )
-        async with SessionLocal() as db:
-            claimed = await InboundIdempotencyService(db).claim(receipt)
-        if not claimed:
-            log_event(
-                logger,
-                logging.INFO,
-                "webhook_duplicate_ignored",
-                request_id=request_id,
-                event_name=event_name or "message",
-                message_id=message_id,
-                idempotency_key=idempotency_key,
-            )
-            return {
-                "status": "duplicate",
-                "request_id": request_id,
-                "event_name": event_name or "message",
-                "message_id": message_id,
-            }
 
     background_tasks.add_task(_process_event_async, event, request_id, idempotency_key)
     log_event(
