@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import re
 from typing import Any
@@ -118,13 +118,8 @@ class CommandControlService:
         if not command.startswith("/"):
             return None
 
-        contact = await self._control_contact(message)
-        result = await OwnerCommandService(self.session).handle(message, contact)
-        if result is None:
-            return None
-
-        # Existing owner command handling historically treats any AdminAccount as an
-        # owner. The self-DM control surface tightens that boundary deterministically.
+        # Enforce authority before calling an existing handler so a limited admin
+        # cannot trigger an owner side effect and only then receive a denial reply.
         definition = await self._definition(command)
         required = str((definition or {}).get("permissions") or "user").lower()
         if required == "owner" and permission != "owner":
@@ -144,6 +139,11 @@ class CommandControlService:
                     error="owner permission required",
                 ),
             )
+
+        contact = await self._control_contact(message)
+        result = await OwnerCommandService(self.session).handle(message, contact)
+        if result is None:
+            return None
 
         await self._audit(
             "command_control_executed",
@@ -241,10 +241,19 @@ class CommandControlService:
         field_map = {".target": "target", ".message": "message", ".date": "date", ".time": "time"}
         if command in field_map:
             if not args:
+                example = (
+                    "Amanda Christabel"
+                    if command == ".target"
+                    else "tomorrow"
+                    if command == ".date"
+                    else "09:00"
+                    if command == ".time"
+                    else "Tell her the document is ready"
+                )
                 return CommandControlResult(
                     consumed=True,
                     command=command,
-                    reply_text=f"Value required. Example: {command} {'Amanda Christabel' if command == '.target' else 'tomorrow' if command == '.date' else '09:00' if command == '.time' else 'Tell her the document is ready'}",
+                    reply_text=f"Value required. Example: {command} {example}",
                     error="value required",
                 )
             draft[field_map[command]] = args[:2000]
@@ -391,11 +400,9 @@ class CommandControlService:
             return None
         try:
             draft = json.loads(raw)
-            expires_at = draft.get("expires_at")
+            expires_at = draft.get("expires_at") if isinstance(draft, dict) else None
             if not isinstance(draft, dict) or not expires_at:
                 raise ValueError
-            from datetime import datetime
-
             expiry = datetime.fromisoformat(str(expires_at))
             if expiry <= utcnow():
                 await self._clear_draft(key)
