@@ -15,6 +15,7 @@ from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.natural_action_planner_service import DEFAULT_OWNER_TIMEZONE, NaturalActionPlannerService
 from app.services.owner_command_service import OwnerCommandService
+from app.services.owner_management_command_service import OwnerManagementCommandService
 from app.utils.time import utcnow
 
 
@@ -40,6 +41,17 @@ class CommandControlService:
     DRAFT_TTL = timedelta(minutes=30)
     SCHEDULE_COMMAND = "/schedule"
     _GUIDED = {".sch", ".target", ".message", ".date", ".time", ".save", ".cancel"}
+    _MANAGEMENT_ALIASES = {
+        ".commands": "/commands",
+        ".cmd": "/cmdinfo",
+        ".cmdinfo": "/cmdinfo",
+        ".cmdon": "/cmdon",
+        ".cmdoff": "/cmdoff",
+        ".config": "/config",
+        ".contacts": "/contacts",
+        ".contact": "/contact",
+        ".contactsync": "/contactsync",
+    }
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -75,8 +87,6 @@ class CommandControlService:
                 error="owner authorization failed",
             )
 
-        # The privileged control inbox is Fabian's actual primary-owner self chat,
-        # not merely a chat whose peer also happens to be an owner-level admin.
         primary_owner = await self._primary_owner()
         if primary_owner is None or not self._is_self_dm(message, primary_owner) or admin.id != primary_owner.id:
             return None
@@ -110,7 +120,27 @@ class CommandControlService:
             )
             return await self._finish(message.chat_id, result)
 
-        # Dot aliases for existing Command Center commands are only syntax sugar.
+        management_command = self._MANAGEMENT_ALIASES.get(command, command)
+        if management_command in OwnerManagementCommandService.COMMANDS:
+            result = await OwnerManagementCommandService(self.session).handle(
+                management_command,
+                args,
+                permission=permission,
+                request_id=request_id,
+                transport_message_id=transport_message_id,
+            )
+            if result is None:
+                return None
+            return await self._finish(
+                message.chat_id,
+                CommandControlResult(
+                    consumed=True,
+                    command=management_command,
+                    reply_text=result.reply_text,
+                    error=result.error,
+                ),
+            )
+
         slash_command = self._slash_alias(command)
         if slash_command:
             command = slash_command
@@ -118,13 +148,8 @@ class CommandControlService:
         if not command.startswith("/"):
             return None
 
-        # OwnerCommandService extracts the command token with partition(" "), so use
-        # one space after the command while preserving the argument body verbatim.
-        # This keeps labelled multiline forms dispatchable without flattening them.
         message.message_text = f"{command} {args}" if args else command
 
-        # Enforce authority before calling an existing handler so a limited admin
-        # cannot trigger an owner side effect and only then receive a denial reply.
         definition = await self._definition(command)
         required = str((definition or {}).get("permissions") or "user").lower()
         if required == "owner" and permission != "owner":
@@ -164,15 +189,24 @@ class CommandControlService:
 
     @classmethod
     def parse(cls, text_value: str) -> tuple[str, str] | None:
-        # Normalize only the optional Zina prefix and command token. Do not collapse
-        # whitespace in the argument body: several existing owner commands use
-        # splitlines() and labelled multiline blocks.
         text_value = (text_value or "").strip()
         if not text_value:
             return None
+        had_zina_prefix = bool(re.match(r"^@zina(?:[ \t]+|$)", text_value, flags=re.I))
         text_value = re.sub(r"^@zina[ \t]+", "", text_value, count=1, flags=re.I)
         if not text_value:
             return None
+
+        if had_zina_prefix:
+            natural = " ".join(text_value.lower().split())
+            natural_aliases = {
+                "listcommands": (".commands", ""),
+                "list commands": (".commands", ""),
+                "list contacts": (".contacts", ""),
+            }
+            if natural in natural_aliases:
+                return natural_aliases[natural]
+
         match = re.match(r"^([^\s]+)(?:[ \t\r\n]+([\s\S]*))?$", text_value)
         if not match:
             return None
@@ -212,10 +246,6 @@ class CommandControlService:
                 error="command disabled",
             )
 
-        # Serialize the complete read-modify-write/save lifecycle for this owner's
-        # draft. Requests may overlap when Fabian sends form fields quickly; without
-        # this transaction-scoped advisory lock the last commit can discard another
-        # field or two .save requests can both create actions.
         await self._lock_schedule_draft(admin.id)
 
         key = self._draft_key(admin.id)
@@ -386,8 +416,6 @@ class CommandControlService:
         return next((item for item in commands if item.get("name") == name), None)
 
     async def _primary_owner(self) -> AdminAccount | None:
-        # Permission values are normalized on write, but use a normalized predicate
-        # as well so historical mixed-case rows cannot silently disable self-DM.
         stmt = (
             select(AdminAccount)
             .where(
@@ -409,7 +437,6 @@ class CommandControlService:
         return bool(chat_keys & owner_keys)
 
     async def _lock_schedule_draft(self, admin_id: int) -> None:
-        # Namespace the advisory lock away from ordinary small application IDs.
         await self.session.execute(
             text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": 910000000 + int(admin_id)},
