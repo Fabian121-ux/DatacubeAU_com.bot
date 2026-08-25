@@ -260,6 +260,7 @@ class ToolDispatcherService:
             outbound_stmt = (
                 select(OutboundMessage)
                 .where(OutboundMessage.chat_id.in_(sorted(dm_outbound_chat_ids)))
+                .where(OutboundMessage.status.in_(sorted(_SUCCESSFUL_OUTBOUND_STATUSES)))
                 .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
                 .limit(candidate_limit)
             )
@@ -314,8 +315,7 @@ class ToolDispatcherService:
         for row in outbound_rows:
             if row.id is None or int(row.id) in represented_queue_ids:
                 continue
-            if row.status in _SUCCESSFUL_OUTBOUND_STATUSES:
-                messages.append(self._outbound_queue_chat_message_dict(row))
+            messages.append(self._outbound_queue_chat_message_dict(row))
 
         messages.sort(key=self._chat_message_sort_key)
         messages = messages[-limit:]
@@ -346,19 +346,25 @@ class ToolDispatcherService:
         after: datetime | None,
         before: datetime | None,
     ) -> tuple[list[Message], dict[int, Message]]:
-        """Page outbound Message projections until enough unlinked legacy rows are found.
+        """Page outbound Message projections within a hard candidate budget.
 
-        Linked rows are not themselves proof of delivery, but we retain a bounded map of
-        recent linked rows so a surviving delivery audit can reconstruct older audit
-        events even if the mutable outbound queue row has since been deleted.
+        Linked rows are not themselves proof of delivery, but a bounded recent map is
+        retained so surviving delivery audits can reconstruct history after queue-row
+        cleanup. The scan is intentionally capped so modern queue-linked histories do
+        not turn a small chat.read call into a lifetime OFFSET walk.
         """
         collected: list[Message] = []
         linked_by_queue: dict[int, Message] = {}
         offset = 0
         page_size = min(max(limit, _CHAT_READ_PAGE_SIZE), 200)
-        linked_map_limit = min(limit * _CHAT_READ_CANDIDATE_MULTIPLIER, _CHAT_READ_MAX_CANDIDATES)
+        candidate_limit = min(
+            max(limit * _CHAT_READ_CANDIDATE_MULTIPLIER, _CHAT_READ_PAGE_SIZE),
+            _CHAT_READ_MAX_CANDIDATES,
+        )
+        linked_map_limit = candidate_limit
 
-        while len(collected) < limit:
+        while len(collected) < limit and offset < candidate_limit:
+            current_page_size = min(page_size, candidate_limit - offset)
             stmt = (
                 select(Message)
                 .where(Message.chat_type == "dm")
@@ -366,7 +372,7 @@ class ToolDispatcherService:
                 .where(*self._dm_message_chat_conditions())
                 .where(or_(*scope_conditions))
                 .order_by(Message.created_at.desc(), Message.id.desc())
-                .limit(page_size)
+                .limit(current_page_size)
                 .offset(offset)
             )
             if after:
@@ -386,9 +392,9 @@ class ToolDispatcherService:
                 elif len(linked_by_queue) < linked_map_limit:
                     linked_by_queue.setdefault(queue_id, row)
 
-            if len(rows) < page_size:
+            offset += len(rows)
+            if len(rows) < current_page_size:
                 break
-            offset += page_size
 
         return collected, linked_by_queue
 
