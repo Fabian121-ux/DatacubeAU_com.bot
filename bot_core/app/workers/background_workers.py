@@ -171,7 +171,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 message.error_message = None
                 message.updated_at = utcnow()
                 await ScheduledActionService(session).reconcile_outbound_delivery(message)
-                delivered_text = (message.media_caption or message.message_text) if message.media_type else message.message_text
                 session.add(
                     AuditLog(
                         action="outbound_queue_sent",
@@ -179,10 +178,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                         entity_id=str(message.id),
                         details_json={
                             "chat_id": message.chat_id,
-                            "delivery_snapshot": {
-                                "text": delivered_text,
-                                "message_type": message.media_type or "text",
-                            },
+                            "delivery_snapshot": _delivery_snapshot(message),
                             "waha_response": response,
                         },
                     )
@@ -190,6 +186,19 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 await session.commit()
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
+
+
+def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
+    """Mirror the exact branch used by WAHA delivery when recording durable history."""
+    if message.media_url:
+        return {
+            "text": message.media_caption or message.message_text,
+            "message_type": message.media_type or "image",
+        }
+    return {
+        "text": message.message_text,
+        "message_type": "text",
+    }
 
 
 async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -> None:
