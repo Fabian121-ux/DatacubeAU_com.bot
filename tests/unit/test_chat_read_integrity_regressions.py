@@ -16,12 +16,14 @@ def _sent_outbound(
     chat_id: str,
     text: str,
     updated_at: datetime,
+    media_url: str | None = None,
     media_type: str | None = None,
     media_caption: str | None = None,
 ) -> OutboundMessage:
     return OutboundMessage(
         chat_id=chat_id,
         message_text=text,
+        media_url=media_url,
         media_type=media_type,
         media_caption=media_caption,
         status="sent",
@@ -84,6 +86,7 @@ async def test_chat_read_returns_media_caption_that_waha_actually_delivered(db_s
     media = _sent_outbound(
         chat_id=amanda.whatsapp_id,
         text="formatted search answer that was not used as the media caption",
+        media_url="https://example.test/celebration.gif",
         media_type="image",
         media_caption="Giphy: celebration",
         updated_at=datetime(2026, 8, 25, 0, 3, tzinfo=UTC),
