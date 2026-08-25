@@ -31,9 +31,11 @@ async def test_full_contact_sync_marks_removed_saved_contact_unsaved(db_session)
 
     # An empty first page is a complete WAHA address-book scan: absence is now
     # explicit evidence that the previously saved contact has been removed.
-    await ContactSyncService(db_session, waha=_FakeWAHA([[]])).sync()
+    result = await ContactSyncService(db_session, waha=_FakeWAHA([[]])).sync()
     await db_session.refresh(contact)
 
+    assert result["updated"] == 1
+    assert contact.contact_name is None
     assert contact.identity_json["is_saved_contact"] is False
     assert contact.identity_json["saved_contact_reconciled_reason"] == "absent_from_full_waha_contact_scan"
     assert OwnerManagementCommandService._is_saved(contact) is False
@@ -67,7 +69,11 @@ async def test_explicit_waha_unsaved_state_demotes_existing_contact_without_dele
     ).sync()
     await db_session.refresh(contact)
 
-    assert contact.contact_name == "Old Saved Name"
+    # The Contact row remains authoritative for the person, but stale address-book
+    # name evidence is cleared when WAHA explicitly says the number is not saved.
+    assert contact.contact_name is None
+    assert contact.push_name == "Mandy"
+    assert contact.normalized_phone == "2348099999999"
     assert contact.identity_json["is_saved_contact"] is False
     assert OwnerManagementCommandService._is_saved(contact) is False
 
