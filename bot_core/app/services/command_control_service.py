@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import AdminAccount, AuditLog, Contact, OutboundMessage
@@ -386,12 +386,14 @@ class CommandControlService:
         return next((item for item in commands if item.get("name") == name), None)
 
     async def _primary_owner(self) -> AdminAccount | None:
+        # Permission values are normalized on write, but use a normalized predicate
+        # as well so historical mixed-case rows cannot silently disable self-DM.
         stmt = (
             select(AdminAccount)
             .where(
                 AdminAccount.is_primary.is_(True),
                 AdminAccount.is_enabled.is_(True),
-                AdminAccount.permission_level == "owner",
+                func.lower(func.trim(AdminAccount.permission_level)) == "owner",
             )
             .order_by(AdminAccount.id.asc())
             .limit(1)
