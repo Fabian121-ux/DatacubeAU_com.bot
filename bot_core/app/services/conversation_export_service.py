@@ -27,7 +27,7 @@ class ConversationExportService:
     MAX_SUMMARIES = 20
     MAX_OPEN_LOOPS = 100
     MAX_ACTIONS = 50
-    ACTIVE_ACTION_STATUSES = ("scheduled", "pending", "queued", "retrying", "paused")
+    ACTIVE_ACTION_STATUSES = ("scheduled", "executing", "queued", "paused")
 
     def __init__(self, session: AsyncSession):
         self.session = session
