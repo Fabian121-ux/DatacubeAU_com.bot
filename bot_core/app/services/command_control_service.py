@@ -118,14 +118,10 @@ class CommandControlService:
         if not command.startswith("/"):
             return None
 
-        # Always hand the existing command handler canonical slash text. Preserve
-        # multiline argument structure because /teach, /create-command, /trigger and
-        # multiline broadcast bodies intentionally parse line blocks.
-        if args:
-            separator = "\n" if "\n" in args or "\r" in args else " "
-            message.message_text = f"{command}{separator}{args}"
-        else:
-            message.message_text = command
+        # OwnerCommandService extracts the command token with partition(" "), so use
+        # one space after the command while preserving the argument body verbatim.
+        # This keeps labelled multiline forms dispatchable without flattening them.
+        message.message_text = f"{command} {args}" if args else command
 
         # Enforce authority before calling an existing handler so a limited admin
         # cannot trigger an owner side effect and only then receive a denial reply.
