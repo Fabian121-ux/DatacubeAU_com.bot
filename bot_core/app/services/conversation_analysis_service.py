@@ -25,6 +25,7 @@ class ConversationAnalysisService:
     MAX_TOPICS = 12
     MAX_FOLLOW_UPS = 25
     MAX_IMPORTANT_DATES = 25
+    ACTIVE_ACTION_STATUSES = frozenset(ConversationExportService.ACTIVE_ACTION_STATUSES)
 
     _COMMITMENT_START = re.compile(
         r"\b(?:i will\b|i(?:'|’)ll\b|i can(?!['’]t\b)(?!\s+not\b)\b|i shall\b|"
@@ -34,7 +35,7 @@ class ConversationAnalysisService:
         re.IGNORECASE,
     )
     _TRAILING_CONJUNCTION = re.compile(r"(?:,?\s+(?:and|then))\s*$", re.IGNORECASE)
-    _WORD_RE = re.compile(r"\w+(?:\+\+|#)?", re.UNICODE)
+    _WORD_RE = re.compile(r"(?<!\w)(?:\.[A-Za-z]\w*|\w+(?:\+\+|#)?)", re.UNICODE)
     _DOTTED_ABBREVIATION = re.compile(r"(?:\b[A-Za-z]\.)+[A-Za-z]$")
     _QUEUE_DELIVERY_ID = re.compile(r"^outbound_queue:(\d+)(?::delivery:\d+)?$")
 
@@ -59,12 +60,20 @@ class ConversationAnalysisService:
             requested_by_contact_id=requested_by_contact_id,
         )
         analysis = self.derive(export)
+        conversation = export["conversation"]
+        observed_window = conversation["window"]
         return {
             "schema_version": self.SCHEMA_VERSION,
             "conversation_schema_version": export["schema_version"],
             "contact": export["contact"],
-            "window": export["conversation"]["window"],
-            "message_count": export["conversation"]["message_count"],
+            "window": {
+                "limit": conversation.get("limit"),
+                "after": conversation.get("after"),
+                "before": conversation.get("before"),
+                "oldest_at": observed_window.get("oldest_at"),
+                "newest_at": observed_window.get("newest_at"),
+            },
+            "message_count": conversation["message_count"],
             "analysis": analysis,
             "provenance": {
                 "conversation_export": export["schema_version"],
@@ -116,14 +125,34 @@ class ConversationAnalysisService:
 
     @classmethod
     def _commitments(cls, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        for message in messages:
+        # A resend is another delivery event, not another authored promise. Keep the
+        # newest delivery evidence for each logical outbound queue row so one promise
+        # cannot occupy multiple commitment slots.
+        logical_messages: dict[str, tuple[tuple[str, int], dict[str, Any]]] = {}
+        for index, message in enumerate(messages):
             if message.get("direction") != "outbound":
                 continue
             text = str(message.get("text") or "").strip()
             if not text:
                 continue
-            normalized = " ".join(text.split())
+            message_id = message.get("id")
+            logical_key = cls._logical_message_key(message_id) if message_id is not None else f"anonymous:{index}"
+            sort_key = (cls._datetime_sort_key(message.get("created_at")), index)
+            existing = logical_messages.get(logical_key)
+            if existing is None or sort_key >= existing[0]:
+                logical_messages[logical_key] = (sort_key, message)
+
+        ordered_messages = [
+            row[1]
+            for row in sorted(
+                logical_messages.values(),
+                key=lambda row: row[0],
+            )
+        ]
+
+        items: list[dict[str, Any]] = []
+        for message in ordered_messages:
+            normalized = " ".join(str(message.get("text") or "").split())
             for statement, start, end in cls._commitment_clause_spans(normalized):
                 items.append(
                     {
@@ -133,9 +162,10 @@ class ConversationAnalysisService:
                         "evidence_text": cls._evidence_text(normalized, start=start, end=end),
                     }
                 )
-                if len(items) >= cls.MAX_COMMITMENTS:
-                    return items
-        return items
+
+        # Keep the most current promises when the bounded evidence window contains more
+        # than MAX_COMMITMENTS clauses, but preserve chronological presentation.
+        return items[-cls.MAX_COMMITMENTS :]
 
     @classmethod
     def _commitment_clauses(cls, text: str) -> list[str]:
@@ -291,12 +321,11 @@ class ConversationAnalysisService:
 
     @classmethod
     def _important_dates(cls, scheduled_actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        active_statuses = {"scheduled", "pending", "queued", "retrying", "paused"}
         eligible = [
             action
             for action in scheduled_actions
             if action.get("scheduled_for") is not None
-            and str(action.get("status") or "").lower() in active_statuses
+            and str(action.get("status") or "").lower() in cls.ACTIVE_ACTION_STATUSES
         ]
         eligible.sort(
             key=lambda action: (
@@ -341,9 +370,8 @@ class ConversationAnalysisService:
             if len(items) >= cls.MAX_FOLLOW_UPS:
                 return items
 
-        active_statuses = {"scheduled", "pending", "queued", "retrying", "paused"}
         for action in scheduled_actions:
-            if str(action.get("status") or "").lower() not in active_statuses:
+            if str(action.get("status") or "").lower() not in cls.ACTIVE_ACTION_STATUSES:
                 continue
             items.append(
                 {
