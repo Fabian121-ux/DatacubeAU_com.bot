@@ -24,6 +24,11 @@ if [ -z "${LOCAL_TEST_DM_WHATSAPP_ID:-}" ]; then
   exit 1
 fi
 
+if [ -z "${WAHA_API_KEY:-}" ]; then
+  echo "WAHA_API_KEY is required for the authenticated webhook smoke test." >&2
+  exit 1
+fi
+
 payload=$(cat <<EOF
 {"chatId":"${LOCAL_TEST_DM_WHATSAPP_ID}","from":"${LOCAL_TEST_DM_WHATSAPP_ID}","notifyName":"Smoke Test","type":"text","text":{"body":"hello"},"isGroup":false}
 EOF
@@ -32,6 +37,7 @@ EOF
 echo "Posting end-to-end DM webhook"
 response=$(curl -fsS -X POST "${base_url}/webhooks/waha" \
   -H "Content-Type: application/json" \
+  -H "X-Api-Key: ${WAHA_API_KEY}" \
   --data "$payload")
 printf '%s\n' "$response"
 
