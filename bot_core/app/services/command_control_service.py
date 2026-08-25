@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import AdminAccount, AuditLog, Contact, OutboundMessage
@@ -118,9 +118,14 @@ class CommandControlService:
         if not command.startswith("/"):
             return None
 
-        # Always hand the existing command handler canonical slash text. This also
-        # covers forms such as `@Zina /status`, whose parsed prefix was stripped here.
-        message.message_text = f"{command}{(' ' + args) if args else ''}"
+        # Always hand the existing command handler canonical slash text. Preserve
+        # multiline argument structure because /teach, /create-command, /trigger and
+        # multiline broadcast bodies intentionally parse line blocks.
+        if args:
+            separator = "\n" if "\n" in args or "\r" in args else " "
+            message.message_text = f"{command}{separator}{args}"
+        else:
+            message.message_text = command
 
         # Enforce authority before calling an existing handler so a limited admin
         # cannot trigger an owner side effect and only then receive a denial reply.
@@ -163,17 +168,23 @@ class CommandControlService:
 
     @classmethod
     def parse(cls, text_value: str) -> tuple[str, str] | None:
-        text = " ".join((text_value or "").strip().split())
-        if not text:
+        # Normalize only the optional Zina prefix and command token. Do not collapse
+        # whitespace in the argument body: several existing owner commands use
+        # splitlines() and labelled multiline blocks.
+        text_value = (text_value or "").strip()
+        if not text_value:
             return None
-        text = re.sub(r"^@zina\s+", "", text, flags=re.I)
-        if not text:
+        text_value = re.sub(r"^@zina[ \t]+", "", text_value, count=1, flags=re.I)
+        if not text_value:
             return None
-        first, _, rest = text.partition(" ")
-        command = first.strip().lower()
+        match = re.match(r"^([^\s]+)(?:[ \t\r\n]+([\s\S]*))?$", text_value)
+        if not match:
+            return None
+        command = (match.group(1) or "").strip().lower()
         if not command.startswith((".", "/")):
             return None
-        return command, rest.strip()
+        args = (match.group(2) or "").strip()
+        return command, args
 
     @staticmethod
     def _slash_alias(command: str) -> str | None:
@@ -204,6 +215,12 @@ class CommandControlService:
                 reply_text="Guided scheduling is currently disabled.",
                 error="command disabled",
             )
+
+        # Serialize the complete read-modify-write/save lifecycle for this owner's
+        # draft. Requests may overlap when Fabian sends form fields quickly; without
+        # this transaction-scoped advisory lock the last commit can discard another
+        # field or two .save requests can both create actions.
+        await self._lock_schedule_draft(admin.id)
 
         key = self._draft_key(admin.id)
         draft = await self._load_draft(key)
@@ -392,6 +409,13 @@ class CommandControlService:
         chat_keys = AdminManagementService.identity_keys(message.chat_id)
         owner_keys = AdminManagementService.identity_keys(owner.normalized_whatsapp_id) | AdminManagementService.identity_keys(owner.whatsapp_number)
         return bool(chat_keys & owner_keys)
+
+    async def _lock_schedule_draft(self, admin_id: int) -> None:
+        # Namespace the advisory lock away from ordinary small application IDs.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": 910000000 + int(admin_id)},
+        )
 
     @staticmethod
     def _draft_key(admin_id: int) -> str:
