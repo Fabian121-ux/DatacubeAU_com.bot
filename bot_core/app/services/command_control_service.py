@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import AuditLog, Contact, OutboundMessage
+from app.models.schema import AdminAccount, AuditLog, Contact, OutboundMessage
 from app.services.admin_management_service import AdminManagementService
 from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
@@ -75,9 +75,10 @@ class CommandControlService:
                 error="owner authorization failed",
             )
 
-        # Self-DM is the privileged control inbox. A fromMe command typed while
-        # messaging another person must not silently become an owner control action.
-        if not self._is_self_dm(message, admin):
+        # The privileged control inbox is Fabian's actual primary-owner self chat,
+        # not merely a chat whose peer also happens to be an owner-level admin.
+        primary_owner = await self._primary_owner()
+        if primary_owner is None or not self._is_self_dm(message, primary_owner) or admin.id != primary_owner.id:
             return None
 
         permission = (admin.permission_level or "").strip().lower()
@@ -113,10 +114,13 @@ class CommandControlService:
         slash_command = self._slash_alias(command)
         if slash_command:
             command = slash_command
-            message.message_text = f"{command}{(' ' + args) if args else ''}"
 
         if not command.startswith("/"):
             return None
+
+        # Always hand the existing command handler canonical slash text. This also
+        # covers forms such as `@Zina /status`, whose parsed prefix was stripped here.
+        message.message_text = f"{command}{(' ' + args) if args else ''}"
 
         # Enforce authority before calling an existing handler so a limited admin
         # cannot trigger an owner side effect and only then receive a denial reply.
@@ -368,13 +372,26 @@ class CommandControlService:
         commands = await self.catalog.list_commands()
         return next((item for item in commands if item.get("name") == name), None)
 
+    async def _primary_owner(self) -> AdminAccount | None:
+        stmt = (
+            select(AdminAccount)
+            .where(
+                AdminAccount.is_primary.is_(True),
+                AdminAccount.is_enabled.is_(True),
+                AdminAccount.permission_level == "owner",
+            )
+            .order_by(AdminAccount.id.asc())
+            .limit(1)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
     @staticmethod
-    def _is_self_dm(message: Any, admin: Any) -> bool:
+    def _is_self_dm(message: Any, owner: AdminAccount) -> bool:
         if getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
             return False
         chat_keys = AdminManagementService.identity_keys(message.chat_id)
-        admin_keys = AdminManagementService.identity_keys(admin.normalized_whatsapp_id) | AdminManagementService.identity_keys(admin.whatsapp_number)
-        return bool(chat_keys & admin_keys)
+        owner_keys = AdminManagementService.identity_keys(owner.normalized_whatsapp_id) | AdminManagementService.identity_keys(owner.whatsapp_number)
+        return bool(chat_keys & owner_keys)
 
     @staticmethod
     def _draft_key(admin_id: int) -> str:
