@@ -58,31 +58,41 @@ async def test_owner_self_dm_dot_alias_runs_existing_user_command(db_session):
 
 
 @pytest.mark.asyncio
-async def test_limited_admin_cannot_start_owner_guided_schedule(db_session):
-    db_session.add(
-        AdminAccount(
-            name="Limited Admin",
-            whatsapp_number="2348000000003",
-            normalized_whatsapp_id="2348000000003@c.us",
-            role="admin",
-            permission_level="admin",
-            is_primary=False,
-            is_enabled=True,
-        )
+async def test_limited_admin_peer_chat_cannot_enter_owner_control_surface(db_session):
+    primary = AdminAccount(
+        name="Fabian",
+        whatsapp_number="2348000000001",
+        normalized_whatsapp_id="2348000000001@c.us",
+        role="primary_admin",
+        permission_level="owner",
+        is_primary=True,
+        is_enabled=True,
     )
+    limited = AdminAccount(
+        name="Limited Admin",
+        whatsapp_number="2348000000003",
+        normalized_whatsapp_id="2348000000003@c.us",
+        role="admin",
+        permission_level="admin",
+        is_primary=False,
+        is_enabled=True,
+    )
+    db_session.add_all([primary, limited])
     await db_session.flush()
 
     message = MessageNormalizer().normalize(_event("@Zina .sch", owner="2348000000003@c.us"))
     result = await CommandControlService(db_session).handle_from_me(message, transport_message_id="ADMIN-SCH")
 
-    assert result is not None and result.consumed is True
-    assert result.error == "owner permission required"
-    assert "Access denied" in (result.reply_text or "")
+    # A fromMe message in another admin's peer chat is ordinary owner activity,
+    # not Fabian's privileged self-DM control surface. It must not execute or even
+    # queue an owner-command denial into that peer conversation.
+    assert result is None
     drafts = (
         await db_session.execute(select(BotConfig).where(BotConfig.config_key.like("command_draft.schedule.%")))
     ).scalars().all()
     assert drafts == []
     assert (await db_session.execute(select(ScheduledAction))).scalars().all() == []
+    assert (await db_session.execute(select(OutboundMessage))).scalars().all() == []
 
 
 @pytest.mark.asyncio
