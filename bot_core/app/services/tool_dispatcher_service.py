@@ -18,6 +18,9 @@ from app.utils.time import utcnow
 
 _PERMISSION_RANK = {"user": 10, "admin": 20, "owner": 30}
 _SUCCESSFUL_OUTBOUND_STATUSES = {"sent", "delivered"}
+_CHAT_READ_PAGE_SIZE = 100
+_CHAT_READ_CANDIDATE_MULTIPLIER = 4
+_CHAT_READ_MAX_CANDIDATES = 800
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,78 +237,84 @@ class ToolDispatcherService:
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
         )
-        legacy_outbound_stmt = (
-            select(Message)
-            .where(Message.chat_type == "dm")
-            .where(Message.direction == "outbound")
-            .where(*self._dm_message_chat_conditions())
-            .where(or_(*scope_conditions))
-            .order_by(Message.created_at.desc(), Message.id.desc())
-            .limit(limit)
-        )
         if after:
             inbound_stmt = inbound_stmt.where(Message.created_at >= after)
-            legacy_outbound_stmt = legacy_outbound_stmt.where(Message.created_at >= after)
         if before:
             inbound_stmt = inbound_stmt.where(Message.created_at <= before)
-            legacy_outbound_stmt = legacy_outbound_stmt.where(Message.created_at <= before)
-
         inbound_rows = (await self.session.execute(inbound_stmt)).scalars().all()
-        legacy_outbound_rows = (await self.session.execute(legacy_outbound_stmt)).scalars().all()
 
+        legacy_outbound_rows, linked_messages_by_queue = await self._fetch_legacy_outbound_rows(
+            scope_conditions=scope_conditions,
+            limit=limit,
+            after=after,
+            before=before,
+        )
+
+        candidate_limit = min(
+            max(limit * _CHAT_READ_CANDIDATE_MULTIPLIER, _CHAT_READ_PAGE_SIZE),
+            _CHAT_READ_MAX_CANDIDATES,
+        )
         outbound_rows: list[OutboundMessage] = []
-        delivery_audits_by_queue: dict[int, list[AuditLog]] = {}
+        outbound_by_id: dict[int, OutboundMessage] = {}
         if dm_outbound_chat_ids:
             outbound_stmt = (
                 select(OutboundMessage)
                 .where(OutboundMessage.chat_id.in_(sorted(dm_outbound_chat_ids)))
                 .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
+                .limit(candidate_limit)
             )
+            if after:
+                outbound_stmt = outbound_stmt.where(OutboundMessage.updated_at >= after)
+            if before:
+                outbound_stmt = outbound_stmt.where(OutboundMessage.updated_at <= before)
             outbound_rows = (await self.session.execute(outbound_stmt)).scalars().all()
-            queue_ids = [row.id for row in outbound_rows if row.id is not None]
-            if queue_ids:
-                delivery_audits = (
-                    await self.session.execute(
-                        select(AuditLog)
-                        .where(AuditLog.action == "outbound_queue_sent")
-                        .where(AuditLog.entity_type == "outbound_queue")
-                        .where(AuditLog.entity_id.in_([str(queue_id) for queue_id in queue_ids]))
-                        .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
-                    )
-                ).scalars().all()
-                for audit in delivery_audits:
-                    try:
-                        queue_id = int(audit.entity_id or "")
-                    except (TypeError, ValueError):
-                        continue
-                    delivery_audits_by_queue.setdefault(queue_id, []).append(audit)
+            outbound_by_id = {int(row.id): row for row in outbound_rows if row.id is not None}
+
+        delivery_audits: list[AuditLog] = []
+        if dm_outbound_chat_ids:
+            audit_stmt = (
+                select(AuditLog)
+                .where(AuditLog.action == "outbound_queue_sent")
+                .where(AuditLog.entity_type == "outbound_queue")
+                .where(AuditLog.details_json["chat_id"].as_string().in_(sorted(dm_outbound_chat_ids)))
+                .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                .limit(candidate_limit)
+            )
+            if after:
+                audit_stmt = audit_stmt.where(AuditLog.created_at >= after)
+            if before:
+                audit_stmt = audit_stmt.where(AuditLog.created_at <= before)
+            delivery_audits = (await self.session.execute(audit_stmt)).scalars().all()
+
+        delivery_audits_by_queue: dict[int, list[AuditLog]] = {}
+        for audit in delivery_audits:
+            try:
+                queue_id = int(audit.entity_id or "")
+            except (TypeError, ValueError):
+                continue
+            delivery_audits_by_queue.setdefault(queue_id, []).append(audit)
 
         messages = [self._chat_message_dict(row) for row in inbound_rows]
-        messages.extend(
-            self._chat_message_dict(row)
-            for row in legacy_outbound_rows
-            if not self._message_outbound_queue_id(row)
-        )
+        messages.extend(self._chat_message_dict(row) for row in legacy_outbound_rows)
+
+        represented_queue_ids: set[int] = set()
+        for queue_id, audits in delivery_audits_by_queue.items():
+            row = outbound_by_id.get(queue_id)
+            linked_message = linked_messages_by_queue.get(queue_id)
+            for audit in reversed(audits):
+                item = self._delivery_audit_chat_message_dict(
+                    audit,
+                    queue_row=row,
+                    linked_message=linked_message,
+                )
+                if item:
+                    messages.append(item)
+                    represented_queue_ids.add(queue_id)
+
         for row in outbound_rows:
-            audits = delivery_audits_by_queue.get(int(row.id), []) if row.id is not None else []
-            if audits:
-                for audit in audits:
-                    if not self._timestamp_in_window(audit.created_at, after=after, before=before):
-                        continue
-                    messages.append(
-                        self._outbound_queue_chat_message_dict(
-                            row,
-                            delivered_at=audit.created_at,
-                            delivery_event_id=audit.id,
-                            delivery_status="sent",
-                        )
-                    )
+            if row.id is None or int(row.id) in represented_queue_ids:
                 continue
-            if row.status in _SUCCESSFUL_OUTBOUND_STATUSES and self._timestamp_in_window(
-                row.updated_at,
-                after=after,
-                before=before,
-            ):
+            if row.status in _SUCCESSFUL_OUTBOUND_STATUSES:
                 messages.append(self._outbound_queue_chat_message_dict(row))
 
         messages.sort(key=self._chat_message_sort_key)
@@ -328,6 +337,60 @@ class ToolDispatcherService:
                 "newest_at": messages[-1]["created_at"] if messages else None,
             },
         }
+
+    async def _fetch_legacy_outbound_rows(
+        self,
+        *,
+        scope_conditions: list[Any],
+        limit: int,
+        after: datetime | None,
+        before: datetime | None,
+    ) -> tuple[list[Message], dict[int, Message]]:
+        """Page outbound Message projections until enough unlinked legacy rows are found.
+
+        Linked rows are not themselves proof of delivery, but we retain a bounded map of
+        recent linked rows so a surviving delivery audit can reconstruct older audit
+        events even if the mutable outbound queue row has since been deleted.
+        """
+        collected: list[Message] = []
+        linked_by_queue: dict[int, Message] = {}
+        offset = 0
+        page_size = min(max(limit, _CHAT_READ_PAGE_SIZE), 200)
+        linked_map_limit = min(limit * _CHAT_READ_CANDIDATE_MULTIPLIER, _CHAT_READ_MAX_CANDIDATES)
+
+        while len(collected) < limit:
+            stmt = (
+                select(Message)
+                .where(Message.chat_type == "dm")
+                .where(Message.direction == "outbound")
+                .where(*self._dm_message_chat_conditions())
+                .where(or_(*scope_conditions))
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(page_size)
+                .offset(offset)
+            )
+            if after:
+                stmt = stmt.where(Message.created_at >= after)
+            if before:
+                stmt = stmt.where(Message.created_at <= before)
+            rows = (await self.session.execute(stmt)).scalars().all()
+            if not rows:
+                break
+
+            for row in rows:
+                queue_id = self._message_outbound_queue_id(row)
+                if queue_id is None:
+                    collected.append(row)
+                    if len(collected) >= limit:
+                        break
+                elif len(linked_by_queue) < linked_map_limit:
+                    linked_by_queue.setdefault(queue_id, row)
+
+            if len(rows) < page_size:
+                break
+            offset += page_size
+
+        return collected, linked_by_queue
 
     @staticmethod
     def _message_outbound_queue_id(row: Message) -> int | None:
@@ -367,6 +430,37 @@ class ToolDispatcherService:
             "text": delivered_text,
             "created_at": delivered_at or row.updated_at,
             "delivery_status": delivery_status or row.status,
+        }
+
+    @staticmethod
+    def _delivery_audit_chat_message_dict(
+        audit: AuditLog,
+        *,
+        queue_row: OutboundMessage | None,
+        linked_message: Message | None,
+    ) -> dict[str, Any] | None:
+        details = audit.details_json if isinstance(audit.details_json, dict) else {}
+        snapshot = details.get("delivery_snapshot") if isinstance(details.get("delivery_snapshot"), dict) else {}
+        text = snapshot.get("text")
+        message_type = snapshot.get("message_type") or "text"
+
+        if text is None and queue_row is not None:
+            text = (queue_row.media_caption or queue_row.message_text) if queue_row.media_type else queue_row.message_text
+            message_type = queue_row.media_type or "text"
+        if text is None and linked_message is not None:
+            text = linked_message.message_text
+            message_type = linked_message.message_type
+        if text is None:
+            return None
+
+        return {
+            "id": f"outbound_queue:{audit.entity_id}:delivery:{audit.id}",
+            "source": "outbound_queue",
+            "direction": "outbound",
+            "message_type": message_type,
+            "text": text,
+            "created_at": audit.created_at,
+            "delivery_status": "sent",
         }
 
     @staticmethod
