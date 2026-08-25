@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import re
 from typing import Any
 
@@ -21,7 +22,7 @@ class ContactSyncResult:
 
 
 class ContactSyncService:
-    """Synchronize WAHA's saved contacts into Zina's existing Contact source of truth."""
+    """Synchronize WAHA contact evidence into Zina's existing Contact source of truth."""
 
     PAGE_SIZE = 500
     MAX_CONTACTS = 10_000
@@ -34,6 +35,9 @@ class ContactSyncService:
     async def sync(self, *, session_name: str | None = None) -> dict[str, int]:
         result = ContactSyncResult()
         offset = 0
+        sync_at = utcnow()
+        seen_person_ids: set[str] = set()
+        complete_scan = False
         try:
             while result.fetched < self.MAX_CONTACTS:
                 page_limit = min(self.PAGE_SIZE, self.MAX_CONTACTS - result.fetched)
@@ -43,11 +47,14 @@ class ContactSyncService:
                     offset=offset,
                 )
                 if not contacts:
+                    complete_scan = True
                     break
 
                 for payload in contacts:
                     result.fetched += 1
-                    outcome = await self._sync_one(payload)
+                    outcome, seen_id = await self._sync_one(payload, sync_at=sync_at)
+                    if seen_id:
+                        seen_person_ids.add(seen_id)
                     if outcome == "created":
                         result.created += 1
                     elif outcome == "updated":
@@ -56,8 +63,15 @@ class ContactSyncService:
                         result.skipped += 1
 
                 if len(contacts) < page_limit:
+                    complete_scan = True
                     break
                 offset += len(contacts)
+
+            # Only reconcile contacts missing from WAHA after a complete scan. If the
+            # configured safety cap is reached, absence is not proof that a contact
+            # was removed from Fabian's address book.
+            if complete_scan:
+                await self._reconcile_absent_saved_contacts(seen_person_ids, sync_at=sync_at)
 
             await self.session.flush()
             return {
@@ -70,9 +84,9 @@ class ContactSyncService:
             if self._owns_waha:
                 await self.waha.close()
 
-    async def _sync_one(self, payload: dict[str, Any]) -> str:
+    async def _sync_one(self, payload: dict[str, Any], *, sync_at: datetime) -> tuple[str, str | None]:
         if not isinstance(payload, dict):
-            return "skipped"
+            return "skipped", None
 
         raw_id = self._first_text(
             payload.get("id"),
@@ -82,7 +96,7 @@ class ContactSyncService:
             payload.get("jid"),
         )
         if not raw_id or self._is_non_person_chat(raw_id):
-            return "skipped"
+            return "skipped", None
 
         lid = raw_id if raw_id.endswith("@lid") else self._first_text(payload.get("lid"), payload.get("LID"))
         pn_id = self._first_person_jid(
@@ -95,7 +109,7 @@ class ContactSyncService:
         if raw_id.endswith("@lid") and not pn_id:
             # A bare LID is not a phone number. Do not create a second person row
             # until WAHA supplies a PN mapping that can be reconciled safely.
-            return "skipped"
+            return "skipped", None
 
         whatsapp_id = self._canonical_whatsapp_id(pn_id or raw_id)
         phone = self._first_text(
@@ -107,6 +121,14 @@ class ContactSyncService:
         normalized_phone = self._digits(phone) or None if phone else None
         contact_name = self._first_text(payload.get("name"), payload.get("contactName"))
         push_name = self._first_text(payload.get("pushName"), payload.get("pushname"), payload.get("notify"))
+        explicit_saved = self._first_bool(
+            payload.get("isMyContact"),
+            payload.get("is_my_contact"),
+            self._nested(payload, "_data", "isMyContact"),
+        )
+        # Modern WAHA exposes `isMyContact`. Older/mocked payloads may not, so retain
+        # the old address-book-name inference only as a compatibility fallback.
+        is_saved_contact = explicit_saved if explicit_saved is not None else bool(contact_name)
 
         row = await self._find_existing(
             whatsapp_id=whatsapp_id,
@@ -116,7 +138,11 @@ class ContactSyncService:
         )
         created = row is None
         if row is None:
-            row = Contact(whatsapp_id=whatsapp_id, updated_at=utcnow())
+            # Do not grow Zina's address book from WAHA-only unsaved contacts. Those
+            # people are learned through the normal inbound Contact pipeline instead.
+            if not is_saved_contact:
+                return "skipped", whatsapp_id
+            row = Contact(whatsapp_id=whatsapp_id, updated_at=sync_at)
             self.session.add(row)
 
         if contact_name:
@@ -145,10 +171,26 @@ class ContactSyncService:
             contact_name=contact_name,
             push_name=push_name,
             normalized_phone=normalized_phone,
+            is_saved_contact=is_saved_contact,
+            saved_contact_synced_at=sync_at,
         )
-        row.updated_at = utcnow()
+        row.updated_at = sync_at
         await self.session.flush()
-        return "created" if created else "updated"
+        return ("created" if created else "updated"), whatsapp_id
+
+    async def _reconcile_absent_saved_contacts(self, seen_person_ids: set[str], *, sync_at: datetime) -> None:
+        rows = (await self.session.execute(select(Contact))).scalars().all()
+        for row in rows:
+            if not self._saved_marker(row.identity_json):
+                continue
+            if self._canonical_whatsapp_id(row.whatsapp_id) in seen_person_ids:
+                continue
+            identity = dict(row.identity_json) if isinstance(row.identity_json, dict) else {}
+            identity["is_saved_contact"] = False
+            identity["saved_contact_synced_at"] = sync_at.isoformat()
+            identity["saved_contact_reconciled_reason"] = "absent_from_full_waha_contact_scan"
+            row.identity_json = identity
+            row.updated_at = sync_at
 
     async def _find_existing(
         self,
@@ -180,6 +222,8 @@ class ContactSyncService:
         contact_name: str | None,
         push_name: str | None,
         normalized_phone: str | None,
+        is_saved_contact: bool,
+        saved_contact_synced_at: datetime,
     ) -> dict[str, Any]:
         identity = dict(current) if isinstance(current, dict) else {}
         aliases = [str(item).strip() for item in identity.get("aliases", []) if str(item).strip()] if isinstance(identity.get("aliases"), list) else []
@@ -194,12 +238,21 @@ class ContactSyncService:
                 "normalized_phone": normalized_phone,
                 "contact_name": contact_name,
                 "push_name": push_name,
+                "is_saved_contact": is_saved_contact,
+                "saved_contact_synced_at": saved_contact_synced_at.isoformat(),
             }
         )
+        identity.pop("saved_contact_reconciled_reason", None)
         if lid:
             identity["waha_participant_id"] = lid
         identity["aliases"] = aliases[:20]
         return identity
+
+    @staticmethod
+    def _saved_marker(identity_json: dict[str, Any] | None) -> bool:
+        if not isinstance(identity_json, dict):
+            return False
+        return identity_json.get("is_saved_contact") is True
 
     @staticmethod
     def _canonical_whatsapp_id(value: str) -> str:
@@ -226,6 +279,19 @@ class ContactSyncService:
             lowered = text.lower()
             if lowered.endswith("@c.us") or lowered.endswith("@s.whatsapp.net"):
                 return text
+        return None
+
+    @staticmethod
+    def _first_bool(*values: Any) -> bool | None:
+        for value in values:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "1", "yes"}:
+                    return True
+                if lowered in {"false", "0", "no"}:
+                    return False
         return None
 
     @staticmethod
