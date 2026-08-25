@@ -17,6 +17,12 @@ class InboundReceipt:
 class InboundIdempotencyService:
     """Durably claim WAHA inbound events before routing side effects occur."""
 
+    # A worker can die after committing a claim but before finishing command routing.
+    # WAHA retries must be able to reclaim that abandoned work instead of treating it
+    # as a permanent duplicate. Five minutes is comfortably above normal webhook work
+    # while still allowing bounded crash recovery.
+    PROCESSING_LEASE_SECONDS = 300
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
@@ -40,7 +46,15 @@ class InboundIdempotencyService:
                     'processing',
                     NOW()
                 )
-                ON CONFLICT (event_key) DO NOTHING
+                ON CONFLICT (event_key) DO UPDATE
+                SET session_name = EXCLUDED.session_name,
+                    chat_id = EXCLUDED.chat_id,
+                    message_id = EXCLUDED.message_id,
+                    status = 'processing',
+                    updated_at = NOW()
+                WHERE inbound_webhook_receipts.status = 'processing'
+                  AND inbound_webhook_receipts.updated_at
+                      < NOW() - (:lease_seconds * INTERVAL '1 second')
                 RETURNING id
                 """
             ),
@@ -49,6 +63,7 @@ class InboundIdempotencyService:
                 "session_name": receipt.session_name,
                 "chat_id": receipt.chat_id,
                 "message_id": receipt.message_id,
+                "lease_seconds": self.PROCESSING_LEASE_SECONDS,
             },
         )
         claimed = result.scalar_one_or_none() is not None
