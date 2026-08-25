@@ -171,12 +171,20 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 message.error_message = None
                 message.updated_at = utcnow()
                 await ScheduledActionService(session).reconcile_outbound_delivery(message)
+                delivered_text = (message.media_caption or message.message_text) if message.media_type else message.message_text
                 session.add(
                     AuditLog(
                         action="outbound_queue_sent",
                         entity_type="outbound_queue",
                         entity_id=str(message.id),
-                        details_json={"chat_id": message.chat_id, "waha_response": response},
+                        details_json={
+                            "chat_id": message.chat_id,
+                            "delivery_snapshot": {
+                                "text": delivered_text,
+                                "message_type": message.media_type or "text",
+                            },
+                            "waha_response": response,
+                        },
                     )
                 )
                 await session.commit()
