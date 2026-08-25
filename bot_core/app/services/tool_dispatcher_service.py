@@ -435,13 +435,15 @@ class ToolDispatcherService:
         delivery_event_id: int | None = None,
         delivery_status: str | None = None,
     ) -> dict[str, Any]:
-        delivered_text = (row.media_caption or row.message_text) if row.media_type else row.message_text
+        is_media_delivery = bool(row.media_url)
+        delivered_text = (row.media_caption or row.message_text) if is_media_delivery else row.message_text
+        delivered_type = (row.media_type or "image") if is_media_delivery else "text"
         event_suffix = f":delivery:{delivery_event_id}" if delivery_event_id is not None else ""
         return {
             "id": f"outbound_queue:{row.id}{event_suffix}",
             "source": "outbound_queue",
             "direction": "outbound",
-            "message_type": row.media_type or "text",
+            "message_type": delivered_type,
             "text": delivered_text,
             "created_at": delivered_at or row.updated_at,
             "delivery_status": delivery_status or row.status,
@@ -460,8 +462,9 @@ class ToolDispatcherService:
         message_type = snapshot.get("message_type") or "text"
 
         if text is None and queue_row is not None:
-            text = (queue_row.media_caption or queue_row.message_text) if queue_row.media_type else queue_row.message_text
-            message_type = queue_row.media_type or "text"
+            is_media_delivery = bool(queue_row.media_url)
+            text = (queue_row.media_caption or queue_row.message_text) if is_media_delivery else queue_row.message_text
+            message_type = (queue_row.media_type or "image") if is_media_delivery else "text"
         if text is None and linked_message is not None:
             text = linked_message.message_text
             message_type = linked_message.message_type
