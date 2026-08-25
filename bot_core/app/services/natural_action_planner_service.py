@@ -81,16 +81,23 @@ class NaturalActionPlannerService:
         timezone: str = DEFAULT_OWNER_TIMEZONE,
         now: datetime | None = None,
     ) -> NaturalWhatsAppMessagePlan | None:
-        text = " ".join((instruction or "").strip().split())
+        # Preserve the message body verbatim. Only the command/schedule portion is
+        # whitespace-normalized. Guided `.sch` drafts may contain deliberate line
+        # breaks which must survive into ScheduledAction.payload_json and WAHA.
+        text = (instruction or "").strip()
         if not text or text.startswith("/"):
             return None
-        text = re.sub(r"^@zina\s+", "", text, flags=re.I)
-        text = re.sub(r"^please\s+", "", text, flags=re.I)
+        text = re.sub(r"^@zina\s+", "", text, count=1, flags=re.I)
+        text = re.sub(r"^please\s+", "", text, count=1, flags=re.I)
         if not text.lower().startswith("message "):
             return None
 
         command_text, message_text = cls._split_message_body(text)
         if not command_text or not message_text:
+            return None
+        command_text = " ".join(command_text.strip().split())
+        message_text = message_text.strip()
+        if not message_text:
             return None
 
         match = None
