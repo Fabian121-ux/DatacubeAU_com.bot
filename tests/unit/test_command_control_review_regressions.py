@@ -132,7 +132,15 @@ async def test_authenticated_owner_webhook_rejects_unexpected_session(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_duplicate_from_me_webhook_executes_owner_command_once():
+async def test_duplicate_from_me_webhook_executes_owner_command_once(monkeypatch):
+    import app.api.inbound as inbound_module
+
+    # Make the test independent of the workflow's WAHA_SESSION_NAME environment.
+    # This case is about duplicate delivery/idempotency, not session mismatch.
+    monkeypatch.setattr(inbound_module.settings, "waha_session_name", "default")
+    monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
+    monkeypatch.setattr(inbound_module.settings, "environment", "test")
+
     # Exercise the real webhook and its global SessionLocal in this pytest event loop.
     # Explicit cleanup keeps this committed idempotency test isolated from the rest
     # of the suite (the ordinary db_session fixture intentionally rolls back inserts).
