@@ -219,6 +219,7 @@ class ToolDispatcherService:
             )
             if value
         }
+        dm_outbound_chat_ids = {value for value in identity_chat_ids if self._is_dm_chat_id(value)}
         scope_conditions = [Message.contact_id == contact_id]
         if identity_chat_ids:
             scope_conditions.append(Message.chat_id.in_(sorted(identity_chat_ids)))
@@ -250,10 +251,10 @@ class ToolDispatcherService:
         legacy_outbound_rows = (await self.session.execute(legacy_outbound_stmt)).scalars().all()
 
         delivered_outbound_rows: list[OutboundMessage] = []
-        if identity_chat_ids:
+        if dm_outbound_chat_ids:
             delivered_stmt = (
                 select(OutboundMessage)
-                .where(OutboundMessage.chat_id.in_(sorted(identity_chat_ids)))
+                .where(OutboundMessage.chat_id.in_(sorted(dm_outbound_chat_ids)))
                 .where(OutboundMessage.status == "sent")
                 .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
                 .limit(limit)
@@ -271,7 +272,7 @@ class ToolDispatcherService:
             if not self._message_outbound_queue_id(row)
         )
         messages.extend(self._outbound_queue_chat_message_dict(row) for row in delivered_outbound_rows)
-        messages.sort(key=lambda item: (item["created_at"], str(item["id"])))
+        messages.sort(key=self._chat_message_sort_key)
         messages = messages[-limit:]
 
         return {
@@ -314,15 +315,43 @@ class ToolDispatcherService:
 
     @staticmethod
     def _outbound_queue_chat_message_dict(row: OutboundMessage) -> dict[str, Any]:
+        delivered_text = (row.media_caption or row.message_text) if row.media_type else row.message_text
         return {
             "id": f"outbound_queue:{row.id}",
             "source": "outbound_queue",
             "direction": "outbound",
             "message_type": row.media_type or "text",
-            "text": row.message_text,
+            "text": delivered_text,
             "created_at": row.updated_at,
             "delivery_status": row.status,
         }
+
+    @staticmethod
+    def _is_dm_chat_id(value: str) -> bool:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return False
+        return not (
+            normalized.endswith("@g.us")
+            or normalized == "status@broadcast"
+            or normalized.endswith("@broadcast")
+            or normalized.endswith("@newsletter")
+        )
+
+    @staticmethod
+    def _chat_message_sort_key(item: dict[str, Any]) -> tuple[Any, int, int]:
+        source = item.get("source")
+        raw_id = item.get("id")
+        if source == "message":
+            source_rank = 0
+            numeric_id = int(raw_id)
+        else:
+            source_rank = 1
+            try:
+                numeric_id = int(str(raw_id).rsplit(":", 1)[-1])
+            except (TypeError, ValueError):
+                numeric_id = 0
+        return item["created_at"], source_rank, numeric_id
 
     @staticmethod
     def _matching_profile(memory, contact_id: int, normalized_query: str) -> dict[str, Any]:
