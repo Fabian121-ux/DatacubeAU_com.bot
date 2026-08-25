@@ -5,7 +5,7 @@ from datetime import datetime
 import re
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import Contact
@@ -26,6 +26,10 @@ class ContactSyncService:
 
     PAGE_SIZE = 500
     MAX_CONTACTS = 10_000
+    # One transaction-scoped lock serializes authoritative address-book scans. Contact
+    # sync is an admin/owner operation, so correctness is more important than allowing
+    # overlapping scans to race and make saved-state depend on commit order.
+    SYNC_ADVISORY_LOCK_KEY = 902_026_082_601
 
     def __init__(self, session: AsyncSession, *, waha: WAHAClient | None = None):
         self.session = session
@@ -33,11 +37,13 @@ class ContactSyncService:
         self._owns_waha = waha is None
 
     async def sync(self, *, session_name: str | None = None) -> dict[str, int]:
+        await self._acquire_sync_lock()
         result = ContactSyncResult()
         offset = 0
         sync_at = utcnow()
         seen_person_ids: set[str] = set()
         complete_scan = False
+        identity_coverage_complete = True
         try:
             while result.fetched < self.MAX_CONTACTS:
                 page_limit = min(self.PAGE_SIZE, self.MAX_CONTACTS - result.fetched)
@@ -61,17 +67,23 @@ class ContactSyncService:
                     else:
                         result.skipped += 1
 
+                    # A bare LID with no known PN/person mapping is valid WAHA data but
+                    # cannot prove which existing Contact it represents. Treating the
+                    # scan as identity-complete would make absence reconciliation unsafe
+                    # if an older inbound refresh had temporarily lost that LID alias.
+                    if not seen_ids and self._payload_is_bare_lid(payload):
+                        identity_coverage_complete = False
+
                 if len(contacts) < page_limit:
                     complete_scan = True
                     break
                 offset += len(contacts)
 
-            # Only reconcile contacts missing from WAHA after a complete, validated
-            # scan. WAHAClient rejects malformed/unrecognized page shapes instead of
-            # converting them to [], so transport/schema errors cannot masquerade as
-            # an empty address book. If the safety cap is reached, absence is also not
-            # proof that a contact was removed.
-            if complete_scan:
+            # Only reconcile contacts missing from WAHA after a complete, validated,
+            # identity-covered scan. WAHAClient rejects malformed/unrecognized pages,
+            # and an unmapped bare LID conservatively suppresses absence reconciliation
+            # instead of guessing that a saved contact was removed.
+            if complete_scan and identity_coverage_complete:
                 result.updated += await self._reconcile_absent_saved_contacts(
                     seen_person_ids,
                     sync_at=sync_at,
@@ -133,9 +145,9 @@ class ContactSyncService:
             normalized_phone=normalized_phone,
         )
 
-        # A stale overlapping sync must never overwrite evidence written by a newer
-        # scan. This makes final saved state depend on newest WAHA evidence rather than
-        # whichever request happened to finish last.
+        # The advisory transaction lock serializes full sync() calls. Keep this
+        # timestamp guard too because focused unit/service calls to _sync_one remain
+        # safe when presented with explicitly older evidence.
         if row is not None:
             newer_evidence_at = self._saved_evidence_at(row.identity_json)
             if newer_evidence_at is not None and newer_evidence_at > sync_at:
@@ -171,9 +183,10 @@ class ContactSyncService:
             self.session.add(row)
 
         if is_saved_contact is False:
-            # A false marker or completed absence reconciliation must be able to
-            # override stale address-book-name evidence. Push/display names remain.
-            row.contact_name = contact_name[:180] if contact_name else None
+            # contact_name is dedicated address-book evidence. An explicit false marker
+            # must clear it even if WAHA also supplies a generic name field, otherwise a
+            # later inbound refresh could lose the marker and resurrect stale saved state.
+            row.contact_name = None
         elif contact_name:
             row.contact_name = contact_name[:180]
         if push_name:
@@ -197,7 +210,7 @@ class ContactSyncService:
             raw_id=raw_id,
             whatsapp_id=whatsapp_id,
             lid=lid,
-            contact_name=contact_name,
+            contact_name=contact_name if is_saved_contact else None,
             push_name=push_name,
             normalized_phone=normalized_phone,
             is_saved_contact=is_saved_contact,
@@ -208,7 +221,10 @@ class ContactSyncService:
         return ("created" if created else "updated"), self._row_identity_keys(row, whatsapp_id, raw_id, lid)
 
     async def _reconcile_absent_saved_contacts(self, seen_person_ids: set[str], *, sync_at: datetime) -> int:
-        rows = (await self.session.execute(select(Contact))).scalars().all()
+        # Lock the rows used for reconciliation. sync() additionally holds the
+        # transaction-scoped advisory lock, while this row lock protects direct calls
+        # and makes the evidence check occur against the row version we will mutate.
+        rows = (await self.session.execute(select(Contact).order_by(Contact.id).with_for_update())).scalars().all()
         updated = 0
         for row in rows:
             if not self._has_saved_evidence(row):
@@ -217,16 +233,13 @@ class ContactSyncService:
                 continue
             newer_evidence_at = self._saved_evidence_at(row.identity_json)
             if newer_evidence_at is not None and newer_evidence_at > sync_at:
-                # Another sync that started later has already written fresher evidence.
-                # An older scan finishing last must not demote that contact.
                 continue
             identity = dict(row.identity_json) if isinstance(row.identity_json, dict) else {}
             identity["is_saved_contact"] = False
             identity["saved_contact_synced_at"] = sync_at.isoformat()
             identity["saved_contact_reconciled_reason"] = "absent_from_full_waha_contact_scan"
+            identity["contact_name"] = None
             row.identity_json = identity
-            # contact_name is dedicated address-book evidence. Clear it on confirmed
-            # removal so a later inbound identity refresh cannot resurrect legacy saved state.
             row.contact_name = None
             row.updated_at = sync_at
             updated += 1
@@ -247,9 +260,40 @@ class ContactSyncService:
             conditions.append(Contact.normalized_phone == normalized_phone)
         return (
             await self.session.execute(
-                select(Contact).where(or_(*conditions)).order_by(Contact.updated_at.desc(), Contact.id.desc()).limit(1)
+                select(Contact)
+                .where(or_(*conditions))
+                .order_by(Contact.updated_at.desc(), Contact.id.desc())
+                .limit(1)
+                .with_for_update()
             )
         ).scalar_one_or_none()
+
+    async def _acquire_sync_lock(self) -> None:
+        bind = self.session.get_bind()
+        if getattr(getattr(bind, "dialect", None), "name", None) == "postgresql":
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": self.SYNC_ADVISORY_LOCK_KEY},
+            )
+
+    @classmethod
+    def _payload_is_bare_lid(cls, payload: dict[str, Any]) -> bool:
+        raw_id = cls._first_text(
+            payload.get("id"),
+            payload.get("contactId"),
+            cls._nested(payload, "_data", "id", "_serialized"),
+            cls._nested(payload, "_data", "id"),
+            payload.get("jid"),
+        )
+        if not raw_id or not raw_id.lower().endswith("@lid"):
+            return False
+        return cls._first_person_jid(
+            payload.get("pn"),
+            payload.get("phoneJid"),
+            payload.get("phoneNumberJid"),
+            payload.get("jid"),
+            raw_id,
+        ) is None
 
     @classmethod
     def _merged_identity_json(
@@ -312,8 +356,6 @@ class ContactSyncService:
         marker = cls._saved_marker_value(row.identity_json)
         if marker is not None:
             return marker
-        # Legacy compatibility: before the explicit marker existed, contact_name was
-        # the dedicated WAHA address-book evidence. A completed reconciliation clears it.
         return bool((row.contact_name or "").strip())
 
     @classmethod
@@ -334,10 +376,10 @@ class ContactSyncService:
     def _identity_keys_from_values(cls, *values: Any) -> set[str]:
         keys: set[str] = set()
         for value in values:
-            text = cls._first_text(value)
-            if not text:
+            text_value = cls._first_text(value)
+            if not text_value:
                 continue
-            lowered = text.lower()
+            lowered = text_value.lower()
             if lowered.endswith("@s.whatsapp.net") or lowered.endswith("@c.us"):
                 keys.add(cls._canonical_whatsapp_id(lowered))
             elif lowered.endswith("@lid"):
@@ -363,12 +405,12 @@ class ContactSyncService:
     @classmethod
     def _first_person_jid(cls, *values: Any) -> str | None:
         for value in values:
-            text = cls._first_text(value)
-            if not text:
+            text_value = cls._first_text(value)
+            if not text_value:
                 continue
-            lowered = text.lower()
+            lowered = text_value.lower()
             if lowered.endswith("@c.us") or lowered.endswith("@s.whatsapp.net"):
-                return text
+                return text_value
         return None
 
     @staticmethod
@@ -407,7 +449,7 @@ class ContactSyncService:
         for value in values:
             if isinstance(value, dict):
                 value = value.get("_serialized") or value.get("id")
-            text = " ".join(str(value or "").strip().split())
-            if text:
-                return text
+            text_value = " ".join(str(value or "").strip().split())
+            if text_value:
+                return text_value
         return None
