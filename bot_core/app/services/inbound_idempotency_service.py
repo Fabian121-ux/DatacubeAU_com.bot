@@ -16,6 +16,10 @@ class InboundReceipt:
     message_id: str | None
 
 
+class InboundClaimLostError(RuntimeError):
+    """Raised when a worker no longer owns the durable inbound receipt lease."""
+
+
 # The durable claim token lives in PostgreSQL. This task-local mapping only carries
 # the lease credential from claim() to completion/release without widening every
 # routing function signature. Context is propagated to FastAPI/Starlette background
@@ -107,29 +111,53 @@ class InboundIdempotencyService:
         return claimed
 
     async def mark_completed(self, event_key: str, *, commit: bool = True) -> None:
-        """Mark this worker's claim completed, optionally in the caller transaction.
+        """Complete only the lease generation still owned by this worker.
 
-        The generation token fences stale workers after a lease reclaim. Command-control
-        side effects use commit=False so durable side effects and receipt completion are
-        committed atomically. Background routing retains historical commit=True behavior.
+        A stale worker must not commit side effects after another worker has reclaimed
+        the receipt. The fenced UPDATE is therefore treated as an ownership check: if
+        it updates zero rows, the current transaction is rolled back and routing aborts.
+
+        For commit=False callers, keep the task-local token until the caller's database
+        commit succeeds. If that commit fails, release_failed() can still delete the
+        original processing receipt so WAHA can retry instead of losing the command.
         """
         claim_token = self._token_for(event_key)
-        if claim_token:
-            await self.session.execute(
-                text(
-                    """
-                    UPDATE inbound_webhook_receipts
-                    SET status = 'completed', updated_at = NOW()
-                    WHERE event_key = :event_key
-                      AND claim_token = :claim_token
-                      AND status = 'processing'
-                    """
-                ),
-                {"event_key": event_key, "claim_token": claim_token},
-            )
-        if commit:
+        if not claim_token:
+            await self.session.rollback()
+            raise InboundClaimLostError(f"inbound receipt lease missing for {event_key}")
+
+        result = await self.session.execute(
+            text(
+                """
+                UPDATE inbound_webhook_receipts
+                SET status = 'completed', updated_at = NOW()
+                WHERE event_key = :event_key
+                  AND claim_token = :claim_token
+                  AND status = 'processing'
+                """
+            ),
+            {"event_key": event_key, "claim_token": claim_token},
+        )
+        if result.rowcount != 1:
+            # This worker lost its generation lease. Roll back every side effect in the
+            # same transaction before any caller can commit stale work.
+            await self.session.rollback()
+            self._forget_token(event_key, claim_token)
+            raise InboundClaimLostError(f"inbound receipt lease lost for {event_key}")
+
+        if not commit:
+            # Do not forget yet: the caller still has to commit this transaction. A
+            # commit failure must leave the token available to release_failed().
+            return
+
+        try:
             await self.session.commit()
-        self._forget_token(event_key, claim_token)
+        except Exception:
+            # Keep the token so the caller can release the still-processing receipt if
+            # the transaction did not commit.
+            raise
+        else:
+            self._forget_token(event_key, claim_token)
 
     async def release_failed(self, event_key: str) -> None:
         """Release only this worker's failed claim so WAHA may safely retry."""
