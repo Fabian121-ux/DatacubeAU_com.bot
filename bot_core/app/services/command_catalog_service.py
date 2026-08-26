@@ -42,6 +42,15 @@ DEFAULT_COMMANDS = [
         trigger_syntax=".sch",
     ),
     CommandDefinition(
+        "/push",
+        "Admin Commands",
+        "Push the exact quoted peer-DM message into Fabian's private self-DM control inbox.",
+        "Reply to a message, then send @Zina .push",
+        "owner",
+        handler_target="command_control:push",
+        trigger_syntax=".push",
+    ),
+    CommandDefinition(
         "/commands",
         "Admin Commands",
         "List commands visible to the current authority.",
@@ -259,69 +268,54 @@ class CommandCatalogService:
         row = (
             await self.session.execute(select(CommandCatalogEntry).where(CommandCatalogEntry.name == name).limit(1))
         ).scalar_one_or_none()
-        if not row:
+        if row is None:
             return None
-        row.usage_count = int(row.usage_count or 0) + 1
+        row.usage_count += 1
         row.last_used_at = utcnow()
         row.updated_at = utcnow()
         await self.session.flush()
         return row
 
-    async def _fetch_all(self) -> list[CommandCatalogEntry]:
-        return (await self.session.execute(select(CommandCatalogEntry).order_by(CommandCatalogEntry.category, CommandCatalogEntry.name))).scalars().all()
-
     @staticmethod
     def default_handler_target(name: str) -> str:
-        if name in {"/help", "/start", "/status", "/review", "/whoami"}:
-            return f"user_command:{name}"
-        if name == "/global":
-            return "memory:global_chat"
-        if name == "!ask":
-            return "ai:one_shot"
-        if name.startswith("!"):
-            return f"internet_command:{name}"
-        if name.startswith("/"):
-            return f"owner_command:{name}"
-        return f"command:{name}"
+        if name in {"!search", "!google", "!news", "!weather", "!currency", "!youtube"}:
+            return "internet_router"
+        if name in {"!image", "!sticker", "!gif"}:
+            return "media_service"
+        if name in {"/help", "/start", "/status", "/review", "/whoami", "/global", "!ask"}:
+            return "router"
+        return "owner_command_service"
 
     @staticmethod
     def serialize(row: CommandCatalogEntry) -> dict[str, Any]:
-        trigger_syntax = getattr(row, "trigger_syntax", None) or row.name
-        handler_target = getattr(row, "handler_target", None) or CommandCatalogService.default_handler_target(row.name)
         return {
-            "id": row.id,
             "name": row.name,
-            "trigger_syntax": trigger_syntax,
+            "trigger_syntax": row.trigger_syntax,
             "category": row.category,
             "description": row.description,
             "example": row.example,
             "permissions": row.permissions,
-            "handler_target": handler_target,
-            "usage_count": getattr(row, "usage_count", 0) or 0,
-            "last_used_at": getattr(row, "last_used_at", None),
+            "handler_target": row.handler_target,
             "is_enabled": row.is_enabled,
-            "enabled": row.is_enabled,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
+            "usage_count": row.usage_count,
+            "last_used_at": row.last_used_at,
         }
 
     @staticmethod
     def serialize_default(item: CommandDefinition) -> dict[str, Any]:
-        trigger_syntax = item.trigger_syntax or item.name
-        handler_target = item.handler_target or CommandCatalogService.default_handler_target(item.name)
         return {
-            "id": None,
             "name": item.name,
-            "trigger_syntax": trigger_syntax,
+            "trigger_syntax": item.trigger_syntax or item.name,
             "category": item.category,
             "description": item.description,
             "example": item.example,
             "permissions": item.permissions,
-            "handler_target": handler_target,
+            "handler_target": item.handler_target or CommandCatalogService.default_handler_target(item.name),
+            "is_enabled": item.is_enabled,
             "usage_count": 0,
             "last_used_at": None,
-            "is_enabled": item.is_enabled,
-            "enabled": item.is_enabled,
-            "created_at": None,
-            "updated_at": None,
         }
+
+    async def _fetch_all(self) -> list[CommandCatalogEntry]:
+        result = await self.session.execute(select(CommandCatalogEntry))
+        return result.scalars().all()
