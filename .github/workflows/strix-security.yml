@@ -44,20 +44,30 @@ jobs:
           grep -Fq 'production Zina services' .strix/instructions.md
           grep -Fq 'real WhatsApp accounts' .strix/instructions.md
           grep -Fq 'Do not perform destructive data deletion' .strix/instructions.md
-          grep -Fq -- '--target "$GITHUB_WORKSPACE/bot_core"' .github/workflows/strix-security.yml
-          if grep -Eq -- '--target[ =]+https?://' .github/workflows/strix-security.yml; then
-            echo "A network target was added to the Strix workflow; explicit staging authorization is required." >&2
-            exit 1
-          fi
+
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/strix-security.yml').read_text(encoding='utf-8')
+          target_lines = [
+              line.strip()
+              for line in workflow.splitlines()
+              if '--target' in line and not line.lstrip().startswith('#')
+          ]
+          expected = '--target "$GITHUB_WORKSPACE" \\'
+          if target_lines != [expected]:
+              raise SystemExit(
+                  'Strix workflow must contain exactly one local repository target: '
+                  '--target "$GITHUB_WORKSPACE". Network or alternate targets require '
+                  'separate explicit staging authorization.'
+              )
+          PY
 
   local-repo-security-scan:
     if: github.event_name == 'workflow_dispatch'
     needs: policy-validation
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      STRIX_LLM: ${{ secrets.STRIX_LLM }}
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
 
     steps:
       - name: Check out Zina
@@ -67,17 +77,21 @@ jobs:
 
       - name: Validate authorized scope and scan controls
         shell: bash
+        env:
+          SCAN_MODE: ${{ inputs.scan_mode }}
+          MAX_BUDGET: ${{ inputs.max_budget }}
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "Fabian121-ux/DatacubeAU_com.bot"
 
-          case "${{ inputs.scan_mode }}" in
+          case "$SCAN_MODE" in
             quick|standard) ;;
             *) echo "Unsupported scan mode" >&2; exit 2 ;;
           esac
 
-          budget='${{ inputs.max_budget }}'
-          if ! [[ "$budget" =~ ^[0-9]+$ ]] || [ "$budget" -lt 1 ] || [ "$budget" -gt 25 ]; then
+          if ! [[ "$MAX_BUDGET" =~ ^[0-9]+$ ]] || [ "$MAX_BUDGET" -lt 1 ] || [ "$MAX_BUDGET" -gt 25 ]; then
             echo "max_budget must be an integer from 1 to 25" >&2
             exit 2
           fi
@@ -89,6 +103,10 @@ jobs:
 
           test -f .strix/instructions.md
           test -d bot_core
+          test -f requirements.txt
+          test -f pyproject.toml
+          test -f Dockerfile
+          test -f docker-compose.yml
           docker info >/dev/null
 
       - name: Install pinned Strix CLI
@@ -100,13 +118,18 @@ jobs:
 
       - name: Run bounded local-code pentest
         shell: bash
+        env:
+          SCAN_MODE: ${{ inputs.scan_mode }}
+          MAX_BUDGET: ${{ inputs.max_budget }}
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
           set -euo pipefail
           strix \
             --non-interactive \
-            --target "$GITHUB_WORKSPACE/bot_core" \
-            --scan-mode '${{ inputs.scan_mode }}' \
-            --max-budget '${{ inputs.max_budget }}' \
+            --target "$GITHUB_WORKSPACE" \
+            --scan-mode "$SCAN_MODE" \
+            --max-budget "$MAX_BUDGET" \
             --instruction-file "$GITHUB_WORKSPACE/.strix/instructions.md"
 
       - name: Verify Strix completed normally
