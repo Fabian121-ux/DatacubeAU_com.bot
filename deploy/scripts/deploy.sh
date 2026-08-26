@@ -16,12 +16,29 @@ echo "========================================="
 # Check environment file
 if [ ! -f "$ENV_FILE" ]; then
     echo "Error: $ENV_FILE not found!"
-    echo "Copy from .env.production.example and configure"
+    echo "Copy from .env.example or your managed production template and configure it"
     exit 1
 fi
 
 # Load environment
 export $(cat "$ENV_FILE" | grep -v '^#' | xargs)
+
+# Deleted-message lifecycle requires the combined event gateway and message.revoked.
+# Refuse a stale production env instead of silently letting Compose override safe defaults.
+EXPECTED_HOOK_URL="http://api:8080/webhooks/waha-events"
+if [ "${WHATSAPP_HOOK_URL:-}" != "$EXPECTED_HOOK_URL" ]; then
+    echo "Error: WHATSAPP_HOOK_URL must be $EXPECTED_HOOK_URL"
+    echo "Current value: ${WHATSAPP_HOOK_URL:-<unset>}"
+    exit 1
+fi
+case ",${WHATSAPP_HOOK_EVENTS:-}," in
+    *,message.revoked,*) ;;
+    *)
+        echo "Error: WHATSAPP_HOOK_EVENTS must include message.revoked"
+        echo "Recommended value: message,message.any,message.revoked"
+        exit 1
+        ;;
+esac
 
 echo "Building and starting services..."
 docker compose build
