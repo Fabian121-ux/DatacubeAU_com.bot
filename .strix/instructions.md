@@ -5,7 +5,7 @@ You are performing a defensive security assessment of Zina, Fabian's own WhatsAp
 ## Authorized target
 
 - Only the checked-out `Fabian121-ux/DatacubeAU_com.bot` repository content supplied as the Strix target.
-- The scan target is local source code under `bot_core/` on an ephemeral CI runner.
+- The scan target is the repository root on an ephemeral CI runner so application code under `bot_core/` and repository-level dependency, Docker, Compose, environment-template, deployment and CI configuration can be reviewed together.
 - Synthetic/local test execution created from this checkout is permitted when Strix needs it for validation.
 
 ## Explicitly out of scope
