@@ -7,6 +7,7 @@ You are performing a defensive security assessment of Zina, Fabian's own WhatsAp
 - Only the checked-out `Fabian121-ux/DatacubeAU_com.bot` repository content supplied as the Strix target.
 - The scan target is the repository root on an ephemeral CI runner so application code under `bot_core/` and repository-level dependency, Docker, Compose, environment-template, deployment and CI configuration can be reviewed together.
 - Synthetic/local test execution created from this checkout is permitted when Strix needs it for validation.
+- The workflow pins Strix 1.5.3 and runs autonomous sandbox workloads on a run-unique Docker internal network with bounded memory, CPU, PID, and log usage. Those controls are part of the authorization boundary and must not be removed or relaxed without a separate security review.
 
 ## Explicitly out of scope
 
