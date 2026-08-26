@@ -23,18 +23,10 @@ class ViewOnceCommandResult:
 
 
 class ViewOnceCommandService:
-    """OWNER-only view-once command implementation over real WAHA evidence.
-
-    Persistent media retention is deliberately unavailable until Zina has a private,
-    bounded byte-storage boundary. `.vv` can still perform one immediate private
-    delivery when the authenticated quoted WAHA snapshot contains both explicit
-    view-once evidence and a retrievable media URL. The URL exists only in memory and
-    in the existing transient outbound queue needed to deliver it; it is never copied
-    into view-once metadata or audit records.
-    """
+    """OWNER-only view-once command implementation over real WAHA evidence."""
 
     CONFIG_RETENTION_KEY = "view_once.retention_enabled"
-    OPEN_COMMANDS = frozenset({".vv", ".vvopen", "/vvopen"})
+    OPEN_COMMANDS = frozenset({".vvopen", "/vvopen"})
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -64,20 +56,15 @@ class ViewOnceCommandService:
         normalized_args = (args or "").strip()
         if command in self.OPEN_COMMANDS:
             return await self._open(message, owner_chat_id, request_id, transport_message_id)
-        if command == ".vv":
-            return await self._open(message, owner_chat_id, request_id, transport_message_id)
         if command == ".vvretain":
             return await self._retention(normalized_args, owner_chat_id, request_id, transport_message_id)
 
-        subcommand = ""
-        rest = ""
-        if command == ".vv":
-            subcommand, _, rest = normalized_args.partition(" ")
-        elif command.startswith(".vv "):
-            subcommand = command[4:].strip()
-            rest = normalized_args
-        else:
-            subcommand, _, rest = normalized_args.partition(" ")
+        # `.vv` with no arguments is the open/retrieve shorthand.  With arguments it
+        # is the namespace for info/list/delete; dispatch subcommands before opening.
+        if command == ".vv" and not normalized_args:
+            return await self._open(message, owner_chat_id, request_id, transport_message_id)
+
+        subcommand, _, rest = normalized_args.partition(" ")
         subcommand = subcommand.lower().strip()
 
         if subcommand == "info":
@@ -207,12 +194,7 @@ class ViewOnceCommandService:
                 action=action,
                 entity_type="view_once_media",
                 entity_id=str(details.get("source_message_id") or "") or None,
-                details_json={
-                    "command": command,
-                    "request_id": request_id,
-                    "transport_message_id": transport_message_id,
-                    **details,
-                },
+                details_json={"command": command, "request_id": request_id, "transport_message_id": transport_message_id, **details},
             )
         )
         await self.session.flush()
