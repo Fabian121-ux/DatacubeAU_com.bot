@@ -52,7 +52,7 @@ jobs:
           target_lines = [
               line.strip()
               for line in workflow.splitlines()
-              if '--target' in line and not line.lstrip().startswith('#')
+              if line.strip().startswith('--target ')
           ]
           expected = '--target "$GITHUB_WORKSPACE" \\'
           if target_lines != [expected]:
