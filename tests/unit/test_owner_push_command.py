@@ -38,13 +38,38 @@ def _push_event(*, command_id: str = "PUSH-CMD-1", body: str = "@Zina .push", qu
 
 
 async def _seed_source(db_session, *, message_type: str = "text", text: str = "Please bring the signed document") -> Message:
-    amanda = Contact(
-        whatsapp_id=AMANDA_ID,
-        chat_id=AMANDA_ID,
-        display_name="Amanda Christabel",
-        contact_name="Amanda Christabel",
-    )
-    db_session.add_all([_owner(), amanda])
+    owner = (
+        await db_session.execute(
+            select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == OWNER_ID).limit(1)
+        )
+    ).scalar_one_or_none()
+    if owner is None:
+        owner = _owner()
+        db_session.add(owner)
+    else:
+        owner.name = "Fabian"
+        owner.whatsapp_number = "2348000000001"
+        owner.role = "primary_admin"
+        owner.permission_level = "owner"
+        owner.is_primary = True
+        owner.is_enabled = True
+
+    amanda = (
+        await db_session.execute(select(Contact).where(Contact.whatsapp_id == AMANDA_ID).limit(1))
+    ).scalar_one_or_none()
+    if amanda is None:
+        amanda = Contact(
+            whatsapp_id=AMANDA_ID,
+            chat_id=AMANDA_ID,
+            display_name="Amanda Christabel",
+            contact_name="Amanda Christabel",
+        )
+        db_session.add(amanda)
+    else:
+        amanda.chat_id = AMANDA_ID
+        amanda.display_name = "Amanda Christabel"
+        amanda.contact_name = "Amanda Christabel"
+
     await db_session.flush()
     source = Message(
         contact_id=amanda.id,
