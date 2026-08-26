@@ -41,6 +41,10 @@ class PushCommandService:
     pretending that an unavailable historical source exists while still supporting a
     quoted owner message whose transport ID is present only in the current WAHA event.
 
+    WAHA's normalized ReplyToMessage contract does not guarantee sender direction, so
+    snapshot-only evidence is never attributed to Fabian or the peer unless a durable
+    Message row already establishes that direction.
+
     Private notes are intentionally not accepted from a peer DM: anything Fabian types
     there is visible to that peer before Zina receives the webhook. A later private
     self-DM annotation flow can add notes without making a false privacy promise.
@@ -64,8 +68,6 @@ class PushCommandService:
         if not owner_chat_id:
             return PushCommandResult(consumed=True, error="owner self-DM identity unavailable")
 
-        # Do not describe peer-visible command arguments as private. `.push` must be
-        # sent alone while replying to the source message.
         if (args or "").strip():
             return await self._queue_private_error(
                 owner_chat_id,
@@ -246,20 +248,17 @@ class PushCommandService:
         reply_to = payload.get("replyTo")
         if not isinstance(reply_to, dict):
             return None
-        body = str(reply_to.get("body") or reply_to.get("caption") or "").strip()
+        body = str(reply_to.get("body") or "").strip()
         if not body:
             return None
-        from_me = reply_to.get("fromMe")
-        direction = "outbound" if from_me is True else "inbound" if from_me is False else None
-        message_type = str(reply_to.get("type") or reply_to.get("messageType") or "text").strip() or "text"
         return PushSource(
             source_message_id=quoted_id,
             chat_id=str(getattr(message, "chat_id", "") or payload.get("chatId") or ""),
             db_message_id=None,
             contact_id=None,
-            direction=direction,
+            direction=None,
             message_text=body,
-            message_type=message_type,
+            message_type="media" if bool(reply_to.get("hasMedia")) else "text",
             created_at=None,
             evidence_source="waha_reply_snapshot",
         )
@@ -285,7 +284,7 @@ class PushCommandService:
                 or "Unknown contact"
             )
         else:
-            sender = "Quoted WhatsApp message (sender not present in reply snapshot)"
+            sender = "Quoted WhatsApp message (sender direction unavailable in WAHA reply snapshot)"
         body = (source.message_text or "").strip() or "(no text/caption captured)"
         parts = [
             "📌 Pushed message",
