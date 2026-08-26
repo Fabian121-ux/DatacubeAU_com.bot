@@ -73,6 +73,10 @@ class CommandControlService:
             return None
         command, args = parsed
 
+        # A fresh deployment may have only OWNER_WHATSAPP_IDS configured. Materialize
+        # those identities before querying the primary owner so the very first self-DM
+        # or peer-DM control command is usable and still backed by PostgreSQL authority.
+        await self.admins.ensure_from_config()
         primary_owner = await self._primary_owner()
 
         # A normal fromMe peer-DM payload may identify the peer as sender/from/chatId,
@@ -244,6 +248,17 @@ class CommandControlService:
             return None
         args = (match.group(2) or "").strip()
         return command, args
+
+    @classmethod
+    def is_non_takeover_control(cls, text_value: str) -> bool:
+        """Return True for owner control text that must not count as a human reply.
+
+        `.push` is intentionally usable from a peer DM. It archives a quoted message
+        into Fabian's self-DM and should not resume Fabian or cancel Zina's deferred
+        reply in that peer conversation.
+        """
+        parsed = cls.parse(text_value)
+        return bool(parsed and parsed[0] in {".push", cls.PUSH_COMMAND})
 
     @staticmethod
     def _slash_alias(command: str) -> str | None:
