@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 
@@ -205,6 +206,43 @@ async def test_eventless_accepted_message_schedules_opportunistic_reconciliation
     assert response["status"] == "accepted"
     await tasks()
     assert captured == [("EVENTLESS-1", AMANDA_ID)]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_worker_survives_transient_iteration_failure(monkeypatch):
+    calls = 0
+    sleeps: list[int] = []
+    logged: list[dict[str, object]] = []
+
+    async def _batch(*, limit: int) -> int:
+        nonlocal calls
+        calls += 1
+        assert limit == 50
+        if calls == 1:
+            raise RuntimeError("temporary database disconnect")
+        raise asyncio.CancelledError
+
+    async def _sleep(seconds: int) -> None:
+        sleeps.append(seconds)
+
+    def _log_event(_logger, _level, event: str, **fields):
+        logged.append({"event": event, **fields})
+
+    monkeypatch.setattr(reconciliation_worker, "_reconcile_pending_batch", _batch)
+    monkeypatch.setattr(reconciliation_worker.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(reconciliation_worker, "log_event", _log_event)
+
+    with pytest.raises(asyncio.CancelledError):
+        await reconciliation_worker.deleted_message_reconciliation_worker()
+
+    assert calls == 2
+    assert sleeps == [5]
+    assert logged == [
+        {
+            "event": "message_revocation_reconciliation_iteration_failed",
+            "error_type": "RuntimeError",
+        }
+    ]
 
 
 def test_production_docs_and_deploy_script_require_revocation_gateway() -> None:
