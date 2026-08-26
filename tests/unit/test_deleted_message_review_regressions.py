@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import BackgroundTasks
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from app.api import waha_events
 from app.models.schema import AuditLog, Contact, Message
@@ -127,7 +127,7 @@ def test_production_docs_and_deploy_script_require_revocation_gateway() -> None:
 
 
 def test_migration_backfills_and_indexes_nested_transport_ids() -> None:
-    migration = Path("bot_core/migrations/026_deleted_message_lifecycle.sql").read_text(encoding="utf-8")
+    migration = Path("bot_core/migrations/027_deleted_message_source_id_hardening.sql").read_text(encoding="utf-8")
     assert "raw_payload_json->'message'->>'id'" in migration
     assert "zina_populate_message_source_id" in migration
     assert "idx_messages_raw_nested_message_id" in migration
