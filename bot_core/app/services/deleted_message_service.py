@@ -25,7 +25,9 @@ class DeletedMessageService:
 
     This service never creates recovered content for a message Zina did not observe.
     It only marks an already-persisted Message as revoked and renders bounded owner-only
-    evidence from that authoritative row.
+    evidence from that authoritative row. If a revoke reaches Zina just before the
+    corresponding normal message transaction commits, the unmatched revoke remains as
+    durable AuditLog evidence and is reconciled when that message event finishes.
     """
 
     DEFAULT_LIMIT = 1
@@ -80,6 +82,7 @@ class DeletedMessageService:
                         "revoked_message_id": revoked_id,
                         "chat_id": chat_id,
                         "event_id": event_id,
+                        "revoked_at": revoked_at.isoformat(),
                         "content_recovered": False,
                     },
                     created_at=utcnow(),
@@ -137,6 +140,119 @@ class DeletedMessageService:
             message_id=int(row["id"]),
             chat_id=str(row.get("chat_id") or "") or None,
         )
+
+    async def reconcile_pending_for_message(
+        self,
+        *,
+        source_message_id: str,
+        chat_id: str | None,
+    ) -> bool:
+        """Apply a previously unmatched revoke once the original Message exists.
+
+        WAHA can deliver independent webhook events close together. If `message.revoked`
+        wins the race against the normal `message` commit, `record_revocation` keeps a
+        compact unmatched audit record rather than synthesizing deleted content. The
+        event gateway calls this method after normal message processing so the durable
+        original can inherit the earlier revoke lifecycle deterministically.
+        """
+        source_message_id = (source_message_id or "").strip()
+        if not source_message_id:
+            return False
+
+        params: dict[str, Any] = {"source_id": source_message_id}
+        chat_clause = ""
+        if chat_id:
+            params["chat_id"] = chat_id
+            chat_clause = " AND m.chat_id = :chat_id"
+
+        message = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT m.id, m.chat_id, m.lifecycle_status
+                    FROM messages m
+                    WHERE (
+                        m.source_message_id = :source_id
+                        OR m.raw_payload_json->>'id' = :source_id
+                    )
+                    """
+                    + chat_clause
+                    + " ORDER BY m.id DESC LIMIT 1 FOR UPDATE"
+                ),
+                params,
+            )
+        ).mappings().first()
+        if message is None or str(message.get("lifecycle_status") or "active").lower() == "revoked":
+            return False
+
+        audit_params: dict[str, Any] = {"source_id": source_message_id}
+        audit_chat_clause = ""
+        if chat_id:
+            audit_params["chat_id"] = chat_id
+            audit_chat_clause = " AND (a.details_json->>'chat_id' IS NULL OR a.details_json->>'chat_id' = :chat_id)"
+        pending = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT a.id, a.created_at, a.details_json
+                    FROM audit_logs a
+                    WHERE a.action = 'message_revocation_unmatched'
+                      AND a.details_json->>'revoked_message_id' = :source_id
+                    """
+                    + audit_chat_clause
+                    + " ORDER BY a.created_at DESC, a.id DESC LIMIT 1"
+                ),
+                audit_params,
+            )
+        ).mappings().first()
+        if pending is None:
+            return False
+
+        details = pending.get("details_json") if isinstance(pending.get("details_json"), dict) else {}
+        revoked_at = self._parse_datetime(details.get("revoked_at")) or pending.get("created_at") or utcnow()
+        event_id = self._clean_text(details.get("event_id"))
+        metadata = {
+            "revokedMessageId": source_message_id,
+            "late_reconciled": True,
+            "source_unmatched_audit_id": int(pending["id"]),
+        }
+        await self.session.execute(
+            text(
+                """
+                UPDATE messages
+                SET source_message_id = COALESCE(source_message_id, :source_id),
+                    lifecycle_status = 'revoked',
+                    revoked_at = COALESCE(revoked_at, :revoked_at),
+                    revoked_event_id = COALESCE(revoked_event_id, :event_id),
+                    revoke_metadata_json = COALESCE(revoke_metadata_json, CAST(:metadata AS JSONB))
+                WHERE id = :message_id
+                  AND lifecycle_status <> 'revoked'
+                """
+            ),
+            {
+                "message_id": int(message["id"]),
+                "source_id": source_message_id,
+                "revoked_at": revoked_at,
+                "event_id": event_id,
+                "metadata": self._json_text(metadata),
+            },
+        )
+        self.session.add(
+            AuditLog(
+                action="message_revocation_late_reconciled",
+                entity_type="message",
+                entity_id=str(message["id"]),
+                details_json={
+                    "revoked_message_id": source_message_id,
+                    "chat_id": message.get("chat_id"),
+                    "source_unmatched_audit_id": int(pending["id"]),
+                    "content_recovered": True,
+                },
+                created_at=utcnow(),
+            )
+        )
+        await self.session.flush()
+        return True
 
     async def render_command(self, args: str) -> str:
         mode, limit = self._parse_args(args)
@@ -295,6 +411,20 @@ class DeletedMessageService:
             return datetime.fromtimestamp(number, tz=timezone.utc)
         except (TypeError, ValueError, OSError, OverflowError):
             return utcnow()
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     @classmethod
     def _metadata(cls, payload: dict[str, Any]) -> dict[str, Any]:
