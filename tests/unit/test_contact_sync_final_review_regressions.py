@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
@@ -8,6 +9,9 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.message_normalizer import NormalizedMessage
+from app.core.router import InboundRouter
+from app.models.enums import ChatType
 from app.models.schema import Contact
 from app.services.contact_sync_service import ContactSyncService
 from app.services.owner_management_command_service import OwnerManagementCommandService
@@ -131,5 +135,77 @@ async def test_contact_sync_advisory_lock_serializes_authoritative_scans():
             ).scalar_one()
             assert acquired_after_release is True
             await second.rollback()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_inbound_refresh_waits_for_newer_contact_sync_provenance():
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_pre_ping=True)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    whatsapp_id = "2348077777701@c.us"
+    try:
+        async with Session() as setup:
+            setup.add(
+                Contact(
+                    whatsapp_id=whatsapp_id,
+                    push_name="Before Sync",
+                    identity_json={"is_saved_contact": False},
+                )
+            )
+            await setup.commit()
+
+        async with Session() as sync_session, Session() as inbound_session:
+            synced = (
+                await sync_session.execute(
+                    select(Contact).where(Contact.whatsapp_id == whatsapp_id).with_for_update()
+                )
+            ).scalar_one()
+            sync_at = datetime.now(timezone.utc)
+            synced.contact_name = "Saved Contact"
+            synced.identity_json = {
+                "is_saved_contact": True,
+                "saved_contact_synced_at": sync_at.isoformat(),
+            }
+            await sync_session.flush()
+
+            normalized = NormalizedMessage(
+                chat_id=whatsapp_id,
+                sender_id=whatsapp_id,
+                sender_name="Profile Name",
+                chat_type=ChatType.DM,
+                message_text="hello",
+                normalized_text="hello",
+                message_type="text",
+                is_bot_mentioned=False,
+                payload={},
+                sender_identity={
+                    "push_name": "Profile Name",
+                    "sender_id": whatsapp_id,
+                    "chat_id": whatsapp_id,
+                },
+            )
+            inbound_task = asyncio.create_task(
+                InboundRouter(inbound_session)._get_or_create_contact(normalized)
+            )
+            await asyncio.sleep(0.05)
+            assert inbound_task.done() is False
+
+            await sync_session.commit()
+            inbound_contact = await asyncio.wait_for(inbound_task, timeout=2)
+            assert inbound_contact.identity_json["is_saved_contact"] is True
+            assert inbound_contact.identity_json["saved_contact_synced_at"] == sync_at.isoformat()
+            await inbound_session.commit()
+
+        async with Session() as verify:
+            final = (
+                await verify.execute(select(Contact).where(Contact.whatsapp_id == whatsapp_id))
+            ).scalar_one()
+            assert final.identity_json["is_saved_contact"] is True
+            assert final.identity_json["saved_contact_synced_at"] == sync_at.isoformat()
     finally:
         await engine.dispose()
