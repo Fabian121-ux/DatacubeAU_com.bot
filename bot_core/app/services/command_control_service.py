@@ -16,6 +16,7 @@ from app.services.command_catalog_service import CommandCatalogService
 from app.services.natural_action_planner_service import DEFAULT_OWNER_TIMEZONE, NaturalActionPlannerService
 from app.services.owner_command_service import OwnerCommandService
 from app.services.owner_management_command_service import OwnerManagementCommandService
+from app.services.push_command_service import PushCommandService
 from app.utils.time import utcnow
 
 
@@ -30,16 +31,17 @@ class CommandControlResult:
 
 
 class CommandControlService:
-    """Owner self-DM command surface backed by existing Zina subsystems.
+    """Owner command surface backed by existing Zina subsystems.
 
-    This is a parsing/session adapter, not a second command engine. Existing slash
-    commands still execute through OwnerCommandService; guided scheduling persists a
-    short-lived draft in PostgreSQL bot_config and saves through the existing
-    NaturalActionPlanner -> Tool Dispatcher -> ScheduledActionService chain.
+    The self-DM remains the privileged control inbox for management and scheduling.
+    `.push` is the deliberate exception: the verified primary owner may invoke it while
+    replying to a message in another DM, and the result is delivered privately to the
+    owner self-DM through the existing outbound queue.
     """
 
     DRAFT_TTL = timedelta(minutes=30)
     SCHEDULE_COMMAND = "/schedule"
+    PUSH_COMMAND = "/push"
     _GUIDED = {".sch", ".target", ".message", ".date", ".time", ".save", ".cancel"}
     _MANAGEMENT_ALIASES = {
         ".commands": "/commands",
@@ -88,10 +90,39 @@ class CommandControlService:
             )
 
         primary_owner = await self._primary_owner()
+        permission = (admin.permission_level or "").strip().lower()
+        is_primary_owner = bool(
+            primary_owner is not None
+            and admin.id == primary_owner.id
+            and permission == "owner"
+        )
+
+        # `.push` is intentionally usable from a normal DM because the quoted message
+        # lives in that source chat. Authenticated WAHA `fromMe` + primary-owner identity
+        # is still mandatory; all results go to Fabian's private self-DM, never the source.
+        if command in {".push", self.PUSH_COMMAND}:
+            if not is_primary_owner or getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
+                return None
+            if not await self.catalog.is_enabled(self.PUSH_COMMAND):
+                return None
+            pushed = await PushCommandService(self.session).handle(
+                message,
+                owner=primary_owner,
+                args=args,
+                transport_message_id=transport_message_id,
+                request_id=request_id,
+            )
+            await self.catalog.record_usage(self.PUSH_COMMAND)
+            return CommandControlResult(
+                consumed=pushed.consumed,
+                command=self.PUSH_COMMAND,
+                outbound_queue_id=pushed.outbound_queue_id,
+                error=pushed.error,
+            )
+
         if primary_owner is None or not self._is_self_dm(message, primary_owner) or admin.id != primary_owner.id:
             return None
 
-        permission = (admin.permission_level or "").strip().lower()
         if command in self._GUIDED or command == self.SCHEDULE_COMMAND:
             if permission != "owner":
                 await self._audit(
@@ -203,6 +234,7 @@ class CommandControlService:
                 "listcommands": (".commands", ""),
                 "list commands": (".commands", ""),
                 "list contacts": (".contacts", ""),
+                "push": (".push", ""),
             }
             if natural in natural_aliases:
                 return natural_aliases[natural]
