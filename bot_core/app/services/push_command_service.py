@@ -18,13 +18,32 @@ class PushCommandResult:
     error: str | None = None
 
 
+@dataclass(slots=True)
+class PushSource:
+    source_message_id: str
+    chat_id: str
+    db_message_id: int | None
+    contact_id: int | None
+    direction: str | None
+    message_text: str
+    message_type: str
+    created_at: Any | None
+    evidence_source: str
+
+
 class PushCommandService:
     """Push a quoted WhatsApp message into Fabian's private self-DM control inbox.
 
-    This service is intentionally narrow: it resolves the quoted source by WAHA message
-    ID from Zina's existing PostgreSQL message history, creates a safe text projection,
-    and hands delivery to the existing outbound queue. It does not create a parallel
-    message store, forward raw WAHA payloads, or persist private notes as Memory.
+    Zina prefers its existing PostgreSQL Message evidence. For owner-authored or other
+    quoted messages that were never stored in Message history, WAHA's authenticated
+    `replyTo` snapshot is used as bounded transport evidence and the resulting source
+    ID/text metadata is persisted on the owner-only outbound queue record. This avoids
+    pretending that an unavailable historical source exists while still supporting a
+    quoted owner message whose transport ID is present only in the current WAHA event.
+
+    Private notes are intentionally not accepted from a peer DM: anything Fabian types
+    there is visible to that peer before Zina receives the webhook. A later private
+    self-DM annotation flow can add notes without making a false privacy promise.
     """
 
     COMMAND = "/push"
@@ -45,6 +64,15 @@ class PushCommandService:
         if not owner_chat_id:
             return PushCommandResult(consumed=True, error="owner self-DM identity unavailable")
 
+        # Do not describe peer-visible command arguments as private. `.push` must be
+        # sent alone while replying to the source message.
+        if (args or "").strip():
+            return await self._queue_private_error(
+                owner_chat_id,
+                "Send .push by itself while replying to the source message. Private notes are not accepted from a peer chat because that text is visible to the peer.",
+                transport_message_id=transport_message_id,
+            )
+
         quoted_id = self._quoted_message_id(getattr(message, "payload", None))
         if not quoted_id:
             return await self._queue_private_error(
@@ -57,20 +85,24 @@ class PushCommandService:
         if existing is not None:
             return PushCommandResult(consumed=True, outbound_queue_id=existing.id)
 
-        source = await self._source_message(chat_id=str(message.chat_id), quoted_id=quoted_id)
+        source_message = await self._source_message(chat_id=str(message.chat_id), quoted_id=quoted_id)
+        source = self._message_source(source_message, quoted_id=quoted_id) if source_message else None
+        if source is None:
+            source = self._reply_snapshot_source(message, quoted_id=quoted_id)
         if source is None:
             return await self._queue_private_error(
                 owner_chat_id,
-                "I can see the quoted WhatsApp message ID, but that source message is not in Zina's captured history.",
+                "I can see the quoted WhatsApp message ID, but Zina has neither captured history nor a usable WAHA reply snapshot for that source.",
                 transport_message_id=transport_message_id,
             )
 
         source_contact = None
         if source.contact_id is not None:
             source_contact = await self.session.get(Contact, source.contact_id)
+        if source_contact is None:
+            source_contact = await self._contact_for_chat(source.chat_id)
 
-        note = self._private_note(args)
-        projection = self._render_projection(source, source_contact, quoted_id=quoted_id, note=note)
+        projection = self._render_projection(source, source_contact)
         queued = OutboundMessage(
             chat_id=owner_chat_id,
             message_text=projection,
@@ -82,9 +114,11 @@ class PushCommandService:
                 "source": "owner_push",
                 "command": self.COMMAND,
                 "command_message_id": transport_message_id,
-                "source_message_id": quoted_id,
+                "source_message_id": source.source_message_id,
                 "source_chat_id": source.chat_id,
-                "source_db_message_id": source.id,
+                "source_db_message_id": source.db_message_id,
+                "source_evidence": source.evidence_source,
+                "source_message_type": source.message_type,
             },
             updated_at=utcnow(),
         )
@@ -95,15 +129,15 @@ class PushCommandService:
             AuditLog(
                 action="message_pushed_to_owner",
                 entity_type="message",
-                entity_id=str(source.id),
+                entity_id=str(source.db_message_id or source.source_message_id),
                 details_json={
                     "request_id": request_id,
                     "transport_message_id": transport_message_id,
-                    "source_message_id": quoted_id,
+                    "source_message_id": source.source_message_id,
                     "source_chat_id": source.chat_id,
                     "source_message_type": source.message_type,
+                    "source_evidence": source.evidence_source,
                     "outbound_queue_id": queued.id,
-                    "note_attached": bool(note),
                 },
             )
         )
@@ -122,6 +156,15 @@ class PushCommandService:
                 ),
             )
             .order_by(Message.id.desc())
+            .limit(1)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def _contact_for_chat(self, chat_id: str) -> Contact | None:
+        stmt = (
+            select(Contact)
+            .where(or_(Contact.chat_id == chat_id, Contact.whatsapp_id == chat_id))
+            .order_by(Contact.id.desc())
             .limit(1)
         )
         return (await self.session.execute(stmt)).scalar_one_or_none()
@@ -148,6 +191,9 @@ class PushCommandService:
         *,
         transport_message_id: str | None,
     ) -> PushCommandResult:
+        existing = await self._existing_push(transport_message_id)
+        if existing is not None:
+            return PushCommandResult(consumed=True, outbound_queue_id=existing.id, error=text)
         queued = OutboundMessage(
             chat_id=owner_chat_id,
             message_text=text,
@@ -179,6 +225,46 @@ class PushCommandService:
         return text or None
 
     @staticmethod
+    def _message_source(source: Message, *, quoted_id: str) -> PushSource:
+        return PushSource(
+            source_message_id=quoted_id,
+            chat_id=source.chat_id,
+            db_message_id=source.id,
+            contact_id=source.contact_id,
+            direction=source.direction,
+            message_text=source.message_text,
+            message_type=source.message_type or "text",
+            created_at=source.created_at,
+            evidence_source="postgres_message",
+        )
+
+    @staticmethod
+    def _reply_snapshot_source(message: Any, *, quoted_id: str) -> PushSource | None:
+        payload = getattr(message, "payload", None)
+        if not isinstance(payload, dict):
+            return None
+        reply_to = payload.get("replyTo")
+        if not isinstance(reply_to, dict):
+            return None
+        body = str(reply_to.get("body") or reply_to.get("caption") or "").strip()
+        if not body:
+            return None
+        from_me = reply_to.get("fromMe")
+        direction = "outbound" if from_me is True else "inbound" if from_me is False else None
+        message_type = str(reply_to.get("type") or reply_to.get("messageType") or "text").strip() or "text"
+        return PushSource(
+            source_message_id=quoted_id,
+            chat_id=str(getattr(message, "chat_id", "") or payload.get("chatId") or ""),
+            db_message_id=None,
+            contact_id=None,
+            direction=direction,
+            message_text=body,
+            message_type=message_type,
+            created_at=None,
+            evidence_source="waha_reply_snapshot",
+        )
+
+    @staticmethod
     def _owner_chat_id(owner: AdminAccount) -> str | None:
         for raw in (owner.normalized_whatsapp_id, owner.whatsapp_number):
             normalized = AdminManagementService.normalize_whatsapp_id(raw)
@@ -187,25 +273,10 @@ class PushCommandService:
         return None
 
     @staticmethod
-    def _private_note(args: str) -> str | None:
-        text = (args or "").strip()
-        if not text:
-            return None
-        if text.lower().startswith("note "):
-            text = text[5:].strip()
-        return text[:1000] or None
-
-    @staticmethod
-    def _render_projection(
-        source: Message,
-        source_contact: Contact | None,
-        *,
-        quoted_id: str,
-        note: str | None,
-    ) -> str:
+    def _render_projection(source: PushSource, source_contact: Contact | None) -> str:
         if source.direction == "outbound":
             sender = "Fabian"
-        else:
+        elif source.direction == "inbound":
             sender = (
                 (source_contact.display_name if source_contact else None)
                 or (source_contact.contact_name if source_contact else None)
@@ -213,20 +284,21 @@ class PushCommandService:
                 or (source_contact.whatsapp_id if source_contact else None)
                 or "Unknown contact"
             )
+        else:
+            sender = "Quoted WhatsApp message (sender not present in reply snapshot)"
         body = (source.message_text or "").strip() or "(no text/caption captured)"
         parts = [
             "📌 Pushed message",
             "",
             f"From: {sender}",
             f"Chat: {source.chat_id}",
-            f"Sent: {source.created_at.isoformat() if source.created_at else 'unknown'}",
+            f"Sent: {source.created_at.isoformat() if source.created_at else 'timestamp unavailable in reply snapshot'}",
             f"Type: {source.message_type or 'unknown'}",
-            f"Source ID: {quoted_id}",
+            f"Source ID: {source.source_message_id}",
+            f"Evidence: {source.evidence_source}",
             "",
             body,
         ]
         if (source.message_type or "text").lower() != "text":
             parts.extend(["", "Media: original media is not forwarded by .push in this version; captured text/caption and metadata are preserved."])
-        if note:
-            parts.extend(["", f"Private note: {note}"])
         return "\n".join(parts)
