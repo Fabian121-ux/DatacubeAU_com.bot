@@ -24,7 +24,9 @@ async def waha_events_webhook(
     """WAHA event gateway that adds durable revoke handling without duplicating message routing.
 
     Normal `message`/`message.any` traffic delegates to the established inbound webhook.
-    Only `message.revoked` is handled here, then persisted onto the existing Message row.
+    Only `message.revoked` is handled here. After a normal message finishes, the gateway
+    also checks whether an earlier unmatched revoke was waiting for that exact source ID;
+    this closes the rare revoke-before-message-commit race without synthesizing content.
     """
     try:
         event = await request.json()
@@ -35,7 +37,29 @@ async def waha_events_webhook(
 
     event_name = inbound._resolve_event_name(event)
     if event_name != "message.revoked":
-        return await inbound.waha_webhook(request, background_tasks)
+        response = await inbound.waha_webhook(request, background_tasks)
+        if event_name in {"message", "message.any"} and response.get("status") in {"accepted", "duplicate"}:
+            payload = inbound._resolve_payload(event)
+            source_message_id = inbound._resolve_message_id(payload)
+            chat_id = inbound._resolve_chat_id(payload)
+            if source_message_id:
+                async with SessionLocal() as db:
+                    reconciled = await DeletedMessageService(db).reconcile_pending_for_message(
+                        source_message_id=source_message_id,
+                        chat_id=chat_id,
+                    )
+                    if reconciled:
+                        await db.commit()
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "message_revocation_late_reconciled",
+                            message_id=source_message_id,
+                            chat_id=chat_id,
+                        )
+                    else:
+                        await db.rollback()
+        return response
 
     if not inbound._webhook_authenticated(request):
         log_event(logger, logging.WARNING, "webhook_ignored", reason="unauthorized_webhook", event_name=event_name)
