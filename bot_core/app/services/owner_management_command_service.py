@@ -12,6 +12,7 @@ from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.contact_intelligence_service import ContactIntelligenceService
 from app.services.contact_sync_service import ContactSyncService
+from app.services.deleted_message_service import DeletedMessageService
 from app.utils.time import utcnow
 
 
@@ -83,6 +84,8 @@ class OwnerManagementCommandService:
         "/contacts",
         "/contact",
         "/contactsync",
+        "/deleted-message",
+        ".dm",
     }
     PROTECTED_ENABLEMENT_COMMANDS = frozenset({"/commands", "/cmdinfo", "/cmdon", "/cmdoff"})
     DEFAULT_LIST_LIMIT = 20
@@ -111,28 +114,34 @@ class OwnerManagementCommandService:
             await self._audit(command, "denied", request_id, transport_message_id, {"reason": "owner_required"})
             return ManagementCommandResult(command, "Owner command. Access denied.", "owner permission required")
 
+        canonical_command = "/deleted-message" if command == ".dm" else command
         try:
-            if command == "/commands":
+            if canonical_command == "/commands":
                 reply = await self._commands(normalized_permission)
-            elif command == "/cmdinfo":
+            elif canonical_command == "/cmdinfo":
                 reply = await self._cmdinfo(args)
-            elif command in {"/cmdon", "/cmdoff"}:
-                reply = await self._toggle_command(args, enabled=command == "/cmdon")
-            elif command == "/config":
+            elif canonical_command in {"/cmdon", "/cmdoff"}:
+                reply = await self._toggle_command(args, enabled=canonical_command == "/cmdon")
+            elif canonical_command == "/config":
                 reply = await self._config(args)
-            elif command == "/contacts":
+            elif canonical_command == "/contacts":
                 reply = await self._contact_list(args)
-            elif command == "/contact":
+            elif canonical_command == "/contact":
                 reply = await self._contact_info(args)
-            else:
+            elif canonical_command == "/contactsync":
                 reply = await self._contact_sync()
+            else:
+                if not await self.catalog.is_enabled("/deleted-message"):
+                    reply = "Deleted-message inspection is currently disabled."
+                else:
+                    reply = await DeletedMessageService(self.session).render_command(args)
         except ValueError as exc:
-            await self._audit(command, "invalid", request_id, transport_message_id, {"reason": str(exc)[:180]})
-            return ManagementCommandResult(command, f"Command error: {exc}", str(exc))
+            await self._audit(canonical_command, "invalid", request_id, transport_message_id, {"reason": str(exc)[:180]})
+            return ManagementCommandResult(canonical_command, f"Command error: {exc}", str(exc))
 
-        await self.catalog.record_usage(command)
-        await self._audit(command, "ok", request_id, transport_message_id, {})
-        return ManagementCommandResult(command, reply)
+        await self.catalog.record_usage(canonical_command)
+        await self._audit(canonical_command, "ok", request_id, transport_message_id, {})
+        return ManagementCommandResult(canonical_command, reply)
 
     async def _commands(self, permission: str) -> str:
         rows = await self.catalog.list_commands()
