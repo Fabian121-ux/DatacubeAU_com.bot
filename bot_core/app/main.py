@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import admin, admin_auth, admin_ui, contact_intelligence_admin, conversation_analysis_admin, conversation_export_admin, conversation_takeover_admin, health, inbound, knowledge, natural_actions_admin, scheduled_actions_admin, tool_registry_admin
+from app.api import admin, admin_auth, admin_ui, contact_intelligence_admin, conversation_analysis_admin, conversation_export_admin, conversation_takeover_admin, health, inbound, knowledge, natural_actions_admin, scheduled_actions_admin, tool_registry_admin, waha_events
 from app.config import settings
 from app.db import SessionLocal, engine, ping_database
 from app.services.bot_config_service import BotConfigService
@@ -65,6 +65,7 @@ async def _sync_core_faq() -> None:
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.include_router(health.router)
+app.include_router(waha_events.router)
 app.include_router(inbound.router)
 app.include_router(admin_auth.router)
 app.include_router(admin.router)
