@@ -61,6 +61,18 @@ jobs:
                   '--target "$GITHUB_WORKSPACE". Network or alternate targets require '
                   'separate explicit staging authorization.'
               )
+
+          required_tokens = (
+              'docker network create --internal',
+              'STRIX_DOCKER_SANDBOX_NETWORK',
+              'STRIX_TELEMETRY: "false"',
+          )
+          missing = [token for token in required_tokens if token not in workflow]
+          if missing:
+              raise SystemExit(
+                  'Strix workflow is missing required sandbox-isolation controls: '
+                  + ', '.join(missing)
+              )
           PY
 
   local-repo-security-scan:
@@ -91,7 +103,13 @@ jobs:
             *) echo "Unsupported scan mode" >&2; exit 2 ;;
           esac
 
-          if ! [[ "$MAX_BUDGET" =~ ^[0-9]+$ ]] || [ "$MAX_BUDGET" -lt 1 ] || [ "$MAX_BUDGET" -gt 25 ]; then
+          # Reject overlong numeric strings before Bash integer arithmetic. The
+          # authorized range is 1-25, so more than two digits can never be valid.
+          if ! [[ "$MAX_BUDGET" =~ ^[0-9]{1,2}$ ]]; then
+            echo "max_budget must be an integer from 1 to 25" >&2
+            exit 2
+          fi
+          if [ "$MAX_BUDGET" -lt 1 ] || [ "$MAX_BUDGET" -gt 25 ]; then
             echo "max_budget must be an integer from 1 to 25" >&2
             exit 2
           fi
@@ -116,6 +134,20 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.4.1'
           strix --version
 
+      - name: Create isolated Strix sandbox network
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="zina-strix-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker network create --driver bridge --internal "$network" >/dev/null
+          internal=$(docker network inspect -f '{{.Internal}}' "$network")
+          if [ "$internal" != "true" ]; then
+            echo "Strix sandbox network is not internal; refusing to scan." >&2
+            docker network rm "$network" >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "STRIX_DOCKER_SANDBOX_NETWORK=$network" >> "$GITHUB_ENV"
+
       - name: Run bounded local-code pentest
         shell: bash
         env:
@@ -123,8 +155,17 @@ jobs:
           MAX_BUDGET: ${{ inputs.max_budget }}
           STRIX_LLM: ${{ secrets.STRIX_LLM }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          STRIX_TELEMETRY: "false"
         run: |
           set -euo pipefail
+          test -n "${STRIX_DOCKER_SANDBOX_NETWORK:-}"
+          test "$(docker network inspect -f '{{.Internal}}' "$STRIX_DOCKER_SANDBOX_NETWORK")" = "true"
+
+          # Strix 1.4.1 supports STRIX_DOCKER_SANDBOX_NETWORK. The agent's
+          # generated shell/browser/security-tool commands execute inside that
+          # Docker sandbox. Attaching it to an --internal network removes its
+          # external route while the host-side Strix process retains only the
+          # LLM-provider channel required for reasoning.
           strix \
             --non-interactive \
             --target "$GITHUB_WORKSPACE" \
@@ -154,3 +195,21 @@ jobs:
             echo "Strix did not complete normally." >&2
             exit 1
           fi
+
+      - name: Tear down isolated Strix sandbox network
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="${STRIX_DOCKER_SANDBOX_NETWORK:-}"
+          if [ -z "$network" ]; then
+            exit 0
+          fi
+
+          # Remove only containers attached to this run-unique network before
+          # deleting it. This cannot match unrelated Zina/WAHA containers.
+          container_ids=$(docker ps -aq --filter "network=$network")
+          if [ -n "$container_ids" ]; then
+            docker rm -f $container_ids >/dev/null
+          fi
+          docker network rm "$network" >/dev/null 2>&1 || true
