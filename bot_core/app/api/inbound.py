@@ -121,14 +121,21 @@ async def waha_webhook(
         command_outbound_queue_id: int | None = None
         natural_action_queued = False
         natural_action_error: str | None = None
+        takeover_cancelled = False
         try:
             if chat_id and not _is_group_chat(chat_id):
                 async with SessionLocal() as db:
-                    cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
-                    handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
-                    handback_generated = handback is not None
-
                     normalized = MessageNormalizer().normalize(event)
+                    control_only = CommandControlService.is_non_takeover_control(normalized.message_text)
+
+                    # `.push` is a control action, not a human conversational reply.
+                    # Do not resume Fabian or cancel a deferred Zina response merely
+                    # because he archived a quoted message from this peer DM.
+                    if not control_only:
+                        takeover_cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
+                        handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
+                        handback_generated = handback is not None
+
                     command_result = await CommandControlService(db).handle_from_me(
                         normalized,
                         transport_message_id=message_id,
@@ -160,7 +167,7 @@ async def waha_webhook(
                     "conversation_owner_activity",
                     request_id=request_id,
                     chat_id=chat_id,
-                    takeover_cancelled=cancelled,
+                    takeover_cancelled=takeover_cancelled,
                     handback_generated=handback_generated,
                     command_consumed=command_consumed,
                     command_name=command_name,
