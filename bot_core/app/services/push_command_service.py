@@ -248,8 +248,9 @@ class PushCommandService:
         reply_to = payload.get("replyTo")
         if not isinstance(reply_to, dict):
             return None
+        has_media = bool(reply_to.get("hasMedia"))
         body = str(reply_to.get("body") or "").strip()
-        if not body:
+        if not body and not has_media:
             return None
         return PushSource(
             source_message_id=quoted_id,
@@ -258,7 +259,7 @@ class PushCommandService:
             contact_id=None,
             direction=None,
             message_text=body,
-            message_type="media" if bool(reply_to.get("hasMedia")) else "text",
+            message_type="media" if has_media else "text",
             created_at=None,
             evidence_source="waha_reply_snapshot",
         )
