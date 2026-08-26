@@ -73,6 +73,9 @@ jobs:
               'docker network create --driver bridge --internal "$network" >/dev/null',
               'echo "STRIX_DOCKER_SANDBOX_NETWORK=$network" >> "$GITHUB_ENV"',
               'STRIX_TELEMETRY: "false"',
+              'STRIX_SANDBOX_MEM_LIMIT: "2g"',
+              'STRIX_SANDBOX_CPUS: "2"',
+              'STRIX_SANDBOX_PIDS_LIMIT: "512"',
               'uses: actions/upload-artifact@v4',
               'path: strix_runs/',
               'persist-credentials: false',
@@ -145,7 +148,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.4.1'
+          python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.5.3'
           strix --version
 
       - name: Create isolated Strix sandbox network
@@ -170,16 +173,20 @@ jobs:
           STRIX_LLM: ${{ secrets.STRIX_LLM }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           STRIX_TELEMETRY: "false"
+          STRIX_SANDBOX_MEM_LIMIT: "2g"
+          STRIX_SANDBOX_CPUS: "2"
+          STRIX_SANDBOX_PIDS_LIMIT: "512"
+          STRIX_SANDBOX_LOG_MAX_SIZE: "25m"
+          STRIX_SANDBOX_LOG_MAX_FILE: "2"
         run: |
           set -euo pipefail
           test -n "${STRIX_DOCKER_SANDBOX_NETWORK:-}"
           test "$(docker network inspect -f '{{.Internal}}' "$STRIX_DOCKER_SANDBOX_NETWORK")" = "true"
 
-          # Strix 1.4.1 supports STRIX_DOCKER_SANDBOX_NETWORK. The agent's
-          # generated shell/browser/security-tool commands execute inside that
-          # Docker sandbox. Attaching it to an --internal network removes its
-          # external route while the host-side Strix process retains only the
-          # LLM-provider channel required for reasoning.
+          # Strix 1.5.3 supports the dedicated sandbox network plus resource
+          # caps consumed by its Docker client. Autonomous tool containers are
+          # isolated from external networks and bounded for memory/CPU/PIDs;
+          # only the host-side Strix process retains the LLM-provider channel.
           strix \
             --non-interactive \
             --target "$GITHUB_WORKSPACE" \
