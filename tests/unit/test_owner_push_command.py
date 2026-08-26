@@ -265,3 +265,27 @@ async def test_push_is_recoverable_in_default_command_catalog(db_session):
     assert commands["/push"]["handler_target"] == "command_control:push"
     await catalog.set_enabled("/push", False)
     assert await catalog.is_enabled("/push") is False
+
+
+@pytest.mark.asyncio
+async def test_disabled_push_queues_private_disabled_response(db_session):
+    await _seed_source(db_session)
+    catalog = CommandCatalogService(db_session)
+    await catalog.ensure_defaults()
+    await catalog.set_enabled("/push", False)
+    message = MessageNormalizer().normalize(_push_event(command_id="PUSH-DISABLED"))
+
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="PUSH-DISABLED",
+    )
+
+    assert result is not None and result.consumed is True
+    assert result.command == "/push"
+    assert result.error == "command disabled"
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
+    assert len(queued) == 1
+    assert queued[0].chat_id == OWNER_ID
+    assert queued[0].chat_id != AMANDA_ID
+    assert queued[0].message_text == "Push is currently disabled."
+    assert queued[0].formatting_json["source"] == "command_control"
