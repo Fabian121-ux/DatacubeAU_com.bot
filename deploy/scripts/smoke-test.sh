@@ -35,7 +35,7 @@ EOF
 )
 
 echo "Posting end-to-end DM webhook"
-response=$(curl -fsS -X POST "${base_url}/webhooks/waha" \
+response=$(curl -fsS -X POST "${base_url}/webhooks/waha-events" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${WAHA_API_KEY}" \
   --data "$payload")
