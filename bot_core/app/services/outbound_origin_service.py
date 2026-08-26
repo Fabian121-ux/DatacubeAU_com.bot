@@ -1,24 +1,38 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import AuditLog
+from app.models.schema import AuditLog, OutboundMessage
+from app.utils.time import utcnow
 
 
 class OutboundOriginService:
-    """Identify WAHA `fromMe` echoes that were produced by Zina's outbound queue.
+    """Identify WAHA `fromMe` echoes produced by Zina's outbound queue.
 
-    Successful queue delivery already records the WAHA response in append-only audit
-    evidence. Reuse that evidence instead of creating a second transport-ID store.
-    The lookup is deliberately bounded because it runs only for owner-authored/fromMe
-    events and should never scan lifetime audit history.
+    There are two evidence windows to handle:
+
+    1. After WAHA returns, append-only ``outbound_queue_sent`` audit evidence carries
+       the transport message ID and is the strongest origin proof.
+    2. During the send itself, WAHA may emit ``message.any`` *before* the HTTP request
+       has returned (or after WhatsApp accepted it while the client later times out).
+       At that point no transport ID has been persisted yet, but the authoritative
+       outbound row has already been committed as ``sending`` by the worker. A recent
+       in-flight row for the same chat is therefore treated conservatively as Zina
+       origin so an API echo cannot resume Fabian or cancel takeover.
+
+    The in-flight fallback is deliberately short-lived and bounded. In the ambiguous
+    race window it is safer to ignore a possible owner-activity signal than to let a
+    bot-generated echo terminate an active assisted conversation.
     """
 
     MAX_RECENT_DELIVERIES = 200
+    IN_FLIGHT_ECHO_WINDOW = timedelta(minutes=5)
+    MAX_IN_FLIGHT_ROWS = 10
     _ID_KEYS = frozenset({"id", "messageid", "message_id", "serialized", "_serialized"})
 
     def __init__(self, session: AsyncSession):
@@ -32,9 +46,33 @@ class OutboundOriginService:
     ) -> bool:
         wanted = (transport_message_id or "").strip()
         chat = (chat_id or "").strip()
-        if not wanted or not chat:
+        if not chat:
             return False
 
+        if wanted and await self._matches_completed_delivery(chat=chat, wanted=wanted):
+            return True
+
+        # The outbound worker commits status='sending' *before* calling WAHA. That is
+        # the only durable evidence guaranteed to exist if WAHA emits the fromMe event
+        # before sendText/sendImage returns, and it also covers accepted-but-timeout
+        # ambiguity. Never use pending/retrying rows here: only a worker-owned active
+        # send may suppress owner-activity handling.
+        cutoff = utcnow() - self.IN_FLIGHT_ECHO_WINDOW
+        rows = (
+            await self.session.execute(
+                select(OutboundMessage.id)
+                .where(
+                    OutboundMessage.chat_id == chat,
+                    OutboundMessage.status == "sending",
+                    OutboundMessage.updated_at >= cutoff,
+                )
+                .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
+                .limit(self.MAX_IN_FLIGHT_ROWS)
+            )
+        ).scalars().all()
+        return bool(rows)
+
+    async def _matches_completed_delivery(self, *, chat: str, wanted: str) -> bool:
         rows = (
             await self.session.execute(
                 select(AuditLog)
