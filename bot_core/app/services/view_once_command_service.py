@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.schema import AuditLog, OutboundMessage
 from app.services.admin_management_service import AdminManagementService
 from app.services.bot_config_service import BotConfigService
@@ -27,6 +29,7 @@ class ViewOnceCommandService:
 
     CONFIG_RETENTION_KEY = "view_once.retention_enabled"
     OPEN_COMMANDS = frozenset({".vvopen", "/vvopen"})
+    MAX_MEDIA_BYTES = 50 * 1024 * 1024
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -59,7 +62,7 @@ class ViewOnceCommandService:
         if command == ".vvretain":
             return await self._retention(normalized_args, owner_chat_id, request_id, transport_message_id)
 
-        # `.vv` with no arguments is the open/retrieve shorthand.  With arguments it
+        # `.vv` with no arguments is the open/retrieve shorthand. With arguments it
         # is the namespace for info/list/delete; dispatch subcommands before opening.
         if command == ".vv" and not normalized_args:
             return await self._open(message, owner_chat_id, request_id, transport_message_id)
@@ -94,7 +97,27 @@ class ViewOnceCommandService:
 
         media_type = self._safe_media_type(capability.media_type, capability.media_mime)
         if media_type is None:
-            return await self._text(owner_chat_id, "/vvopen", "View-once media type is unsupported for safe outbound delivery.", "unsupported media type")
+            return await self._text(owner_chat_id, "/vvopen", "View-once media type is unsupported for safe outbound delivery. Only image/video media is allowed.", "unsupported media type")
+        if not self._trusted_waha_media_url(capability.media_url):
+            await self._audit(
+                "view_once_media_url_rejected",
+                "/vvopen",
+                request_id,
+                transport_message_id,
+                {"source_message_id": record.source_message_id, "reason": "untrusted_waha_media_origin"},
+            )
+            return await self._text(owner_chat_id, "/vvopen", "WAHA exposed a media URL outside the configured WAHA file origin. Retrieval was blocked.", "untrusted media url")
+
+        media_size = self._reply_media_size(getattr(message, "payload", None))
+        if media_size is not None and media_size > self.MAX_MEDIA_BYTES:
+            await self._audit(
+                "view_once_media_size_rejected",
+                "/vvopen",
+                request_id,
+                transport_message_id,
+                {"source_message_id": record.source_message_id, "size_bytes": media_size},
+            )
+            return await self._text(owner_chat_id, "/vvopen", "View-once media exceeds Zina's 50 MB safe delivery limit.", "media too large")
 
         queued = OutboundMessage(
             chat_id=owner_chat_id,
@@ -112,7 +135,7 @@ class ViewOnceCommandService:
         self.session.add(queued)
         await self.session.flush()
         await self.media.mark_returned(record.source_message_id)
-        await self._audit("view_once_returned_to_owner", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "media_type": media_type})
+        await self._audit("view_once_returned_to_owner", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "media_type": media_type, "size_bytes": media_size})
         return ViewOnceCommandResult(True, "/vvopen", outbound_queue_id=queued.id)
 
     async def _info(self, message: Any, owner_chat_id: str, request_id: str | None, transport_message_id: str | None) -> ViewOnceCommandResult:
@@ -128,6 +151,7 @@ class ViewOnceCommandService:
             f"MIME: {record.media_mime or 'unknown'}\n"
             f"Transport available now: {'yes' if capability.retrievable_now else 'no'}\n"
             f"Evidence: {record.evidence_source}\n"
+            f"Retention mode: {record.retention_mode}\n"
             "Persistent media retained: no"
         )
         await self._audit("view_once_info", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "state": record.capability_state})
@@ -143,7 +167,10 @@ class ViewOnceCommandService:
             return await self._text(owner_chat_id, "/vvopen", "No view-once metadata has been observed yet.")
         lines = [f"VIEW-ONCE ITEMS — {len(rows)} shown"]
         for row in rows:
-            lines.append(f"#{row.id} | {row.source_message_id} | {row.media_type or 'unknown'} | {row.capability_state}")
+            lines.append(
+                f"#{row.id} | {row.source_message_id} | {row.source_chat_id} | "
+                f"{row.media_type or 'unknown'} | {row.capability_state} | retention={row.retention_mode}"
+            )
         await self._audit("view_once_list", "/vvopen", request_id, transport_message_id, {"count": len(rows)})
         return await self._text(owner_chat_id, "/vvopen", "\n".join(lines))
 
@@ -203,12 +230,64 @@ class ViewOnceCommandService:
     def _safe_media_type(media_type: str | None, mime: str | None) -> str | None:
         candidate = (media_type or "").strip().lower()
         mime_value = (mime or "").strip().lower()
-        if candidate in {"image", "video", "audio"}:
+        if candidate in {"image", "video"}:
             return candidate
         if mime_value.startswith("image/"):
             return "image"
         if mime_value.startswith("video/"):
             return "video"
-        if mime_value.startswith("audio/"):
-            return "audio"
         return None
+
+    @classmethod
+    def _trusted_waha_media_url(cls, media_url: str) -> bool:
+        candidate = cls._normalized_origin(media_url)
+        if candidate is None:
+            return False
+        scheme, host, port, path = candidate
+        if scheme not in {"http", "https"} or not path.startswith("/api/files/"):
+            return False
+
+        trusted_origins = set()
+        for configured in (settings.waha_service_url, settings.waha_base_url):
+            origin = cls._normalized_origin(configured)
+            if origin is not None:
+                trusted_origins.add(origin[:3])
+        return (scheme, host, port) in trusted_origins
+
+    @staticmethod
+    def _normalized_origin(value: str | None) -> tuple[str, str, int | None, str] | None:
+        parsed = urlparse(str(value or "").strip())
+        if not parsed.scheme or not parsed.hostname:
+            return None
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname.lower().rstrip(".")
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if port is None:
+            port = 443 if scheme == "https" else 80 if scheme == "http" else None
+        return scheme, host, port, parsed.path or "/"
+
+    @staticmethod
+    def _reply_media_size(payload: Any) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+        reply = payload.get("replyTo")
+        if not isinstance(reply, dict):
+            return None
+        media = reply.get("media")
+        if not isinstance(media, dict):
+            return None
+        raw = media.get("fileSize")
+        if raw is None:
+            raw = media.get("filesize")
+        if raw is None:
+            raw = media.get("size")
+        if raw is None:
+            return None
+        try:
+            size = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return max(0, size)
