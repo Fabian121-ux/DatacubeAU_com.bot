@@ -60,6 +60,15 @@ DEFAULT_COMMANDS = [
         trigger_syntax=".dm",
     ),
     CommandDefinition(
+        "/vvopen",
+        "Admin Commands",
+        "Open or inspect explicitly detected WAHA view-once media for Fabian's private owner inbox.",
+        "Reply to a view-once item, then send @Zina .vv",
+        "owner",
+        handler_target="command_control:view_once",
+        trigger_syntax=".vv",
+    ),
+    CommandDefinition(
         "/commands",
         "Admin Commands",
         "List commands visible to the current authority.",
