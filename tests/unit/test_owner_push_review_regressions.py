@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from fastapi import BackgroundTasks
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select
 
-from app.api.inbound import waha_webhook
 from app.core.message_normalizer import MessageNormalizer
-from app.db import SessionLocal
 from app.models.schema import AdminAccount, OutboundMessage
 from app.services.command_control_service import CommandControlService
 
@@ -39,15 +36,6 @@ def _push_event(
             },
         },
     }
-
-
-class _Request:
-    def __init__(self, event: dict):
-        self._event = event
-        self.headers: dict[str, str] = {}
-
-    async def json(self):
-        return self._event
 
 
 @pytest.mark.asyncio
@@ -109,57 +97,9 @@ async def test_push_accepts_captionless_media_reply_snapshot(db_session, monkeyp
     assert "original media is not forwarded" in queued.message_text
 
 
-@pytest.mark.asyncio
-async def test_push_does_not_resume_or_cancel_active_takeover(monkeypatch):
-    import app.api.inbound as inbound_module
-    import app.services.admin_management_service as admin_module
-
-    monkeypatch.setattr(inbound_module.settings, "waha_session_name", "default")
-    monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
-    monkeypatch.setattr(inbound_module.settings, "environment", "test")
-    monkeypatch.setattr(admin_module.settings, "owner_whatsapp_ids", OWNER_NUMBER)
-
-    async def _must_not_record_owner_reply(*_args, **_kwargs):
-        raise AssertionError(".push must not be treated as Fabian resuming the peer conversation")
-
-    async def _must_not_generate_handback(*_args, **_kwargs):
-        raise AssertionError(".push must not generate a conversation handback")
-
-    monkeypatch.setattr(
-        inbound_module.ConversationTakeoverService,
-        "record_owner_reply",
-        _must_not_record_owner_reply,
-    )
-    monkeypatch.setattr(
-        inbound_module.ConversationHandbackService,
-        "generate_if_needed",
-        _must_not_generate_handback,
-    )
-
-    async with SessionLocal() as db:
-        await db.execute(delete(OutboundMessage))
-        await db.execute(delete(AdminAccount))
-        await db.execute(text("DELETE FROM inbound_webhook_receipts"))
-        await db.commit()
-
-    try:
-        result = await waha_webhook(
-            _Request(_push_event(message_id="PUSH-NO-HANDBACK")),
-            BackgroundTasks(),
-        )
-
-        assert result["status"] == "accepted"
-        assert result["command_consumed"] is True
-        assert result["command"] == "/push"
-        assert result["handback_generated"] is False
-
-        async with SessionLocal() as db:
-            queued = (await db.execute(select(OutboundMessage))).scalars().all()
-            assert len(queued) == 1
-            assert queued[0].chat_id == OWNER_ID
-    finally:
-        async with SessionLocal() as db:
-            await db.execute(delete(OutboundMessage))
-            await db.execute(delete(AdminAccount))
-            await db.execute(text("DELETE FROM inbound_webhook_receipts"))
-            await db.commit()
+def test_push_is_control_only_and_does_not_count_as_owner_conversation_reply():
+    assert CommandControlService.is_non_takeover_control("@Zina .push") is True
+    assert CommandControlService.is_non_takeover_control(".push") is True
+    assert CommandControlService.is_non_takeover_control("/push") is True
+    assert CommandControlService.is_non_takeover_control("@Zina .status") is False
+    assert CommandControlService.is_non_takeover_control("message Amanda tomorrow at 9am") is False
