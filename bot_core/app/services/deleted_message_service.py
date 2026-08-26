@@ -33,6 +33,8 @@ class DeletedMessageService:
     DEFAULT_LIMIT = 1
     LIST_LIMIT = 10
     MAX_LIMIT = 20
+    MAX_ENTRY_CONTENT_CHARS = 900
+    MAX_REPLY_CHARS = 3500
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -59,6 +61,7 @@ class DeletedMessageService:
                     WHERE (
                         m.source_message_id = :revoked_id
                         OR m.raw_payload_json->>'id' = :revoked_id
+                        OR m.raw_payload_json->'message'->>'id' = :revoked_id
                     )
                     """
                     + chat_clause
@@ -152,8 +155,8 @@ class DeletedMessageService:
         WAHA can deliver independent webhook events close together. If `message.revoked`
         wins the race against the normal `message` commit, `record_revocation` keeps a
         compact unmatched audit record rather than synthesizing deleted content. The
-        event gateway calls this method after normal message processing so the durable
-        original can inherit the earlier revoke lifecycle deterministically.
+        event gateway and durable reconciliation worker call this method after normal
+        message persistence so the original can inherit the earlier revoke lifecycle.
         """
         source_message_id = (source_message_id or "").strip()
         if not source_message_id:
@@ -174,6 +177,7 @@ class DeletedMessageService:
                     WHERE (
                         m.source_message_id = :source_id
                         OR m.raw_payload_json->>'id' = :source_id
+                        OR m.raw_payload_json->'message'->>'id' = :source_id
                     )
                     """
                     + chat_clause
@@ -293,18 +297,22 @@ class DeletedMessageService:
             )
 
         if mode == "info":
-            return self._render_info(rows[0])
+            return self._bound_reply(self._render_info(rows[0]))
         if limit == 1 and mode != "list":
-            return self._render_one(rows[0])
+            return self._bound_reply(self._render_one(rows[0]))
 
         lines = [f"DELETED MESSAGES — {len(rows)} shown"]
         for index, row in enumerate(rows, start=1):
             sender = self._sender_label(row)
-            text_value = self._content(row)
+            text_value = self._truncate(self._content(row), self.MAX_ENTRY_CONTENT_CHARS)
             deleted_at = self._format_time(row.get("revoked_at"))
+            candidate = "\n".join([*lines, f"\n{index}. {sender} — {deleted_at}\n{text_value}"])
+            if len(candidate) > self.MAX_REPLY_CHARS - 120:
+                lines.append("\n…more deleted messages omitted to keep this WhatsApp reply within the safe size limit.")
+                break
             lines.append(f"\n{index}. {sender} — {deleted_at}\n{text_value}")
         lines.append("\nUse .dm info for full metadata on the newest captured deletion.")
-        return "\n".join(lines)
+        return self._bound_reply("\n".join(lines))
 
     @classmethod
     def _parse_args(cls, args: str) -> tuple[str, int]:
@@ -325,13 +333,14 @@ class DeletedMessageService:
 
     @classmethod
     def _render_one(cls, row: Any) -> str:
+        content = cls._truncate(cls._content(row), cls.MAX_ENTRY_CONTENT_CHARS)
         return (
             "🗑 DELETED MESSAGE\n\n"
             f"From: {cls._sender_label(row)}\n"
             f"Sent: {cls._format_time(row.get('created_at'))}\n"
             f"Deleted: {cls._format_time(row.get('revoked_at'))}\n"
             f"Type: {row.get('message_type') or 'unknown'}\n\n"
-            f"{cls._content(row)}"
+            f"{content}"
         )
 
     @classmethod
@@ -349,6 +358,18 @@ class DeletedMessageService:
             "Media retained: no dedicated media archive in this version\n"
             "Recovery basis: original content observed by Zina before revocation"
         )
+
+    @classmethod
+    def _bound_reply(cls, value: str) -> str:
+        return cls._truncate(value, cls.MAX_REPLY_CHARS)
+
+    @staticmethod
+    def _truncate(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        if limit <= 1:
+            return value[:limit]
+        return value[: limit - 1].rstrip() + "…"
 
     @staticmethod
     def _sender_label(row: Any) -> str:
