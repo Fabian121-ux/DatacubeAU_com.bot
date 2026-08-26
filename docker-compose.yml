@@ -60,11 +60,12 @@ services:
       - .env.production
     environment:
       WHATSAPP_API_KEY: ${WAHA_API_KEY:?Set WAHA_API_KEY in .env.production}
-      WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://api:8080/webhooks/waha}
-      # `message` carries normal inbound traffic while `message.any` is required for
-      # owner-authored/fromMe controls such as `.push`. Inbound idempotency collapses
-      # duplicate deliveries when WAHA emits both event variants for one message.
-      WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message,message.any}
+      WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://api:8080/webhooks/waha-events}
+      # `message` carries normal inbound traffic, `message.any` carries owner-authored
+      # controls, and `message.revoked` drives Zina's durable deleted-message lifecycle.
+      # Existing idempotency collapses duplicate message deliveries; revoke transitions
+      # are separately keyed by the revoked source message ID.
+      WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message,message.any,message.revoked}
       # WAHA supports arbitrary global webhook custom headers. Reuse the existing
       # WAHA API secret on the internal service-to-service webhook so FastAPI can
       # authenticate inbound events before trusting caller-controlled `fromMe` data.
