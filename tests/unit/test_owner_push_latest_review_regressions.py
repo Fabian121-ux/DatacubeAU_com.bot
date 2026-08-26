@@ -42,7 +42,7 @@ def _from_me_event(*, message_id: str, body: str = "Zina generated reply") -> di
 
 
 @pytest.mark.asyncio
-async def test_outbound_origin_matches_nested_waha_transport_id(db_session):
+async def test_outbound_origin_matches_completed_and_inflight_evidence(db_session):
     db_session.add(
         AuditLog(
             action="outbound_queue_sent",
@@ -66,9 +66,6 @@ async def test_outbound_origin_matches_nested_waha_transport_id(db_session):
         transport_message_id="FABIAN-MANUAL-1",
     ) is False
 
-
-@pytest.mark.asyncio
-async def test_outbound_origin_uses_recent_sending_row_during_echo_race(db_session):
     row = OutboundMessage(
         chat_id=PEER_ID,
         message_text="Zina generated reply",
@@ -79,7 +76,6 @@ async def test_outbound_origin_uses_recent_sending_row_during_echo_race(db_sessi
     db_session.add(row)
     await db_session.flush()
 
-    service = OutboundOriginService(db_session)
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="ECHO-BEFORE-SEND-RETURN",
