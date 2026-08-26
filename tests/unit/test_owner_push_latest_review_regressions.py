@@ -61,8 +61,49 @@ def _from_me_event(*, message_id: str, body: str = "Zina generated reply") -> di
     }
 
 
+def _patch_remote_lookup(monkeypatch, *, mapping: dict[str, dict]) -> None:
+    import app.services.outbound_origin_service as origin_module
+
+    async def fake_get_chat_message(self, *, chat_id: str, message_id: str, session_name=None):
+        return mapping.get(
+            message_id,
+            {
+                "id": message_id,
+                "body": "Fabian manual reply",
+                "type": "chat",
+                "hasMedia": False,
+                "timestamp": int(utcnow().timestamp()),
+            },
+        )
+
+    async def fake_close(self):
+        return None
+
+    monkeypatch.setattr(origin_module.WAHAClient, "get_chat_message", fake_get_chat_message)
+    monkeypatch.setattr(origin_module.WAHAClient, "close", fake_close)
+
+
 @pytest.mark.asyncio
-async def test_outbound_origin_matches_completed_and_inflight_evidence(db_session):
+async def test_outbound_origin_matches_completed_and_message_correlated_inflight_evidence(monkeypatch, db_session):
+    _patch_remote_lookup(
+        monkeypatch,
+        mapping={
+            "ECHO-BEFORE-SEND-RETURN": {
+                "id": "ECHO-BEFORE-SEND-RETURN",
+                "body": "Zina generated reply",
+                "type": "chat",
+                "hasMedia": False,
+                "timestamp": int(utcnow().timestamp()),
+            },
+            "STALE-MANUAL-OWNER-EVENT": {
+                "id": "STALE-MANUAL-OWNER-EVENT",
+                "body": "Zina generated reply",
+                "type": "chat",
+                "hasMedia": False,
+                "timestamp": int(utcnow().timestamp()),
+            },
+        },
+    )
     db_session.add(
         AuditLog(
             action="outbound_queue_sent",
@@ -101,12 +142,88 @@ async def test_outbound_origin_matches_completed_and_inflight_evidence(db_sessio
         transport_message_id="ECHO-BEFORE-SEND-RETURN",
     ) is True
 
+    # A real Fabian message in the same chat must not be suppressed merely because a
+    # queue row is sending. The specific WAHA message payload does not match the row.
+    assert await service.is_zina_originated(
+        chat_id=PEER_ID,
+        transport_message_id="FABIAN-MANUAL-SAME-CHAT",
+    ) is False
+
     row.updated_at = utcnow() - timedelta(minutes=6)
     await db_session.flush()
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="STALE-MANUAL-OWNER-EVENT",
     ) is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_retry_row_remains_message_specific_origin_evidence(monkeypatch, db_session):
+    _patch_remote_lookup(
+        monkeypatch,
+        mapping={
+            "ACCEPTED-BUT-TIMED-OUT": {
+                "id": "ACCEPTED-BUT-TIMED-OUT",
+                "body": "Zina generated reply",
+                "type": "chat",
+                "hasMedia": False,
+                "timestamp": int(utcnow().timestamp()),
+            }
+        },
+    )
+    db_session.add(
+        OutboundMessage(
+            chat_id=PEER_ID,
+            message_text="Zina generated reply",
+            status="retrying",
+            retry_count=1,
+            next_attempt_at=utcnow() + timedelta(seconds=30),
+            error_message="WAHA send failed: ReadTimeout timed out",
+            updated_at=utcnow(),
+        )
+    )
+    await db_session.flush()
+
+    service = OutboundOriginService(db_session)
+    assert await service.is_zina_originated(
+        chat_id=PEER_ID,
+        transport_message_id="ACCEPTED-BUT-TIMED-OUT",
+    ) is True
+    assert await service.is_zina_originated(
+        chat_id=PEER_ID,
+        transport_message_id="FABIAN-MANUAL-SAME-CHAT",
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_completed_delivery_limit_is_applied_after_chat_filter(db_session):
+    db_session.add(
+        AuditLog(
+            action="outbound_queue_sent",
+            entity_type="outbound_queue",
+            entity_id="target",
+            details_json={"chat_id": PEER_ID, "waha_response": {"id": "TARGET-TRANSPORT-ID"}},
+        )
+    )
+    for index in range(205):
+        db_session.add(
+            AuditLog(
+                action="outbound_queue_sent",
+                entity_type="outbound_queue",
+                entity_id=f"noise-{index}",
+                details_json={
+                    "chat_id": f"2348999{index:04d}@c.us",
+                    "waha_response": {"id": f"NOISE-{index}"},
+                },
+            )
+        )
+    await db_session.flush()
+
+    service = OutboundOriginService(db_session)
+    assert await service.is_zina_originated(
+        chat_id=PEER_ID,
+        transport_message_id="TARGET-TRANSPORT-ID",
+    ) is True
 
 
 @pytest.mark.asyncio
@@ -189,6 +306,18 @@ async def test_inflight_outbound_echo_does_not_resume_takeover(monkeypatch, db_s
     monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
     monkeypatch.setattr(inbound_module.settings, "environment", "test")
     _bind_inbound_session(monkeypatch, inbound_module, db_session)
+    _patch_remote_lookup(
+        monkeypatch,
+        mapping={
+            "ECHO-BEFORE-SEND-RETURN": {
+                "id": "ECHO-BEFORE-SEND-RETURN",
+                "body": "Zina generated reply",
+                "type": "chat",
+                "hasMedia": False,
+                "timestamp": int(utcnow().timestamp()),
+            }
+        },
+    )
 
     await db_session.execute(delete(OutboundMessage))
     await db_session.execute(delete(ConversationTakeover))
