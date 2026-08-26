@@ -21,6 +21,7 @@ from app.workers.background_workers import (
     scheduled_action_worker,
     waha_monitor_worker,
 )
+from app.workers.deleted_message_reconciliation_worker import deleted_message_reconciliation_worker
 
 
 configure_logging()
@@ -39,6 +40,7 @@ async def lifespan(_: FastAPI):
     tasks.append(asyncio.create_task(scheduled_action_worker(), name="scheduled-actions"))
     tasks.append(asyncio.create_task(conversation_takeover_worker(), name="conversation-takeover"))
     tasks.append(asyncio.create_task(conversation_open_loop_worker(), name="conversation-open-loops"))
+    tasks.append(asyncio.create_task(deleted_message_reconciliation_worker(), name="deleted-message-reconciliation"))
     tasks.append(asyncio.create_task(waha_monitor_worker(), name="waha-monitor"))
     log_event(logger, logging.INFO, "app_startup", environment=settings.environment, ai_enabled=settings.ai_enabled)
     try:
