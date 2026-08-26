@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,8 @@ from sqlalchemy import text
 
 from app.api import waha_events
 from app.models.schema import AuditLog, Contact, Message
+from app.services.deleted_message_service import DeletedMessageService
+from app.utils.time import utcnow
 from app.workers import deleted_message_reconciliation_worker as reconciliation_worker
 
 
@@ -90,6 +93,94 @@ async def test_durable_worker_reconciles_committed_message_after_unmatched_revok
         )
     ).scalar_one()
     assert lifecycle == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_old_revokes_do_not_starve_reconcilable_batch(db_session, monkeypatch):
+    contact = Contact(whatsapp_id=AMANDA_ID, chat_id=AMANDA_ID, display_name="Amanda")
+    db_session.add(contact)
+    await db_session.flush()
+
+    old_time = utcnow() - timedelta(hours=1)
+    for index in range(60):
+        db_session.add(
+            AuditLog(
+                action="message_revocation_unmatched",
+                entity_type="message",
+                entity_id=f"NEVER-SEEN-{index}",
+                details_json={"revoked_message_id": f"NEVER-SEEN-{index}", "chat_id": AMANDA_ID},
+                created_at=old_time,
+            )
+        )
+    db_session.add(
+        AuditLog(
+            action="message_revocation_unmatched",
+            entity_type="message",
+            entity_id="READY-LATER-1",
+            details_json={"revoked_message_id": "READY-LATER-1", "chat_id": AMANDA_ID},
+            created_at=utcnow(),
+        )
+    )
+    message = Message(
+        contact_id=contact.id,
+        chat_id=AMANDA_ID,
+        chat_type="dm",
+        direction="inbound",
+        message_text="reconcilable",
+        normalized_text="reconcilable",
+        message_type="chat",
+        raw_payload_json={"id": "READY-LATER-1", "chatId": AMANDA_ID},
+    )
+    db_session.add(message)
+    await db_session.commit()
+
+    class _ReusableSessionContext:
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(reconciliation_worker, "SessionLocal", lambda: _ReusableSessionContext())
+    assert await reconciliation_worker._reconcile_pending_batch(limit=50) == 1
+    lifecycle = (
+        await db_session.execute(text("SELECT lifecycle_status FROM messages WHERE id=:id"), {"id": message.id})
+    ).scalar_one()
+    assert lifecycle == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_deleted_message_list_reply_is_character_bounded(db_session):
+    contact = Contact(whatsapp_id=AMANDA_ID, chat_id=AMANDA_ID, display_name="Amanda")
+    db_session.add(contact)
+    await db_session.flush()
+    now = utcnow()
+    for index in range(20):
+        db_session.add(
+            Message(
+                contact_id=contact.id,
+                chat_id=AMANDA_ID,
+                chat_type="dm",
+                direction="inbound",
+                message_text=(f"deleted-{index} " + "x" * 1800),
+                normalized_text=f"deleted-{index}",
+                message_type="chat",
+                raw_payload_json={"id": f"LONG-DELETED-{index}", "chatId": AMANDA_ID},
+            )
+        )
+    await db_session.flush()
+    await db_session.execute(
+        text(
+            "UPDATE messages SET lifecycle_status='revoked', revoked_at=:now "
+            "WHERE chat_id=:chat_id AND raw_payload_json->>'id' LIKE 'LONG-DELETED-%'"
+        ),
+        {"now": now, "chat_id": AMANDA_ID},
+    )
+    await db_session.commit()
+
+    reply = await DeletedMessageService(db_session).render_command("20")
+    assert len(reply) <= DeletedMessageService.MAX_REPLY_CHARS
+    assert "more deleted messages omitted" in reply
 
 
 @pytest.mark.asyncio
