@@ -51,6 +51,15 @@ DEFAULT_COMMANDS = [
         trigger_syntax=".push",
     ),
     CommandDefinition(
+        "/deleted-message",
+        "Admin Commands",
+        "Inspect bounded deleted-message evidence that Zina observed before WAHA revocation.",
+        "@Zina .dm",
+        "owner",
+        handler_target="command_control:deleted_message",
+        trigger_syntax=".dm",
+    ),
+    CommandDefinition(
         "/commands",
         "Admin Commands",
         "List commands visible to the current authority.",
