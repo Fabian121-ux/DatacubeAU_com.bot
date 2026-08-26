@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import hmac
 import logging
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Request, status
 
+from app.config import settings
+from app.core.message_normalizer import MessageNormalizer
 from app.core.router import InboundRouter
 from app.db import SessionLocal
+from app.models.schema import AuditLog
+from app.services.admin_management_service import AdminManagementService
+from app.services.command_control_service import CommandControlService
 from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.logging_service import log_event
+from app.services.natural_action_planner_service import NaturalActionPlannerService
+from app.services.outbound_origin_service import OutboundOriginService
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +30,14 @@ async def waha_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    # Parse body defensively — never return 422 to WAHA or it retries aggressively
+    # Privileged `fromMe` commands must never trust caller-controlled payload identity
+    # alone. Reuse the configured WAHA API key as a shared webhook header secret.
+    # Non-production environments may omit the key for local test compatibility.
+    if not _webhook_authenticated(request):
+        log_event(logger, logging.WARNING, "webhook_ignored", reason="unauthorized_webhook")
+        return {"status": "ignored", "reason": "unauthorized_webhook"}
+
+    # Parse body defensively — never return 422 to WAHA or it retries aggressively.
     try:
         event = await request.json()
     except Exception:  # noqa: BLE001
@@ -54,41 +69,23 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
-    if _is_from_me(payload):
-        chat_id = _resolve_chat_id(payload)
-        handback_generated = False
-        if chat_id and not _is_group_chat(chat_id):
-            async with SessionLocal() as db:
-                cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
-                handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
-                handback_generated = handback is not None
-                await db.commit()
-            log_event(
-                logger,
-                logging.INFO,
-                "conversation_owner_activity",
-                request_id=request_id,
-                chat_id=chat_id,
-                takeover_cancelled=cancelled,
-                handback_generated=handback_generated,
-            )
+    # Bind privileged owner-authored events to the configured WAHA session. A valid
+    # shared secret from another/old session is not enough to execute owner commands.
+    if _is_from_me(payload) and not _session_matches_config(event, payload):
         log_event(
             logger,
-            logging.INFO,
+            logging.WARNING,
             "webhook_ignored",
             request_id=request_id,
             event_name=event_name or "message",
             message_id=message_id,
-            reason="from_me",
-            handback_generated=handback_generated,
+            reason="unexpected_session",
         )
-        return {
-            "status": "ignored",
-            "reason": "from_me",
-            "event_name": event_name or "message",
-            "handback_generated": handback_generated,
-        }
+        return {"status": "ignored", "reason": "unexpected_session", "event_name": event_name or "message"}
 
+    # Claim every message event before *any* command/action side effect. WAHA may
+    # deliver the same message as both `message` and `message.any`, and webhook
+    # retries must not execute owner commands twice.
     idempotency_key = _build_idempotency_key(event, payload)
     if idempotency_key:
         receipt = InboundReceipt(
@@ -116,6 +113,141 @@ async def waha_webhook(
                 "message_id": message_id,
             }
 
+    if _is_from_me(payload):
+        chat_id = _resolve_chat_id(payload)
+        handback_generated = False
+        command_consumed = False
+        command_name: str | None = None
+        command_error: str | None = None
+        command_outbound_queue_id: int | None = None
+        natural_action_queued = False
+        natural_action_error: str | None = None
+        takeover_cancelled = False
+        try:
+            if chat_id and not _is_group_chat(chat_id):
+                async with SessionLocal() as db:
+                    # With `message.any` enabled, WAHA echoes API-sent Zina output as
+                    # `fromMe`. Prefer the causal `source` already present on the
+                    # authenticated webhook; the service only falls back to a WAHA
+                    # message lookup when this event did not include source evidence.
+                    if await OutboundOriginService(db).is_zina_originated(
+                        chat_id=chat_id,
+                        transport_message_id=message_id,
+                        transport_source=_resolve_transport_source(payload),
+                    ):
+                        if idempotency_key:
+                            await InboundIdempotencyService(db).mark_completed(idempotency_key, commit=False)
+                        await db.commit()
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "webhook_ignored",
+                            request_id=request_id,
+                            event_name=event_name or "message.any",
+                            message_id=message_id,
+                            chat_id=chat_id,
+                            reason="zina_outbound_echo",
+                        )
+                        return {
+                            "status": "ignored",
+                            "reason": "zina_outbound_echo",
+                            "event_name": event_name or "message.any",
+                            "message_id": message_id,
+                        }
+
+                    normalized = MessageNormalizer().normalize(event)
+                    control_only = CommandControlService.is_non_takeover_control(normalized.message_text)
+
+                    # `.push` is a control action, not a human conversational reply.
+                    # Do not resume Fabian or cancel a deferred Zina response merely
+                    # because he archived a quoted message from this peer DM.
+                    if not control_only:
+                        takeover_cancelled = await ConversationTakeoverService(db).record_owner_reply(chat_id=chat_id)
+                        handback = await ConversationHandbackService(db).generate_if_needed(chat_id=chat_id)
+                        handback_generated = handback is not None
+
+                    command_result = await CommandControlService(db).handle_from_me(
+                        normalized,
+                        transport_message_id=message_id,
+                        request_id=request_id,
+                    )
+                    if command_result is not None and command_result.consumed:
+                        command_consumed = True
+                        command_name = command_result.command
+                        command_error = command_result.error
+                        command_outbound_queue_id = command_result.outbound_queue_id
+                    else:
+                        natural_action = await _plan_owner_natural_action(
+                            db,
+                            event=event,
+                            message_id=message_id,
+                            request_id=request_id,
+                        )
+                        natural_action_queued = bool(natural_action and natural_action.get("scheduled_action"))
+                        natural_action_error = natural_action.get("error") if natural_action else None
+
+                    # Side effects and receipt completion must commit atomically. If
+                    # this transaction fails, release_failed can safely permit retry.
+                    if idempotency_key:
+                        await InboundIdempotencyService(db).mark_completed(idempotency_key, commit=False)
+                    await db.commit()
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "conversation_owner_activity",
+                    request_id=request_id,
+                    chat_id=chat_id,
+                    takeover_cancelled=takeover_cancelled,
+                    handback_generated=handback_generated,
+                    command_consumed=command_consumed,
+                    command_name=command_name,
+                    command_error=command_error,
+                    command_outbound_queue_id=command_outbound_queue_id,
+                    natural_action_queued=natural_action_queued,
+                    natural_action_error=natural_action_error,
+                )
+            elif idempotency_key:
+                # Group/unknown `fromMe` events have no owner command side effects,
+                # but still complete their durable receipt.
+                async with SessionLocal() as db:
+                    await InboundIdempotencyService(db).mark_completed(idempotency_key)
+        except Exception:  # noqa: BLE001
+            if idempotency_key:
+                async with SessionLocal() as db:
+                    await InboundIdempotencyService(db).release_failed(idempotency_key)
+            raise
+
+        accepted = command_consumed or natural_action_queued
+        reason = "owner_command_control" if command_consumed else "owner_natural_action" if natural_action_queued else "from_me"
+        log_event(
+            logger,
+            logging.INFO,
+            "webhook_ignored" if not accepted else "webhook_owner_action_accepted",
+            request_id=request_id,
+            event_name=event_name or "message",
+            message_id=message_id,
+            reason=reason,
+            handback_generated=handback_generated,
+            command_consumed=command_consumed,
+            command_name=command_name,
+            command_error=command_error,
+            command_outbound_queue_id=command_outbound_queue_id,
+            natural_action_queued=natural_action_queued,
+            natural_action_error=natural_action_error,
+        )
+        return {
+            "status": "accepted" if accepted else "ignored",
+            "reason": reason,
+            "event_name": event_name or "message",
+            "handback_generated": handback_generated,
+            "command_consumed": command_consumed,
+            "command": command_name,
+            "command_error": command_error,
+            "command_outbound_queue_id": command_outbound_queue_id,
+            "natural_action_queued": natural_action_queued,
+            "natural_action_error": natural_action_error,
+        }
+
     background_tasks.add_task(_process_event_async, event, request_id, idempotency_key)
     log_event(
         logger,
@@ -132,6 +264,77 @@ async def waha_webhook(
         "event_name": event_name or "message",
         "message_id": message_id,
     }
+
+
+async def _plan_owner_natural_action(
+    db,
+    *,
+    event: dict[str, Any],
+    message_id: str | None,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Plan a narrow owner-authored natural action without routing arbitrary fromMe text."""
+    normalized = MessageNormalizer().normalize(event)
+    if normalized.chat_type.value != "dm" or not normalized.message_text.strip():
+        return None
+
+    # Parsing is side-effect free and deliberately narrow. Non-actions stay normal owner activity.
+    try:
+        plan = NaturalActionPlannerService.parse(normalized.message_text)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if plan is None:
+        return None
+
+    admin = await AdminManagementService(db).resolve_admin_message(normalized)
+    if not admin:
+        db.add(
+            AuditLog(
+                action="owner_natural_action_denied",
+                entity_type="scheduled_actions",
+                details_json={"request_id": request_id, "transport_message_id": message_id},
+            )
+        )
+        return {"error": "owner authorization failed"}
+
+    try:
+        result = await NaturalActionPlannerService(db).create_from_instruction(
+            normalized.message_text,
+            actor_permission=admin.permission_level,
+            source_message_id=None,
+            requested_by_contact_id=None,
+            idempotency_key=_owner_action_idempotency_key(event, normalized.payload),
+        )
+    except ValueError as exc:
+        resolution = getattr(exc, "resolution", None)
+        db.add(
+            AuditLog(
+                action="owner_natural_action_rejected",
+                entity_type="scheduled_actions",
+                details_json={
+                    "request_id": request_id,
+                    "transport_message_id": message_id,
+                    "reason": str(exc),
+                    "resolution_status": resolution.get("status") if isinstance(resolution, dict) else None,
+                    "permission": admin.permission_level,
+                },
+            )
+        )
+        return {"error": str(exc)}
+
+    db.add(
+        AuditLog(
+            action="owner_natural_action_accepted",
+            entity_type="scheduled_actions",
+            entity_id=str(result["scheduled_action"]["id"]) if result else None,
+            details_json={
+                "request_id": request_id,
+                "transport_message_id": message_id,
+                "permission": admin.permission_level,
+            },
+        )
+    )
+    return result
 
 
 async def _process_event_async(
@@ -189,6 +392,28 @@ async def _process_event_async(
         )
 
 
+def _webhook_authenticated(request: Request) -> bool:
+    configured = (settings.waha_api_key or "").strip()
+    if not configured:
+        return settings.environment.strip().lower() != "production"
+    supplied = (
+        request.headers.get("x-api-key")
+        or request.headers.get("x-waha-api-key")
+        or ""
+    ).strip()
+    if not supplied:
+        authorization = (request.headers.get("authorization") or "").strip()
+        if authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, configured)
+
+
+def _session_matches_config(event: dict[str, Any], payload: dict[str, Any]) -> bool:
+    actual = (_resolve_session_name(event, payload) or "").strip()
+    expected = (settings.waha_session_name or "").strip()
+    return bool(actual and expected and hmac.compare_digest(actual, expected))
+
+
 def _resolve_event_name(event: dict[str, Any]) -> str | None:
     raw_name = event.get("event")
     if isinstance(raw_name, str) and raw_name.strip():
@@ -222,6 +447,15 @@ def _resolve_chat_id(payload: dict[str, Any]) -> str | None:
     return text or None
 
 
+def _resolve_transport_source(payload: dict[str, Any]) -> str | None:
+    nested_data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
+    raw_source = payload.get("source") or nested_data.get("source")
+    if raw_source is None:
+        return None
+    text = str(raw_source).strip().lower()
+    return text or None
+
+
 def _resolve_session_name(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
     raw_session = event.get("session") or payload.get("session")
     if isinstance(raw_session, dict):
@@ -240,6 +474,11 @@ def _build_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> st
     session_name = _resolve_session_name(event, payload) or "default"
     chat_id = _resolve_chat_id(payload) or "unknown-chat"
     return f"{session_name}:{chat_id}:{message_id}"
+
+
+def _owner_action_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    base = _build_idempotency_key(event, payload)
+    return f"owner-natural-action:{base}" if base else None
 
 
 def _is_from_me(payload: dict[str, Any]) -> bool:

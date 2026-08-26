@@ -12,6 +12,7 @@ from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
 
@@ -31,6 +32,20 @@ async def outbound_queue_delivery_worker() -> None:
         raise
     finally:
         await client.close()
+
+
+async def scheduled_action_worker() -> None:
+    """Release due owner-approved actions into the existing outbound queue."""
+    try:
+        while True:
+            async with SessionLocal() as session:
+                released = await ScheduledActionService(session).release_due(limit=25)
+                if released:
+                    await session.commit()
+                    log_event(logger, logging.INFO, "scheduled_actions_released", count=released)
+            await asyncio.sleep(1 if released else 3)
+    except asyncio.CancelledError:
+        raise
 
 
 async def conversation_takeover_worker() -> None:
@@ -155,17 +170,35 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
+                await ScheduledActionService(session).reconcile_outbound_delivery(message)
                 session.add(
                     AuditLog(
                         action="outbound_queue_sent",
                         entity_type="outbound_queue",
                         entity_id=str(message.id),
-                        details_json={"chat_id": message.chat_id, "waha_response": response},
+                        details_json={
+                            "chat_id": message.chat_id,
+                            "delivery_snapshot": _delivery_snapshot(message),
+                            "waha_response": response,
+                        },
                     )
                 )
                 await session.commit()
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
+
+
+def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
+    """Mirror the exact branch used by WAHA delivery when recording durable history."""
+    if message.media_url:
+        return {
+            "text": message.media_caption or message.message_text,
+            "message_type": message.media_type or "image",
+        }
+    return {
+        "text": message.message_text,
+        "message_type": "text",
+    }
 
 
 async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -> None:
@@ -180,6 +213,7 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
         message.status = "retrying"
         message.next_attempt_at = utcnow() + _retry_delay(next_retry_count)
 
+    await ScheduledActionService(session).reconcile_outbound_delivery(message)
     session.add(
         AuditLog(
             action="outbound_queue_delivery_failed",

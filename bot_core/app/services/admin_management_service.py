@@ -59,7 +59,7 @@ class AdminManagementService:
             ]
         return rows
 
-    async def is_admin_message(self, message: Any) -> bool:
+    async def resolve_admin_message(self, message: Any) -> AdminAccount | None:
         await self.ensure_from_config()
         keys = self.identity_keys_for_message(message)
         rows = await self.list_admins(include_disabled=False)
@@ -69,8 +69,11 @@ class AdminManagementService:
                 row.last_active_at = utcnow()
                 row.updated_at = utcnow()
                 await self.session.flush()
-                return True
-        return False
+                return row
+        return None
+
+    async def is_admin_message(self, message: Any) -> bool:
+        return await self.resolve_admin_message(message) is not None
 
     async def create_admin(
         self,
@@ -92,7 +95,7 @@ class AdminManagementService:
             whatsapp_number=whatsapp_number.strip(),
             normalized_whatsapp_id=normalized,
             role=role.strip() or "admin",
-            permission_level=permission_level.strip() or "owner",
+            permission_level=self.normalize_permission(permission_level) or "owner",
             is_primary=False,
             is_enabled=True,
             created_at=utcnow(),
@@ -120,6 +123,8 @@ class AdminManagementService:
                 value = str(updates[field]).strip()
                 if field == "name":
                     value = self._clean_name(value) or row.name
+                elif field == "permission_level":
+                    value = self.normalize_permission(value)
                 setattr(row, field, value)
         if "is_enabled" in updates and updates["is_enabled"] is not None:
             await self.set_enabled(row.id, bool(updates["is_enabled"]))
@@ -255,6 +260,10 @@ class AdminManagementService:
     @staticmethod
     def digits_only(value: Any) -> str:
         return re.sub(r"\D+", "", str(value or ""))
+
+    @staticmethod
+    def normalize_permission(value: Any) -> str:
+        return str(value or "").strip().lower()
 
     @staticmethod
     def _split_configured_ids(configured: str | None) -> list[str]:

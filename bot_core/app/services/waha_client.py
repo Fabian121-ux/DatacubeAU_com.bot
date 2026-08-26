@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -96,6 +97,101 @@ class WAHAClient:
                     return [item for item in value if isinstance(item, dict)]
         return []
 
+    async def get_chat_message(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one concrete WAHA message by chat/message ID.
+
+        This is used for message-specific outbound-origin correlation during the narrow
+        send/timeout race. It is a read-only lookup and never becomes another message
+        source of truth; PostgreSQL remains authoritative for Zina state.
+        """
+        name = session_name or settings.waha_session_name
+        encoded_chat = quote(str(chat_id), safe="")
+        encoded_message = quote(str(message_id), safe="")
+        url = f"{settings.waha_service_url}/api/{quote(str(name), safe='')}/chats/{encoded_chat}/messages/{encoded_message}"
+        headers: dict[str, str] = {}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            payload = await self._request("GET", url, headers=headers)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA message lookup failed for {chat_id}/{message_id}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise WahaClientError(f"WAHA message lookup returned an invalid response for {chat_id}/{message_id}")
+        return payload
+
+    async def get_contacts(
+        self,
+        session_name: str | None = None,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return one validated paginated WAHA contact page.
+
+        WAHA currently documents `/api/contacts/all` as a JSON array. Wrapper keys are
+        retained for backward compatibility, but an unrecognized/malformed successful
+        payload is an error rather than an empty address book. This prevents callers
+        from treating a response-shape change as proof that every saved contact was
+        removed.
+        """
+        name = session_name or settings.waha_session_name
+        query = urlencode(
+            {
+                "session": name,
+                "limit": max(1, min(int(limit), 1000)),
+                "offset": max(0, int(offset)),
+                "sortBy": "id",
+                "sortOrder": "asc",
+            }
+        )
+        url = f"{settings.waha_service_url}/api/contacts/all?{query}"
+        headers: dict[str, str] = {}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            payload = await self._request("GET", url, headers=headers)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA contact sync failed for {name}: {exc}") from exc
+
+        contacts: Any
+        if isinstance(payload, list):
+            contacts = payload
+        elif isinstance(payload, dict):
+            contacts = None
+            for key in ("data", "contacts", "items"):
+                if key not in payload:
+                    continue
+                value = payload.get(key)
+                if not isinstance(value, list):
+                    raise WahaClientError(
+                        f"WAHA contact sync returned malformed '{key}' page for {name}"
+                    )
+                contacts = value
+                break
+            if contacts is None:
+                raise WahaClientError(
+                    f"WAHA contact sync returned an unrecognized response shape for {name}"
+                )
+        else:
+            raise WahaClientError(
+                f"WAHA contact sync returned a non-list response for {name}"
+            )
+
+        if any(
+            not isinstance(item, dict) or not self._contact_entry_has_person_identifier(item)
+            for item in contacts
+        ):
+            raise WahaClientError(
+                f"WAHA contact sync returned a malformed contact entry for {name}"
+            )
+        return contacts
+
     async def start_session(self, session_name: str | None = None) -> dict[str, Any]:
         name = session_name or settings.waha_session_name
         url = f"{settings.waha_service_url}/api/sessions/start"
@@ -176,6 +272,36 @@ class WAHAClient:
             return await self._request("POST", url, headers=headers, json=payload)
         except (httpx.HTTPError, RuntimeError) as exc:
             raise WahaClientError(f"WAHA typing presence failed for {chat_id}: {exc}") from exc
+
+    @classmethod
+    def _contact_entry_has_person_identifier(cls, item: dict[str, Any]) -> bool:
+        candidates = (
+            item.get("id"),
+            item.get("contactId"),
+            cls._nested_value(item, "_data", "id", "_serialized"),
+            cls._nested_value(item, "_data", "id"),
+            item.get("jid"),
+        )
+        for value in candidates:
+            if isinstance(value, dict):
+                value = value.get("_serialized") or value.get("id")
+            text = str(value or "").strip().lower()
+            if not text:
+                continue
+            if text.endswith("@c.us") or text.endswith("@s.whatsapp.net") or text.endswith("@lid"):
+                return True
+            if text.endswith("@g.us") or text == "status@broadcast" or text.endswith("@newsletter") or text.endswith("@broadcast"):
+                return True
+        return False
+
+    @staticmethod
+    def _nested_value(payload: dict[str, Any], *path: str) -> Any:
+        current: Any = payload
+        for key in path:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
 
     @staticmethod
     def _should_retry_status(status_code: int) -> bool:

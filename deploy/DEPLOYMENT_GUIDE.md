@@ -46,7 +46,7 @@ ssh root@YOUR_DROPLET_IP
 adduser deploy
 usermod -aG sudo deploy
 
-# Exit and reconnect as deploy user
+# Exit and reconnect as deploy
 exit
 ssh deploy@YOUR_DROPLET_IP
 ```
@@ -318,8 +318,8 @@ sudo certbot certonly --standalone -d your-domain.com --non-interactive --agree-
 
 # Copy certificates to project
 sudo cp /etc/letsencrypt/live your-domain.com/fullchain.pem /srv/datacube/deploy/ssl/fullchain.pem
-sudo cp /etc/letsencrypt/live your-domain.com/privkey.pem /srv/datacube/deploy/ssl/privkey.pem
-sudo cp /etc/letsencrypt/live your-domain.com/chain.pem /srv/datacube/deploy/ssl/chain.pem
+sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem /srv/datacube/deploy/ssl/privkey.pem
+sudo cp /etc/letsencrypt/live/your-domain.com/chain.pem /srv/datacube/deploy/ssl/chain.pem
 sudo chown -R deploy:deploy /srv/datacube/deploy/ssl/
 ```
 
@@ -545,6 +545,11 @@ docker compose exec api python -m pytest --cov=app
 ```bash
 cd /srv/datacube
 
+# Load the same secret WAHA uses for authenticated webhook delivery.
+set -a
+. ./.env.production
+set +a
+
 # Run health checks
 ./deploy/scripts/health-check.sh
 
@@ -554,6 +559,7 @@ curl http://localhost:8080/health | jq .
 # Test webhook endpoint
 curl -X POST http://localhost:8080/webhooks/waha \
   -H "Content-Type: application/json" \
+  -H "X-Api-Key: ${WAHA_API_KEY}" \
   -d '{
     "event": "message",
     "session": "default",
@@ -636,10 +642,16 @@ docker compose logs waha
 # Verify webhook URL
 docker compose exec api env | grep WHATSAPP_HOOK_URL
 
+# Load the production webhook secret before the manual test.
+set -a
+. ./.env.production
+set +a
+
 # Test webhook manually
 docker compose exec waha curl -X POST http://api:8080/webhooks/waha \
   -H "Content-Type: application/json" \
-  -d '{"event":"message","payload":{"id":"test"}}'
+  -H "X-Api-Key: ${WAHA_API_KEY}" \
+  -d '{"event":"message","session":"default","payload":{"id":"test"}}'
 ```
 
 ### 10.5 Port Already in Use
