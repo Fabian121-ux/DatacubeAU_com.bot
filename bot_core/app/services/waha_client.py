@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -96,6 +96,34 @@ class WAHAClient:
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]
         return []
+
+    async def get_chat_message(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one concrete WAHA message by chat/message ID.
+
+        This is used for message-specific outbound-origin correlation during the narrow
+        send/timeout race. It is a read-only lookup and never becomes another message
+        source of truth; PostgreSQL remains authoritative for Zina state.
+        """
+        name = session_name or settings.waha_session_name
+        encoded_chat = quote(str(chat_id), safe="")
+        encoded_message = quote(str(message_id), safe="")
+        url = f"{settings.waha_service_url}/api/{quote(str(name), safe='')}/chats/{encoded_chat}/messages/{encoded_message}"
+        headers: dict[str, str] = {}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            payload = await self._request("GET", url, headers=headers)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise WahaClientError(f"WAHA message lookup failed for {chat_id}/{message_id}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise WahaClientError(f"WAHA message lookup returned an invalid response for {chat_id}/{message_id}")
+        return payload
 
     async def get_contacts(
         self,
