@@ -160,8 +160,10 @@ Files added for VPS deployment:
 ```text
 WAHA_SERVICE_URL=http://waha:3000
 WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
-WHATSAPP_HOOK_EVENTS=message
+WHATSAPP_HOOK_EVENTS=message,message.any
 ```
+
+`message` carries normal inbound messages. `message.any` is also required so owner-authored/fromMe controls such as `.push` reach Zina. The backend's durable inbound idempotency collapses duplicate `message`/`message.any` deliveries for the same WhatsApp message.
 
 6. Set the public host values for your server:
 
@@ -207,13 +209,13 @@ If WAHA runs in the same Compose stack as this backend, point WAHA inbound webho
 http://api:8080/webhooks/waha
 ```
 
-Restrict WAHA webhook events to:
+Subscribe WAHA to these message events:
 
 ```text
-message
+message,message.any
 ```
 
-This backend normalizes inbound message payloads. Sending broader WAHA events such as `session.status` to the same route will create noisy non-message webhook traffic that the router does not need.
+`message` covers normal incoming traffic and `message.any` includes messages created by the connected WhatsApp account, which is required for owner `fromMe` controls. Do not subscribe this route to `*`; unrelated events such as `session.status` create noisy traffic the router does not need.
 
 If WAHA is outside this Compose network, use the backend's public URL instead:
 
@@ -244,7 +246,7 @@ WAHA_SERVICE_URL=http://waha:3000
 WAHA_API_KEY=<reuse-the-value-from-your-current-waha-.env>
 WAHA_SESSION_NAME=default
 WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
-WHATSAPP_HOOK_EVENTS=message
+WHATSAPP_HOOK_EVENTS=message,message.any
 WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
 PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
 ADMIN_USERNAME=zina
