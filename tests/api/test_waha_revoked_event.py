@@ -116,3 +116,52 @@ async def test_revoked_event_without_observed_message_reports_unmatched_not_reco
     assert response.json()["matched"] is False
     assert response.json()["changed"] is False
     assert (await db_session.execute(select(Message))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_flat_revoked_payload_is_preserved_and_matches_observed_message(db_session, monkeypatch):
+    contact = Contact(whatsapp_id=AMANDA_ID, chat_id=AMANDA_ID, display_name="Amanda")
+    db_session.add(contact)
+    await db_session.flush()
+    message = Message(
+        contact_id=contact.id,
+        chat_id=AMANDA_ID,
+        chat_type="dm",
+        direction="inbound",
+        message_text="flat revoke",
+        normalized_text="flat revoke",
+        message_type="chat",
+        raw_payload_json={"message": {"id": "FLAT-REVOKE-1"}, "chatId": AMANDA_ID},
+    )
+    db_session.add(message)
+    await db_session.commit()
+
+    monkeypatch.setattr(waha_events, "SessionLocal", lambda: _ReusableSessionContext(db_session))
+    monkeypatch.setattr(waha_events.inbound.settings, "waha_session_name", "test")
+    monkeypatch.setattr(waha_events.inbound.settings, "environment", "development")
+    monkeypatch.setattr(waha_events.inbound.settings, "waha_api_key", "")
+
+    app = FastAPI()
+    app.include_router(waha_events.router)
+    event = {
+        "id": "flat-revoke-event-1",
+        "event": "message.revoked",
+        "session": "test",
+        "revokedMessageId": "FLAT-REVOKE-1",
+        "before": {"id": "FLAT-REVOKE-1", "chatId": AMANDA_ID, "from": AMANDA_ID},
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/webhooks/waha-events", json=event)
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+    assert response.json()["matched"] is True
+    lifecycle = (
+        await db_session.execute(
+            text("SELECT lifecycle_status, source_message_id FROM messages WHERE id=:id"),
+            {"id": message.id},
+        )
+    ).mappings().one()
+    assert lifecycle["lifecycle_status"] == "revoked"
+    assert lifecycle["source_message_id"] == "FLAT-REVOKE-1"
