@@ -34,9 +34,9 @@ class CommandControlService:
     """Owner command surface backed by existing Zina subsystems.
 
     The self-DM remains the privileged control inbox for management and scheduling.
-    `.push` is the deliberate exception: the verified primary owner may invoke it while
-    replying to a message in another DM, and the result is delivered privately to the
-    owner self-DM through the existing outbound queue.
+    `.push` is the deliberate exception: this method is only called from the authenticated,
+    configured-session `fromMe` webhook path, so the primary WAHA account may invoke it
+    while replying inside another DM. Its result is delivered privately to the owner self-DM.
     """
 
     DRAFT_TTL = timedelta(minutes=30)
@@ -73,35 +73,15 @@ class CommandControlService:
             return None
         command, args = parsed
 
-        admin = await self.admins.resolve_admin_message(message)
-        if admin is None:
-            await self._audit(
-                "command_control_denied",
-                command=command,
-                request_id=request_id,
-                transport_message_id=transport_message_id,
-                details={"reason": "admin_not_resolved"},
-            )
-            return CommandControlResult(
-                consumed=True,
-                command=command,
-                reply_text="Zina command access denied.",
-                error="owner authorization failed",
-            )
-
         primary_owner = await self._primary_owner()
-        permission = (admin.permission_level or "").strip().lower()
-        is_primary_owner = bool(
-            primary_owner is not None
-            and admin.id == primary_owner.id
-            and permission == "owner"
-        )
 
-        # `.push` is intentionally usable from a normal DM because the quoted message
-        # lives in that source chat. Authenticated WAHA `fromMe` + primary-owner identity
-        # is still mandatory; all results go to Fabian's private self-DM, never the source.
+        # A normal fromMe peer-DM payload may identify the peer as sender/from/chatId,
+        # so it cannot be resolved through AdminManagementService. The upstream caller
+        # has already authenticated the WAHA webhook secret, verified fromMe=true, and
+        # bound the event to the configured WAHA session. That session identity is the
+        # primary owner authority for this one narrow peer-chat command.
         if command in {".push", self.PUSH_COMMAND}:
-            if not is_primary_owner or getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
+            if primary_owner is None or getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
                 return None
             if not await self.catalog.is_enabled(self.PUSH_COMMAND):
                 return None
@@ -120,9 +100,26 @@ class CommandControlService:
                 error=pushed.error,
             )
 
+        admin = await self.admins.resolve_admin_message(message)
+        if admin is None:
+            await self._audit(
+                "command_control_denied",
+                command=command,
+                request_id=request_id,
+                transport_message_id=transport_message_id,
+                details={"reason": "admin_not_resolved"},
+            )
+            return CommandControlResult(
+                consumed=True,
+                command=command,
+                reply_text="Zina command access denied.",
+                error="owner authorization failed",
+            )
+
         if primary_owner is None or not self._is_self_dm(message, primary_owner) or admin.id != primary_owner.id:
             return None
 
+        permission = (admin.permission_level or "").strip().lower()
         if command in self._GUIDED or command == self.SCHEDULE_COMMAND:
             if permission != "owner":
                 await self._audit(
