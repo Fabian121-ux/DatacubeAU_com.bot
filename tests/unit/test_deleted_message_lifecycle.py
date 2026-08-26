@@ -120,7 +120,12 @@ async def test_unmatched_revoke_never_creates_fake_message_content(db_session):
     messages = (await db_session.execute(select(Message))).scalars().all()
     assert messages == []
     audit = (
-        await db_session.execute(select(AuditLog).where(AuditLog.action == "message_revocation_unmatched"))
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "message_revocation_unmatched",
+                AuditLog.entity_id == "NEVER-SEEN",
+            )
+        )
     ).scalars().one()
     assert audit.details_json["content_recovered"] is False
     rendered = await DeletedMessageService(db_session).render_command("")
