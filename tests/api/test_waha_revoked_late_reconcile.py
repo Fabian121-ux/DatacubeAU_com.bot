@@ -25,7 +25,10 @@ class _ReusableSessionContext:
 
 
 @pytest.mark.asyncio
-async def test_message_gateway_reconciles_earlier_unmatched_revoke(db_session, monkeypatch):
+async def test_message_gateway_reconciles_earlier_unmatched_revoke_after_background_persistence(
+    db_session,
+    monkeypatch,
+):
     revoke = {
         "id": "early-revoke-event",
         "event": "message.revoked",
@@ -44,9 +47,7 @@ async def test_message_gateway_reconciles_earlier_unmatched_revoke(db_session, m
     db_session.add(contact)
     await db_session.commit()
 
-    async def fake_inbound_handler(request, background_tasks):
-        event = await request.json()
-        payload = event["payload"]
+    async def persist_original(payload):
         message = Message(
             contact_id=contact.id,
             chat_id=AMANDA_ID,
@@ -59,6 +60,14 @@ async def test_message_gateway_reconciles_earlier_unmatched_revoke(db_session, m
         )
         db_session.add(message)
         await db_session.commit()
+
+    async def fake_inbound_handler(request, background_tasks):
+        event = await request.json()
+        payload = event["payload"]
+        # Mirror the real inbound route: persistence happens in a background task.
+        # The revoke gateway must append reconciliation *after* this task rather than
+        # checking synchronously before the original Message exists.
+        background_tasks.add_task(persist_original, payload)
         return {"status": "accepted", "message_id": payload["id"]}
 
     monkeypatch.setattr(waha_events.inbound, "waha_webhook", fake_inbound_handler)
