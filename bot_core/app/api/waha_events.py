@@ -24,10 +24,9 @@ async def waha_events_webhook(
     """WAHA event gateway that adds durable revoke handling without duplicating message routing.
 
     Normal `message`/`message.any` traffic delegates to the established inbound webhook.
-    Only `message.revoked` is handled here. For an accepted normal message, reconciliation
-    is appended to the same BackgroundTasks queue *after* the established inbound task,
-    so an earlier unmatched revoke is checked only after the original Message had a chance
-    to persist. This closes the revoke-before-message-commit race without synthesizing content.
+    Only `message.revoked` is handled here. Reconciliation after accepted normal messages is
+    opportunistic; a separate PostgreSQL-backed reconciliation worker is the durable safety
+    net for cross-request commit races and service restarts.
     """
     try:
         event = await request.json()
@@ -39,14 +38,15 @@ async def waha_events_webhook(
     event_name = inbound._resolve_event_name(event)
     if event_name != "message.revoked":
         response = await inbound.waha_webhook(request, background_tasks)
-        if event_name in {"message", "message.any"} and response.get("status") == "accepted":
+        if (not event_name or event_name in {"message", "message.any"}) and response.get("status") == "accepted":
             payload = inbound._resolve_payload(event)
             source_message_id = inbound._resolve_message_id(payload)
             chat_id = inbound._resolve_chat_id(payload)
             if source_message_id:
                 # `inbound.waha_webhook` already appended its persistence/routing task.
-                # Starlette executes BackgroundTasks in insertion order, so this check
-                # runs afterwards instead of racing the original Message commit.
+                # Starlette executes BackgroundTasks in insertion order, so this immediate
+                # check usually runs after the original Message commit. The periodic worker
+                # remains authoritative for races spanning independent webhook requests.
                 background_tasks.add_task(
                     _reconcile_after_message,
                     source_message_id,
@@ -94,9 +94,14 @@ async def waha_events_webhook(
             "message_id": revoked_id,
         }
 
+    # Normalize both wrapped and flat WAHA revoke shapes before handing the event to the
+    # lifecycle service. This preserves top-level revokedMessageId/before/after payloads.
+    lifecycle_event = dict(event)
+    lifecycle_event["payload"] = payload
+
     try:
         async with SessionLocal() as db:
-            result = await DeletedMessageService(db).record_revocation(event)
+            result = await DeletedMessageService(db).record_revocation(lifecycle_event)
             await InboundIdempotencyService(db).mark_completed(event_key, commit=False)
             await db.commit()
     except Exception:  # noqa: BLE001
@@ -126,7 +131,7 @@ async def waha_events_webhook(
 
 
 async def _reconcile_after_message(source_message_id: str, chat_id: str | None) -> None:
-    """Reconcile a prior unmatched revoke after normal inbound persistence completes."""
+    """Opportunistically reconcile a prior unmatched revoke after normal persistence."""
     async with SessionLocal() as db:
         reconciled = await DeletedMessageService(db).reconcile_pending_for_message(
             source_message_id=source_message_id,
