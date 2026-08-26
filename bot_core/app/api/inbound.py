@@ -127,13 +127,13 @@ async def waha_webhook(
             if chat_id and not _is_group_chat(chat_id):
                 async with SessionLocal() as db:
                     # With `message.any` enabled, WAHA echoes API-sent Zina output as
-                    # `fromMe`. Identify those echoes from the existing successful
-                    # outbound delivery audits before applying any owner-activity or
-                    # command behavior. This preserves takeover until Fabian himself
-                    # actually responds.
+                    # `fromMe`. Prefer the causal `source` already present on the
+                    # authenticated webhook; the service only falls back to a WAHA
+                    # message lookup when this event did not include source evidence.
                     if await OutboundOriginService(db).is_zina_originated(
                         chat_id=chat_id,
                         transport_message_id=message_id,
+                        transport_source=_resolve_transport_source(payload),
                     ):
                         if idempotency_key:
                             await InboundIdempotencyService(db).mark_completed(idempotency_key, commit=False)
@@ -444,6 +444,15 @@ def _resolve_chat_id(payload: dict[str, Any]) -> str | None:
     if raw_chat_id is None:
         return None
     text = str(raw_chat_id).strip()
+    return text or None
+
+
+def _resolve_transport_source(payload: dict[str, Any]) -> str | None:
+    nested_data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
+    raw_source = payload.get("source") or nested_data.get("source")
+    if raw_source is None:
+        return None
+    text = str(raw_source).strip().lower()
     return text or None
 
 
