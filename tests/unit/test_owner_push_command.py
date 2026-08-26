@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.message_normalizer import MessageNormalizer
-from app.models.schema import AdminAccount, Contact, Message, OutboundMessage
+from app.models.schema import AdminAccount, CommandCatalogEntry, Contact, Message, OutboundMessage
+from app.services.command_catalog_service import CommandCatalogService
 from app.services.command_control_service import CommandControlService
 
 
@@ -24,7 +25,14 @@ def _owner() -> AdminAccount:
     )
 
 
-def _push_event(*, command_id: str = "PUSH-CMD-1", body: str = "@Zina .push", quoted_id: str | None = "SRC-1") -> dict:
+def _push_event(
+    *,
+    command_id: str = "PUSH-CMD-1",
+    body: str = "@Zina .push",
+    quoted_id: str | None = "SRC-1",
+    quoted_body: str = "Please bring the signed document",
+    quoted_from_me: bool | None = None,
+) -> dict:
     payload = {
         "id": command_id,
         "chatId": AMANDA_ID,
@@ -33,7 +41,10 @@ def _push_event(*, command_id: str = "PUSH-CMD-1", body: str = "@Zina .push", qu
         "body": body,
     }
     if quoted_id is not None:
-        payload["replyTo"] = {"id": quoted_id, "body": "Please bring the signed document"}
+        reply_to = {"id": quoted_id, "body": quoted_body}
+        if quoted_from_me is not None:
+            reply_to["fromMe"] = quoted_from_me
+        payload["replyTo"] = reply_to
     return {"event": "message.any", "session": "default", "payload": payload}
 
 
@@ -109,6 +120,7 @@ async def test_owner_can_push_quoted_peer_message_to_private_self_dm(db_session)
     assert "Source ID: SRC-1" in queued[0].message_text
     assert queued[0].formatting_json["source"] == "owner_push"
     assert queued[0].formatting_json["source_db_message_id"] == source.id
+    assert queued[0].formatting_json["source_evidence"] == "postgres_message"
 
 
 @pytest.mark.asyncio
@@ -163,3 +175,67 @@ async def test_push_media_preserves_caption_and_does_not_claim_media_forwarding(
     assert "Signed page" in queued.message_text
     assert "original media is not forwarded" in queued.message_text
     assert queued.media_url is None
+
+
+@pytest.mark.asyncio
+async def test_push_can_use_waha_reply_snapshot_for_unpersisted_owner_message(db_session):
+    await _seed_source(db_session)
+    await db_session.execute(delete(Message))
+    await db_session.flush()
+    message = MessageNormalizer().normalize(
+        _push_event(
+            command_id="PUSH-OWNER-SNAPSHOT",
+            quoted_id="OWNER-SRC-9",
+            quoted_body="I will bring the signed document",
+            quoted_from_me=True,
+        )
+    )
+
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="PUSH-OWNER-SNAPSHOT",
+    )
+
+    assert result is not None and result.error is None
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().one()
+    assert "From: Fabian" in queued.message_text
+    assert "I will bring the signed document" in queued.message_text
+    assert "Source ID: OWNER-SRC-9" in queued.message_text
+    assert queued.formatting_json["source_evidence"] == "waha_reply_snapshot"
+    assert queued.formatting_json["source_db_message_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_push_note_is_rejected_as_peer_visible_not_called_private(db_session):
+    await _seed_source(db_session)
+    message = MessageNormalizer().normalize(
+        _push_event(command_id="PUSH-NOTE", body="@Zina .push note Follow up tonight")
+    )
+
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="PUSH-NOTE",
+    )
+
+    assert result is not None and result.error is not None
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().one()
+    assert queued.chat_id == OWNER_ID
+    assert "Private notes are not accepted from a peer chat" in queued.message_text
+    assert "Private note:" not in queued.message_text
+
+
+@pytest.mark.asyncio
+async def test_push_is_recoverable_in_default_command_catalog(db_session):
+    await db_session.execute(delete(CommandCatalogEntry))
+    await db_session.flush()
+
+    catalog = CommandCatalogService(db_session)
+    await catalog.ensure_defaults()
+    commands = {item["name"]: item for item in await catalog.list_commands()}
+
+    assert "/push" in commands
+    assert commands["/push"]["trigger_syntax"] == ".push"
+    assert commands["/push"]["permissions"] == "owner"
+    assert commands["/push"]["handler_target"] == "command_control:push"
+    await catalog.set_enabled("/push", False)
+    assert await catalog.is_enabled("/push") is False
