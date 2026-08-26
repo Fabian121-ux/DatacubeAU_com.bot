@@ -1,6 +1,10 @@
 name: Zina Strix Security Scan
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/strix-security.yml"
+      - ".strix/instructions.md"
   workflow_dispatch:
     inputs:
       scan_mode:
@@ -21,11 +25,34 @@ permissions:
   contents: read
 
 concurrency:
-  group: zina-strix-security
+  group: zina-strix-security-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  policy-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Zina
+        uses: actions/checkout@v4
+
+      - name: Verify fail-closed local-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .strix/instructions.md
+          grep -Fq 'Only the checked-out `Fabian121-ux/DatacubeAU_com.bot` repository content' .strix/instructions.md
+          grep -Fq 'production Zina services' .strix/instructions.md
+          grep -Fq 'real WhatsApp accounts' .strix/instructions.md
+          grep -Fq 'Do not perform destructive data deletion' .strix/instructions.md
+          grep -Fq -- '--target "$GITHUB_WORKSPACE/bot_core"' .github/workflows/strix-security.yml
+          if grep -Eq -- '--target[ =]+https?://' .github/workflows/strix-security.yml; then
+            echo "A network target was added to the Strix workflow; explicit staging authorization is required." >&2
+            exit 1
+          fi
+
   local-repo-security-scan:
+    if: github.event_name == 'workflow_dispatch'
+    needs: policy-validation
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
