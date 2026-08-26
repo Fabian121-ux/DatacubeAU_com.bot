@@ -31,7 +31,7 @@ def _push_event(
     body: str = "@Zina .push",
     quoted_id: str | None = "SRC-1",
     quoted_body: str = "Please bring the signed document",
-    quoted_from_me: bool | None = None,
+    quoted_has_media: bool = False,
 ) -> dict:
     payload = {
         "id": command_id,
@@ -41,10 +41,11 @@ def _push_event(
         "body": body,
     }
     if quoted_id is not None:
-        reply_to = {"id": quoted_id, "body": quoted_body}
-        if quoted_from_me is not None:
-            reply_to["fromMe"] = quoted_from_me
-        payload["replyTo"] = reply_to
+        payload["replyTo"] = {
+            "id": quoted_id,
+            "body": quoted_body,
+            "hasMedia": quoted_has_media,
+        }
     return {"event": "message.any", "session": "default", "payload": payload}
 
 
@@ -178,31 +179,56 @@ async def test_push_media_preserves_caption_and_does_not_claim_media_forwarding(
 
 
 @pytest.mark.asyncio
-async def test_push_can_use_waha_reply_snapshot_for_unpersisted_owner_message(db_session):
+async def test_push_can_use_waha_reply_snapshot_for_unpersisted_quoted_message(db_session):
     await _seed_source(db_session)
     await db_session.execute(delete(Message))
     await db_session.flush()
     message = MessageNormalizer().normalize(
         _push_event(
-            command_id="PUSH-OWNER-SNAPSHOT",
-            quoted_id="OWNER-SRC-9",
+            command_id="PUSH-SNAPSHOT",
+            quoted_id="UNPERSISTED-SRC-9",
             quoted_body="I will bring the signed document",
-            quoted_from_me=True,
         )
     )
 
     result = await CommandControlService(db_session).handle_from_me(
         message,
-        transport_message_id="PUSH-OWNER-SNAPSHOT",
+        transport_message_id="PUSH-SNAPSHOT",
     )
 
     assert result is not None and result.error is None
     queued = (await db_session.execute(select(OutboundMessage))).scalars().one()
-    assert "From: Fabian" in queued.message_text
+    assert "sender direction unavailable" in queued.message_text
     assert "I will bring the signed document" in queued.message_text
-    assert "Source ID: OWNER-SRC-9" in queued.message_text
+    assert "Source ID: UNPERSISTED-SRC-9" in queued.message_text
     assert queued.formatting_json["source_evidence"] == "waha_reply_snapshot"
     assert queued.formatting_json["source_db_message_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_push_snapshot_media_is_metadata_only(db_session):
+    await _seed_source(db_session)
+    await db_session.execute(delete(Message))
+    await db_session.flush()
+    message = MessageNormalizer().normalize(
+        _push_event(
+            command_id="PUSH-SNAPSHOT-MEDIA",
+            quoted_id="MEDIA-SRC-9",
+            quoted_body="Signed page",
+            quoted_has_media=True,
+        )
+    )
+
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="PUSH-SNAPSHOT-MEDIA",
+    )
+
+    assert result is not None and result.error is None
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().one()
+    assert "Type: media" in queued.message_text
+    assert "original media is not forwarded" in queued.message_text
+    assert queued.media_url is None
 
 
 @pytest.mark.asyncio
