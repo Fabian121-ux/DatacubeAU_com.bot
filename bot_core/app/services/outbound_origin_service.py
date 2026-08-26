@@ -7,17 +7,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import AuditLog
+from app.services.waha_client import WAHAClient, WahaClientError
 
 
 class OutboundOriginService:
     """Identify WAHA ``fromMe`` echoes produced by Zina's outbound queue.
 
-    WAHA's ``message.any`` payload carries a causal ``source`` field: ``api`` when
-    the message was created through the WAHA API and ``app`` when it was authored
-    in WhatsApp itself. That transport-origin evidence is the primary guard during
-    the send/echo race. Completed sends are also correlated by the exact persisted
-    WAHA transport message ID so older events and engines that omit ``source`` can
-    still be recognized without guessing from message content or timestamps.
+    Completed sends are correlated by the exact WAHA transport message ID persisted
+    in ``outbound_queue_sent`` audits. During the earlier send/echo race, Zina fetches
+    that exact WAHA message and uses WAHA's causal ``source`` field: ``api`` means the
+    message was created through the WAHA API, while ``app`` means it was authored in
+    WhatsApp itself. Zina never infers origin from matching text, caption, or time.
     """
 
     MAX_RECENT_DELIVERIES = 200
@@ -38,28 +38,33 @@ class OutboundOriginService:
         if not chat or not wanted:
             return False
 
-        source = (transport_source or "").strip().lower()
-
-        # WAHA documents ``source=api`` for messages created via its API and
-        # ``source=app`` for messages authored in WhatsApp. In this fromMe-only
-        # call path, ``api`` is causal evidence that the event is a Zina/API echo;
-        # unlike payload/time matching, it cannot swallow a same-text Fabian reply.
-        if source == "api":
-            return True
-
         if await self._matches_completed_delivery(chat=chat, wanted=wanted):
             return True
 
-        # Do not infer origin from text/caption/timestamp similarity. If WAHA marks
-        # the event as app-authored, or omits source and there is no exact completed
-        # transport-ID match, preserve the owner event rather than risking a false
-        # suppression. This deliberately prefers an occasional duplicate takeover
-        # transition on legacy engines over dropping a real Fabian command/reply.
-        return False
+        source = (transport_source or "").strip().lower()
+        if not source:
+            source = await self._fetch_transport_source(chat=chat, wanted=wanted)
+
+        # WAHA documents `source=api` for API-created outgoing messages and
+        # `source=app` for WhatsApp-authored messages. This is causal evidence;
+        # payload/time similarity is not. Unknown/legacy source is deliberately
+        # preserved as owner activity rather than risking a false suppression.
+        return source == "api"
+
+    async def _fetch_transport_source(self, *, chat: str, wanted: str) -> str:
+        client = WAHAClient()
+        try:
+            payload = await client.get_chat_message(chat_id=chat, message_id=wanted)
+        except WahaClientError:
+            return ""
+        finally:
+            await client.close()
+        if not isinstance(payload, dict):
+            return ""
+        data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
+        return str(payload.get("source") or data.get("source") or "").strip().lower()
 
     async def _matches_completed_delivery(self, *, chat: str, wanted: str) -> bool:
-        # Filter by entity/chat in SQL before the bound so busy traffic in other chats
-        # cannot push the matching delivery out of the candidate window.
         rows = (
             await self.session.execute(
                 select(AuditLog)
