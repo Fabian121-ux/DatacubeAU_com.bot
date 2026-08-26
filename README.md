@@ -151,19 +151,19 @@ Files added for VPS deployment:
 - [backup-postgres.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/backup-postgres.sh)
 - [smoke-test.sh](c:/Users/cruzan/Documents/DatacubeAU_com.bot/deploy/scripts/smoke-test.sh)
 
-1. Copy `.env.production.example` to `.env.production`.
+1. Copy your production env template to `.env.production` and review it before deployment.
 2. Set `WAHA_IMAGE` to the WAHA Core image/tag you actually run.
 3. Reuse the current WAHA credentials from your existing WAHA host config for `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD`, and `WHATSAPP_SWAGGER_PASSWORD`.
 4. Set strong values for `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, and `ADMIN_API_TOKEN`.
-5. Keep the internal Docker URLs exactly as follows:
+5. Keep the internal Docker URLs and webhook subscriptions exactly as follows:
 
 ```text
 WAHA_SERVICE_URL=http://waha:3000
-WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
-WHATSAPP_HOOK_EVENTS=message,message.any
+WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha-events
+WHATSAPP_HOOK_EVENTS=message,message.any,message.revoked
 ```
 
-`message` carries normal inbound messages. `message.any` is also required so owner-authored/fromMe controls such as `.push` reach Zina. The backend's durable inbound idempotency collapses duplicate `message`/`message.any` deliveries for the same WhatsApp message.
+`message` carries normal inbound messages. `message.any` is required so owner-authored/fromMe controls such as `.push` reach Zina. `message.revoked` is required for the durable `.dm` deleted-message lifecycle. The combined `/webhooks/waha-events` gateway delegates ordinary messages to the established inbound handler and handles revocations separately. The backend's durable inbound idempotency collapses duplicate `message`/`message.any` deliveries for the same WhatsApp message.
 
 6. Set the public host values for your server:
 
@@ -206,21 +206,21 @@ With the default compose file, WAHA is also published on `http://localhost:3000`
 If WAHA runs in the same Compose stack as this backend, point WAHA inbound webhook to:
 
 ```text
-http://api:8080/webhooks/waha
+http://api:8080/webhooks/waha-events
 ```
 
 Subscribe WAHA to these message events:
 
 ```text
-message,message.any
+message,message.any,message.revoked
 ```
 
-`message` covers normal incoming traffic and `message.any` includes messages created by the connected WhatsApp account, which is required for owner `fromMe` controls. Do not subscribe this route to `*`; unrelated events such as `session.status` create noisy traffic the router does not need.
+`message` covers normal incoming traffic, `message.any` includes messages created by the connected WhatsApp account for owner `fromMe` controls, and `message.revoked` feeds Zina's durable deleted-message lifecycle. Do not subscribe this route to `*`; unrelated events such as `session.status` create noisy traffic the router does not need.
 
 If WAHA is outside this Compose network, use the backend's public URL instead:
 
 ```text
-http://YOUR_DROPLET_IP/webhooks/waha
+http://YOUR_DROPLET_IP/webhooks/waha-events
 ```
 
 ## DigitalOcean Same-Server Plan
@@ -245,8 +245,8 @@ DATABASE_URL_SYNC=postgresql://datacube:<strong-db-password>@postgres:5432/datac
 WAHA_SERVICE_URL=http://waha:3000
 WAHA_API_KEY=<reuse-the-value-from-your-current-waha-.env>
 WAHA_SESSION_NAME=default
-WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha
-WHATSAPP_HOOK_EVENTS=message,message.any
+WHATSAPP_HOOK_URL=http://api:8080/webhooks/waha-events
+WHATSAPP_HOOK_EVENTS=message,message.any,message.revoked
 WAHA_BASE_URL=http://YOUR_DROPLET_IP:3000
 PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
 ADMIN_USERNAME=zina
@@ -259,6 +259,8 @@ ADMIN_COOKIE_SECURE=false
 ADMIN_API_TOKEN=<strong-admin-token-for-scripts>
 LOCAL_TEST_DM_WHATSAPP_ID=<your-test-number>@c.us
 ```
+
+`deploy/scripts/deploy.sh` validates these webhook values and fails closed if the production env still points at the legacy `/webhooks/waha` route or omits `message.revoked`.
 
 Exact commands to run on the DigitalOcean server:
 
@@ -334,10 +336,10 @@ Files:
 - [dm_webhook.json](c:/Users/cruzan/Documents/DatacubeAU_com.bot/bot_core/examples/dm_webhook.json)
 - [group_mention_webhook.json](c:/Users/cruzan/Documents/DatacubeAU_com.bot/bot_core/examples/group_mention_webhook.json)
 
-You can also post them directly:
+You can also post them directly to the combined event gateway:
 
 ```bash
-curl -X POST http://localhost:8080/webhooks/waha \
+curl -X POST http://localhost:8080/webhooks/waha-events \
   -H "Content-Type: application/json" \
   --data @bot_core/examples/dm_webhook.json
 ```
