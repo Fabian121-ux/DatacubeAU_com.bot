@@ -44,12 +44,7 @@ def _bind_inbound_session(monkeypatch, inbound_module, db_session) -> None:
     )
 
 
-def _from_me_event(
-    *,
-    message_id: str,
-    body: str = "Zina generated reply",
-    source: str = "app",
-) -> dict:
+def _from_me_event(*, message_id: str, body: str = "Zina generated reply") -> dict:
     return {
         "event": "message.any",
         "session": "default",
@@ -58,14 +53,34 @@ def _from_me_event(
             "chatId": PEER_ID,
             "from": PEER_ID,
             "fromMe": True,
-            "source": source,
             "body": body,
         },
     }
 
 
+def _patch_remote_sources(monkeypatch, mapping: dict[str, str]) -> None:
+    import app.services.outbound_origin_service as origin_module
+
+    async def fake_get_chat_message(self, *, chat_id: str, message_id: str, session_name=None):
+        return {"id": message_id, "source": mapping.get(message_id, "app")}
+
+    async def fake_close(self):
+        return None
+
+    monkeypatch.setattr(origin_module.WAHAClient, "get_chat_message", fake_get_chat_message)
+    monkeypatch.setattr(origin_module.WAHAClient, "close", fake_close)
+
+
 @pytest.mark.asyncio
-async def test_outbound_origin_uses_causal_waha_source_and_exact_completed_ids(db_session):
+async def test_outbound_origin_uses_causal_waha_source_and_exact_completed_ids(monkeypatch, db_session):
+    _patch_remote_sources(
+        monkeypatch,
+        {
+            "ECHO-BEFORE-SEND-RETURN": "api",
+            "FABIAN-SAME-TEXT": "app",
+            "LEGACY-UNKNOWN-SOURCE": "",
+        },
+    )
     db_session.add(
         AuditLog(
             action="outbound_queue_sent",
@@ -77,8 +92,7 @@ async def test_outbound_origin_uses_causal_waha_source_and_exact_completed_ids(d
             },
         )
     )
-    # A same-text in-flight row must not be enough to classify an app-authored owner
-    # message as Zina. This is the regression for the causal-correlation P1 finding.
+    # Same text in the same chat is deliberately present; it is not origin evidence.
     db_session.add(
         OutboundMessage(
             chat_id=PEER_ID,
@@ -90,27 +104,18 @@ async def test_outbound_origin_uses_causal_waha_source_and_exact_completed_ids(d
 
     service = OutboundOriginService(db_session)
 
-    # Exact persisted WAHA delivery IDs remain valid evidence even if source is absent.
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="ZINA-TRANSPORT-91",
     ) is True
-
-    # WAHA's documented API source is causal evidence during the pre-response race.
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="ECHO-BEFORE-SEND-RETURN",
-        transport_source="api",
     ) is True
-
-    # Same text, same chat, same timing is still a real owner event when WAHA says app.
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="FABIAN-SAME-TEXT",
-        transport_source="app",
     ) is False
-
-    # Missing source without an exact completed transport ID is preserved, not guessed.
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="LEGACY-UNKNOWN-SOURCE",
@@ -182,7 +187,7 @@ async def test_zina_outbound_echo_does_not_resume_takeover(monkeypatch, db_sessi
     await db_session.commit()
 
     result = await waha_webhook(
-        _Request(_from_me_event(message_id="ZINA-TRANSPORT-92", source="api")),
+        _Request(_from_me_event(message_id="ZINA-TRANSPORT-92")),
         BackgroundTasks(),
     )
 
@@ -228,6 +233,7 @@ async def test_api_source_echo_before_send_return_does_not_resume_takeover(monke
     monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
     monkeypatch.setattr(inbound_module.settings, "environment", "test")
     _bind_inbound_session(monkeypatch, inbound_module, db_session)
+    _patch_remote_sources(monkeypatch, {"ECHO-BEFORE-SEND-RETURN": "api"})
 
     await db_session.execute(delete(OutboundMessage))
     await db_session.execute(delete(ConversationTakeover))
@@ -240,8 +246,6 @@ async def test_api_source_echo_before_send_return_does_not_resume_takeover(monke
             inactivity_seconds=120,
         )
     )
-    # Deliberately add a same-text queue row to prove source=api, not payload matching,
-    # is what causes suppression during the early message.any race.
     db_session.add(
         OutboundMessage(
             chat_id=PEER_ID,
@@ -252,7 +256,7 @@ async def test_api_source_echo_before_send_return_does_not_resume_takeover(monke
     await db_session.commit()
 
     result = await waha_webhook(
-        _Request(_from_me_event(message_id="ECHO-BEFORE-SEND-RETURN", source="api")),
+        _Request(_from_me_event(message_id="ECHO-BEFORE-SEND-RETURN")),
         BackgroundTasks(),
     )
     assert result["status"] == "ignored"
@@ -280,6 +284,7 @@ async def test_same_text_app_source_owner_message_is_not_suppressed(monkeypatch,
     monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
     monkeypatch.setattr(inbound_module.settings, "environment", "test")
     _bind_inbound_session(monkeypatch, inbound_module, db_session)
+    _patch_remote_sources(monkeypatch, {"FABIAN-SAME-TEXT": "app"})
 
     await db_session.execute(delete(OutboundMessage))
     await db_session.execute(delete(ConversationTakeover))
@@ -302,7 +307,7 @@ async def test_same_text_app_source_owner_message_is_not_suppressed(monkeypatch,
     await db_session.commit()
 
     result = await waha_webhook(
-        _Request(_from_me_event(message_id="FABIAN-SAME-TEXT", source="app")),
+        _Request(_from_me_event(message_id="FABIAN-SAME-TEXT")),
         BackgroundTasks(),
     )
 
