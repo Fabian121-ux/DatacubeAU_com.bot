@@ -70,12 +70,15 @@ jobs:
               )
 
           required_operational_lines = (
+              "python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.5.3'",
               'docker network create --driver bridge --internal "$network" >/dev/null',
               'echo "STRIX_DOCKER_SANDBOX_NETWORK=$network" >> "$GITHUB_ENV"',
               'STRIX_TELEMETRY: "false"',
               'STRIX_SANDBOX_MEM_LIMIT: "2g"',
               'STRIX_SANDBOX_CPUS: "2"',
               'STRIX_SANDBOX_PIDS_LIMIT: "512"',
+              'STRIX_SANDBOX_LOG_MAX_SIZE: "25m"',
+              'STRIX_SANDBOX_LOG_MAX_FILE: "2"',
               'uses: actions/upload-artifact@v4',
               'path: strix_runs/',
               'persist-credentials: false',
