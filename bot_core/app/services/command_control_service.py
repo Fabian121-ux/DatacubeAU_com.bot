@@ -88,7 +88,26 @@ class CommandControlService:
             if primary_owner is None or getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
                 return None
             if not await self.catalog.is_enabled(self.PUSH_COMMAND):
-                return None
+                owner_chat_id = (
+                    primary_owner.normalized_whatsapp_id
+                    or AdminManagementService.normalize_whatsapp_id(primary_owner.whatsapp_number)
+                )
+                if not owner_chat_id:
+                    return CommandControlResult(
+                        consumed=True,
+                        command=self.PUSH_COMMAND,
+                        reply_text="Push is currently disabled.",
+                        error="command disabled",
+                    )
+                return await self._finish(
+                    owner_chat_id,
+                    CommandControlResult(
+                        consumed=True,
+                        command=self.PUSH_COMMAND,
+                        reply_text="Push is currently disabled.",
+                        error="command disabled",
+                    ),
+                )
             pushed = await PushCommandService(self.session).handle(
                 message,
                 owner=primary_owner,
