@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import BackgroundTasks
 import pytest
 from sqlalchemy import delete, select, text
@@ -10,6 +12,7 @@ from app.models.conversation_takeover import ConversationTakeover
 from app.models.schema import AuditLog, OutboundMessage
 from app.services.outbound_origin_service import OutboundOriginService
 from app.services.push_command_service import PushCommandService, PushSource
+from app.utils.time import utcnow
 
 
 PEER_ID = "2348000000002@c.us"
@@ -61,6 +64,32 @@ async def test_outbound_origin_matches_nested_waha_transport_id(db_session):
     assert await service.is_zina_originated(
         chat_id=PEER_ID,
         transport_message_id="FABIAN-MANUAL-1",
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_outbound_origin_uses_recent_sending_row_during_echo_race(db_session):
+    row = OutboundMessage(
+        chat_id=PEER_ID,
+        message_text="Zina generated reply",
+        status="sending",
+        next_attempt_at=utcnow(),
+        updated_at=utcnow(),
+    )
+    db_session.add(row)
+    await db_session.flush()
+
+    service = OutboundOriginService(db_session)
+    assert await service.is_zina_originated(
+        chat_id=PEER_ID,
+        transport_message_id="ECHO-BEFORE-SEND-RETURN",
+    ) is True
+
+    row.updated_at = utcnow() - timedelta(minutes=6)
+    await db_session.flush()
+    assert await service.is_zina_originated(
+        chat_id=PEER_ID,
+        transport_message_id="STALE-MANUAL-OWNER-EVENT",
     ) is False
 
 
@@ -137,6 +166,61 @@ async def test_zina_outbound_echo_does_not_resume_takeover(monkeypatch):
                     AuditLog.entity_id == "92",
                 )
             )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_inflight_outbound_echo_does_not_resume_takeover(monkeypatch):
+    import app.api.inbound as inbound_module
+
+    monkeypatch.setattr(inbound_module.settings, "waha_session_name", "default")
+    monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
+    monkeypatch.setattr(inbound_module.settings, "environment", "test")
+
+    async with SessionLocal() as db:
+        await db.execute(delete(OutboundMessage))
+        await db.execute(delete(ConversationTakeover))
+        await db.execute(text("DELETE FROM inbound_webhook_receipts"))
+        db.add(
+            ConversationTakeover(
+                chat_id=PEER_ID,
+                state="zina_assisting",
+                auto_assist_enabled=True,
+                inactivity_seconds=120,
+            )
+        )
+        db.add(
+            OutboundMessage(
+                chat_id=PEER_ID,
+                message_text="Zina generated reply",
+                status="sending",
+                next_attempt_at=utcnow(),
+                updated_at=utcnow(),
+            )
+        )
+        await db.commit()
+
+    try:
+        result = await waha_webhook(
+            _Request(_from_me_event(message_id="ECHO-BEFORE-SEND-RETURN")),
+            BackgroundTasks(),
+        )
+        assert result["status"] == "ignored"
+        assert result["reason"] == "zina_outbound_echo"
+
+        async with SessionLocal() as db:
+            takeover = (
+                await db.execute(
+                    select(ConversationTakeover).where(ConversationTakeover.chat_id == PEER_ID)
+                )
+            ).scalar_one()
+            assert takeover.state == "zina_assisting"
+            assert takeover.last_owner_message_at is None
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(OutboundMessage))
+            await db.execute(delete(ConversationTakeover))
+            await db.execute(text("DELETE FROM inbound_webhook_receipts"))
             await db.commit()
 
 
