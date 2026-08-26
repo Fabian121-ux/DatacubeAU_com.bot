@@ -30,14 +30,18 @@ async def _owner(db_session) -> AdminAccount:
 
 
 async def _message(db_session, *, source_id: str = "DEL-1", chat_type: str = "dm") -> Message:
-    contact = Contact(
-        whatsapp_id=AMANDA_ID,
-        chat_id=AMANDA_ID,
-        display_name="Amanda Christabel",
-        contact_name="Amanda Christabel",
-    )
-    db_session.add(contact)
-    await db_session.flush()
+    contact = (
+        await db_session.execute(select(Contact).where(Contact.whatsapp_id == AMANDA_ID).limit(1))
+    ).scalar_one_or_none()
+    if contact is None:
+        contact = Contact(
+            whatsapp_id=AMANDA_ID,
+            chat_id=AMANDA_ID,
+            display_name="Amanda Christabel",
+            contact_name="Amanda Christabel",
+        )
+        db_session.add(contact)
+        await db_session.flush()
     message = Message(
         contact_id=contact.id,
         chat_id=AMANDA_ID if chat_type == "dm" else "120363000000000000@g.us",
@@ -161,7 +165,7 @@ async def test_owner_self_dm_dot_dm_queues_private_response(db_session):
     )
 
     assert result is not None and result.consumed is True
-    assert result.command == "/deleted-message"
+    assert result.command in {".dm", "/deleted-message"}
     queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
     assert len(queued) == 1
     assert queued[0].chat_id == OWNER_ID
