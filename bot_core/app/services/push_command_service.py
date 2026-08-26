@@ -51,6 +51,7 @@ class PushCommandService:
     """
 
     COMMAND = "/push"
+    TEXT_MESSAGE_TYPES = frozenset({"text", "chat", "conversation", "extendedtextmessage"})
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -272,8 +273,8 @@ class PushCommandService:
                 return normalized
         return None
 
-    @staticmethod
-    def _render_projection(source: PushSource, source_contact: Contact | None) -> str:
+    @classmethod
+    def _render_projection(cls, source: PushSource, source_contact: Contact | None) -> str:
         if source.direction == "outbound":
             sender = "Fabian"
         elif source.direction == "inbound":
@@ -287,18 +288,19 @@ class PushCommandService:
         else:
             sender = "Quoted WhatsApp message (sender direction unavailable in WAHA reply snapshot)"
         body = (source.message_text or "").strip() or "(no text/caption captured)"
+        message_type = (source.message_type or "text").strip()
         parts = [
             "📌 Pushed message",
             "",
             f"From: {sender}",
             f"Chat: {source.chat_id}",
             f"Sent: {source.created_at.isoformat() if source.created_at else 'timestamp unavailable in reply snapshot'}",
-            f"Type: {source.message_type or 'unknown'}",
+            f"Type: {message_type or 'unknown'}",
             f"Source ID: {source.source_message_id}",
             f"Evidence: {source.evidence_source}",
             "",
             body,
         ]
-        if (source.message_type or "text").lower() != "text":
+        if message_type.lower() not in cls.TEXT_MESSAGE_TYPES:
             parts.extend(["", "Media: original media is not forwarded by .push in this version; captured text/caption and metadata are preserved."])
         return "\n".join(parts)
