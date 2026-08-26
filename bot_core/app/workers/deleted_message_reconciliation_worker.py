@@ -18,14 +18,25 @@ async def deleted_message_reconciliation_worker() -> None:
 
     The unmatched revoke is already durable PostgreSQL evidence. This worker closes races
     between independent webhook requests and survives process restarts; it does not create
-    content for messages Zina never observed.
+    content for messages Zina never observed. A transient database/service failure must not
+    permanently terminate this authoritative fallback while the API process keeps running.
     """
-    try:
-        while True:
+    while True:
+        try:
             reconciled = await _reconcile_pending_batch(limit=50)
-            await asyncio.sleep(2 if reconciled else 5)
-    except asyncio.CancelledError:
-        raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "message_revocation_reconciliation_iteration_failed",
+                error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(5)
+            continue
+
+        await asyncio.sleep(2 if reconciled else 5)
 
 
 async def _reconcile_pending_batch(*, limit: int) -> int:
