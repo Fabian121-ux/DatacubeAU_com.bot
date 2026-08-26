@@ -18,6 +18,7 @@ from app.services.conversation_takeover_service import ConversationTakeoverServi
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.logging_service import log_event
 from app.services.natural_action_planner_service import NaturalActionPlannerService
+from app.services.outbound_origin_service import OutboundOriginService
 
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,35 @@ async def waha_webhook(
         try:
             if chat_id and not _is_group_chat(chat_id):
                 async with SessionLocal() as db:
+                    # With `message.any` enabled, WAHA echoes API-sent Zina output as
+                    # `fromMe`. Identify those echoes from the existing successful
+                    # outbound delivery audits before applying any owner-activity or
+                    # command behavior. This preserves takeover until Fabian himself
+                    # actually responds.
+                    if await OutboundOriginService(db).is_zina_originated(
+                        chat_id=chat_id,
+                        transport_message_id=message_id,
+                    ):
+                        if idempotency_key:
+                            await InboundIdempotencyService(db).mark_completed(idempotency_key, commit=False)
+                        await db.commit()
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "webhook_ignored",
+                            request_id=request_id,
+                            event_name=event_name or "message.any",
+                            message_id=message_id,
+                            chat_id=chat_id,
+                            reason="zina_outbound_echo",
+                        )
+                        return {
+                            "status": "ignored",
+                            "reason": "zina_outbound_echo",
+                            "event_name": event_name or "message.any",
+                            "message_id": message_id,
+                        }
+
                     normalized = MessageNormalizer().normalize(event)
                     control_only = CommandControlService.is_non_takeover_control(normalized.message_text)
 
