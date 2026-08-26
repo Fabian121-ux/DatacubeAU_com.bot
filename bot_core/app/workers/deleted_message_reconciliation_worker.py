@@ -30,6 +30,9 @@ async def deleted_message_reconciliation_worker() -> None:
 
 async def _reconcile_pending_batch(*, limit: int) -> int:
     async with SessionLocal() as db:
+        # Only currently reconcilable audits may consume the bounded batch. A revoke for
+        # content Zina never observed remains truthful unmatched evidence, but it cannot
+        # permanently starve a later revoke whose Message has since committed.
         rows = (
             await db.execute(
                 text(
@@ -46,6 +49,20 @@ async def _reconcile_pending_batch(*, limit: int) -> int:
                           FROM audit_logs done
                           WHERE done.action = 'message_revocation_late_reconciled'
                             AND done.details_json->>'source_unmatched_audit_id' = a.id::text
+                      )
+                      AND EXISTS (
+                          SELECT 1
+                          FROM messages m
+                          WHERE m.lifecycle_status <> 'revoked'
+                            AND (
+                                m.source_message_id = a.details_json->>'revoked_message_id'
+                                OR m.raw_payload_json->>'id' = a.details_json->>'revoked_message_id'
+                                OR m.raw_payload_json->'message'->>'id' = a.details_json->>'revoked_message_id'
+                            )
+                            AND (
+                                NULLIF(a.details_json->>'chat_id', '') IS NULL
+                                OR m.chat_id = a.details_json->>'chat_id'
+                            )
                       )
                     ORDER BY a.created_at, a.id
                     LIMIT :limit
