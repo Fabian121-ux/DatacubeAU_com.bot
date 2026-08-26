@@ -8,39 +8,46 @@ AS $$
 DECLARE
     candidate jsonb;
     resolved text;
+    attempt integer;
 BEGIN
     IF payload IS NULL OR jsonb_typeof(payload) <> 'object' THEN
         RETURN NULL;
     END IF;
 
-    candidate := payload->'id';
-    IF candidate IS NULL AND jsonb_typeof(payload->'message') = 'object' THEN
-        candidate := payload->'message'->'id';
-    END IF;
-
-    IF candidate IS NULL THEN
-        RETURN NULL;
-    END IF;
-
-    CASE jsonb_typeof(candidate)
-        WHEN 'string' THEN
-            resolved := candidate #>> '{}';
-        WHEN 'number' THEN
-            resolved := candidate #>> '{}';
-        WHEN 'object' THEN
-            resolved := COALESCE(
-                NULLIF(candidate->>'_serialized', ''),
-                NULLIF(candidate->>'id', '')
-            );
+    FOR attempt IN 1..2 LOOP
+        IF attempt = 1 THEN
+            candidate := payload->'id';
+        ELSIF jsonb_typeof(payload->'message') = 'object' THEN
+            candidate := payload->'message'->'id';
         ELSE
-            resolved := NULL;
-    END CASE;
+            candidate := NULL;
+        END IF;
 
-    resolved := NULLIF(BTRIM(COALESCE(resolved, '')), '');
-    IF resolved IS NULL OR LENGTH(resolved) > 160 THEN
-        RETURN NULL;
-    END IF;
-    RETURN resolved;
+        resolved := NULL;
+        IF candidate IS NOT NULL THEN
+            CASE jsonb_typeof(candidate)
+                WHEN 'string' THEN
+                    resolved := candidate #>> '{}';
+                WHEN 'number' THEN
+                    resolved := candidate #>> '{}';
+                WHEN 'object' THEN
+                    IF jsonb_typeof(candidate->'_serialized') IN ('string', 'number') THEN
+                        resolved := candidate->>'_serialized';
+                    ELSIF jsonb_typeof(candidate->'id') IN ('string', 'number') THEN
+                        resolved := candidate->>'id';
+                    END IF;
+                ELSE
+                    resolved := NULL;
+            END CASE;
+        END IF;
+
+        resolved := NULLIF(BTRIM(COALESCE(resolved, '')), '');
+        IF resolved IS NOT NULL AND LENGTH(resolved) <= 160 THEN
+            RETURN resolved;
+        END IF;
+    END LOOP;
+
+    RETURN NULL;
 END;
 $$;
 
