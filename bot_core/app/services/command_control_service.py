@@ -17,6 +17,7 @@ from app.services.natural_action_planner_service import DEFAULT_OWNER_TIMEZONE, 
 from app.services.owner_command_service import OwnerCommandService
 from app.services.owner_management_command_service import OwnerManagementCommandService
 from app.services.push_command_service import PushCommandService
+from app.services.view_once_command_service import ViewOnceCommandService
 from app.utils.time import utcnow
 
 
@@ -34,14 +35,17 @@ class CommandControlService:
     """Owner command surface backed by existing Zina subsystems.
 
     The self-DM remains the privileged control inbox for management and scheduling.
-    `.push` is the deliberate exception: this method is only called from the authenticated,
-    configured-session `fromMe` webhook path, so the primary WAHA account may invoke it
-    while replying inside another DM. Its result is delivered privately to the owner self-DM.
+    `.push` and the view-once controls are deliberate peer-DM exceptions: this method
+    is only called from the authenticated, configured-session `fromMe` webhook path,
+    so the primary WAHA account may invoke them while replying inside another DM.
+    Their results are delivered privately to the owner self-DM.
     """
 
     DRAFT_TTL = timedelta(minutes=30)
     SCHEDULE_COMMAND = "/schedule"
     PUSH_COMMAND = "/push"
+    VIEW_ONCE_COMMAND = "/vvopen"
+    _VIEW_ONCE_ALIASES = {".vv", ".vvopen", "/vvopen", ".vvretain"}
     _GUIDED = {".sch", ".target", ".message", ".date", ".time", ".save", ".cancel"}
     _MANAGEMENT_ALIASES = {
         ".commands": "/commands",
@@ -83,7 +87,7 @@ class CommandControlService:
         # so it cannot be resolved through AdminManagementService. The upstream caller
         # has already authenticated the WAHA webhook secret, verified fromMe=true, and
         # bound the event to the configured WAHA session. That session identity is the
-        # primary owner authority for this one narrow peer-chat command.
+        # primary owner authority for these narrow peer-chat control commands.
         if command in {".push", self.PUSH_COMMAND}:
             if primary_owner is None or getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
                 return None
@@ -121,6 +125,48 @@ class CommandControlService:
                 command=self.PUSH_COMMAND,
                 outbound_queue_id=pushed.outbound_queue_id,
                 error=pushed.error,
+            )
+
+        if command in self._VIEW_ONCE_ALIASES:
+            if primary_owner is None or getattr(message.chat_type, "value", str(message.chat_type)) != "dm":
+                return None
+            owner_chat_id = (
+                primary_owner.normalized_whatsapp_id
+                or AdminManagementService.normalize_whatsapp_id(primary_owner.whatsapp_number)
+            )
+            if not await self.catalog.is_enabled(self.VIEW_ONCE_COMMAND):
+                if not owner_chat_id:
+                    return CommandControlResult(
+                        consumed=True,
+                        command=self.VIEW_ONCE_COMMAND,
+                        reply_text="View-once controls are currently disabled.",
+                        error="command disabled",
+                    )
+                return await self._finish(
+                    owner_chat_id,
+                    CommandControlResult(
+                        consumed=True,
+                        command=self.VIEW_ONCE_COMMAND,
+                        reply_text="View-once controls are currently disabled.",
+                        error="command disabled",
+                    ),
+                )
+            view_once = await ViewOnceCommandService(self.session).handle(
+                command,
+                args,
+                message=message,
+                owner=primary_owner,
+                permission="owner",
+                request_id=request_id,
+                transport_message_id=transport_message_id,
+            )
+            await self.catalog.record_usage(self.VIEW_ONCE_COMMAND)
+            return CommandControlResult(
+                consumed=view_once.consumed,
+                command=self.VIEW_ONCE_COMMAND,
+                reply_text=view_once.reply_text,
+                outbound_queue_id=view_once.outbound_queue_id,
+                error=view_once.error,
             )
 
         admin = await self.admins.resolve_admin_message(message)
@@ -270,14 +316,12 @@ class CommandControlService:
 
     @classmethod
     def is_non_takeover_control(cls, text_value: str) -> bool:
-        """Return True for owner control text that must not count as a human reply.
-
-        `.push` is intentionally usable from a peer DM. It archives a quoted message
-        into Fabian's self-DM and should not resume Fabian or cancel Zina's deferred
-        reply in that peer conversation.
-        """
+        """Return True for owner controls that must not count as a human reply."""
         parsed = cls.parse(text_value)
-        return bool(parsed and parsed[0] in {".push", cls.PUSH_COMMAND})
+        if not parsed:
+            return False
+        command = parsed[0]
+        return command in {".push", cls.PUSH_COMMAND, *cls._VIEW_ONCE_ALIASES}
 
     @staticmethod
     def _slash_alias(command: str) -> str | None:
