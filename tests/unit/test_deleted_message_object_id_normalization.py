@@ -43,21 +43,40 @@ async def test_object_valued_transport_ids_are_normalized_for_revocation(db_sess
             "chatId": AMANDA_ID,
         },
     )
-    db_session.add_all([top_level, nested])
+    fallback = Message(
+        contact_id=contact.id,
+        chat_id=AMANDA_ID,
+        chat_type="dm",
+        direction="inbound",
+        message_text="nested fallback id",
+        normalized_text="nested fallback id",
+        message_type="chat",
+        raw_payload_json={
+            "id": {"unexpected": "not-a-transport-id"},
+            "message": {"id": "OBJECT-NESTED-FALLBACK-1"},
+            "chatId": AMANDA_ID,
+        },
+    )
+    db_session.add_all([top_level, nested, fallback])
     await db_session.commit()
 
     rows = (
         await db_session.execute(
             text(
                 "SELECT id, source_message_id FROM messages "
-                "WHERE id IN (:top_id, :nested_id) ORDER BY id"
+                "WHERE id IN (:top_id, :nested_id, :fallback_id) ORDER BY id"
             ),
-            {"top_id": top_level.id, "nested_id": nested.id},
+            {
+                "top_id": top_level.id,
+                "nested_id": nested.id,
+                "fallback_id": fallback.id,
+            },
         )
     ).all()
     resolved = {row.id: row.source_message_id for row in rows}
     assert resolved[top_level.id] == "OBJECT-TOP-1"
     assert resolved[nested.id] == "OBJECT-NESTED-1"
+    assert resolved[fallback.id] == "OBJECT-NESTED-FALLBACK-1"
 
 
 @pytest.mark.asyncio
@@ -98,5 +117,5 @@ def test_object_id_fix_is_additive_and_keeps_migration_027_unchanged() -> None:
     assert "zina_resolve_message_source_id" in migration
     assert "candidate->>'_serialized'" in migration
     assert "candidate->>'id'" in migration
-    assert "LENGTH(resolved) > 160" in migration
+    assert "LENGTH(resolved) <= 160" in migration
     assert "CREATE OR REPLACE FUNCTION zina_populate_message_source_id" in migration
