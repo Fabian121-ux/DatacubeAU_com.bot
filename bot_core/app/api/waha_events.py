@@ -24,9 +24,10 @@ async def waha_events_webhook(
     """WAHA event gateway that adds durable revoke handling without duplicating message routing.
 
     Normal `message`/`message.any` traffic delegates to the established inbound webhook.
-    Only `message.revoked` is handled here. After a normal message finishes, the gateway
-    also checks whether an earlier unmatched revoke was waiting for that exact source ID;
-    this closes the rare revoke-before-message-commit race without synthesizing content.
+    Only `message.revoked` is handled here. For an accepted normal message, reconciliation
+    is appended to the same BackgroundTasks queue *after* the established inbound task,
+    so an earlier unmatched revoke is checked only after the original Message had a chance
+    to persist. This closes the revoke-before-message-commit race without synthesizing content.
     """
     try:
         event = await request.json()
@@ -38,27 +39,19 @@ async def waha_events_webhook(
     event_name = inbound._resolve_event_name(event)
     if event_name != "message.revoked":
         response = await inbound.waha_webhook(request, background_tasks)
-        if event_name in {"message", "message.any"} and response.get("status") in {"accepted", "duplicate"}:
+        if event_name in {"message", "message.any"} and response.get("status") == "accepted":
             payload = inbound._resolve_payload(event)
             source_message_id = inbound._resolve_message_id(payload)
             chat_id = inbound._resolve_chat_id(payload)
             if source_message_id:
-                async with SessionLocal() as db:
-                    reconciled = await DeletedMessageService(db).reconcile_pending_for_message(
-                        source_message_id=source_message_id,
-                        chat_id=chat_id,
-                    )
-                    if reconciled:
-                        await db.commit()
-                        log_event(
-                            logger,
-                            logging.INFO,
-                            "message_revocation_late_reconciled",
-                            message_id=source_message_id,
-                            chat_id=chat_id,
-                        )
-                    else:
-                        await db.rollback()
+                # `inbound.waha_webhook` already appended its persistence/routing task.
+                # Starlette executes BackgroundTasks in insertion order, so this check
+                # runs afterwards instead of racing the original Message commit.
+                background_tasks.add_task(
+                    _reconcile_after_message,
+                    source_message_id,
+                    chat_id,
+                )
         return response
 
     if not inbound._webhook_authenticated(request):
@@ -130,3 +123,23 @@ async def waha_events_webhook(
         "matched": bool(result and result.matched),
         "changed": bool(result and result.changed),
     }
+
+
+async def _reconcile_after_message(source_message_id: str, chat_id: str | None) -> None:
+    """Reconcile a prior unmatched revoke after normal inbound persistence completes."""
+    async with SessionLocal() as db:
+        reconciled = await DeletedMessageService(db).reconcile_pending_for_message(
+            source_message_id=source_message_id,
+            chat_id=chat_id,
+        )
+        if reconciled:
+            await db.commit()
+            log_event(
+                logger,
+                logging.INFO,
+                "message_revocation_late_reconciled",
+                message_id=source_message_id,
+                chat_id=chat_id,
+            )
+        else:
+            await db.rollback()
