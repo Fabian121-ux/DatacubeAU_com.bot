@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -32,6 +33,7 @@ class ViewOnceCommandService:
     MAX_MEDIA_BYTES = 50 * 1024 * 1024
     MAX_TEXT_REPLY_CHARS = 3500
     MAX_LIST_BODY_CHARS = 3250
+    DELIVERY_CAPABILITY_TTL = timedelta(minutes=15)
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -64,8 +66,6 @@ class ViewOnceCommandService:
         if command == ".vvretain":
             return await self._retention(normalized_args, owner_chat_id, request_id, transport_message_id)
 
-        # `.vv` with no arguments is the open/retrieve shorthand. With arguments it
-        # is the namespace for info/list/delete; dispatch subcommands before opening.
         if command == ".vv" and not normalized_args:
             return await self._open(message, owner_chat_id, request_id, transport_message_id)
 
@@ -135,6 +135,8 @@ class ViewOnceCommandService:
             )
             return await self._text(owner_chat_id, "/vvopen", "View-once media exceeds Zina's 50 MB safe delivery limit.", "media too large")
 
+        now = utcnow()
+        capability_expires_at = now + self.DELIVERY_CAPABILITY_TTL
         queued = OutboundMessage(
             chat_id=owner_chat_id,
             message_text="",
@@ -144,9 +146,13 @@ class ViewOnceCommandService:
             status="pending",
             retry_count=0,
             max_retries=3,
-            next_attempt_at=utcnow(),
-            formatting_json={"source": "view_once_command", "source_message_id": record.source_message_id},
-            updated_at=utcnow(),
+            next_attempt_at=now,
+            formatting_json={
+                "source": "view_once_command",
+                "source_message_id": record.source_message_id,
+                "capability_expires_at": capability_expires_at.isoformat(),
+            },
+            updated_at=now,
         )
         self.session.add(queued)
         await self.session.flush()
@@ -155,7 +161,13 @@ class ViewOnceCommandService:
             "/vvopen",
             request_id,
             transport_message_id,
-            {"source_message_id": record.source_message_id, "media_type": media_type, "size_bytes": media_size, "outbound_queue_id": queued.id},
+            {
+                "source_message_id": record.source_message_id,
+                "media_type": media_type,
+                "size_bytes": media_size,
+                "outbound_queue_id": queued.id,
+                "capability_expires_at": capability_expires_at.isoformat(),
+            },
         )
         return ViewOnceCommandResult(True, "/vvopen", outbound_queue_id=queued.id)
 
