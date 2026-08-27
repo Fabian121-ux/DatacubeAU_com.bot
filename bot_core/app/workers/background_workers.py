@@ -21,6 +21,9 @@ from app.utils.time import utcnow
 logger = logging.getLogger(__name__)
 
 _DELIVERY_STATUSES = ("pending", "retrying")
+_VIEW_ONCE_RESEND_BLOCKED_ERROR = (
+    "View-once media is no longer available for resend after its temporary WAHA file capability was scrubbed."
+)
 
 
 async def outbound_queue_delivery_worker() -> None:
@@ -156,6 +159,8 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
+            if await _block_scrubbed_view_once_resend(session, message):
+                continue
             try:
                 if message.media_url:
                     response = await client.send_media(
@@ -192,6 +197,48 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         return processed
 
 
+async def _block_scrubbed_view_once_resend(session, message: OutboundMessage) -> bool:
+    """Fail closed when an operator resets a scrubbed view-once media row.
+
+    The outbound admin surface can reset historical rows to ``pending``. Once Zina
+    has delivered or terminally failed a view-once item, the temporary WAHA file
+    capability is deliberately erased. Such a row must never fall through to the
+    text branch and send a blank message after a manual resend.
+    """
+    source_id = _view_once_source_id(message)
+    if not source_id or message.media_url:
+        return False
+
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("resendable") is not False and message.message_text.strip():
+        return False
+
+    message.status = "failed"
+    message.error_message = _VIEW_ONCE_RESEND_BLOCKED_ERROR
+    message.updated_at = utcnow()
+    _mark_view_once_non_resendable(message)
+    session.add(
+        AuditLog(
+            action="view_once_resend_blocked",
+            entity_type="view_once_media",
+            entity_id=source_id,
+            details_json={
+                "outbound_queue_id": message.id,
+                "reason": "temporary_media_capability_scrubbed",
+            },
+        )
+    )
+    await session.commit()
+    log_event(
+        logger,
+        logging.WARNING,
+        "view_once_resend_blocked",
+        queue_id=message.id,
+        chat_id=message.chat_id,
+    )
+    return True
+
+
 async def _finalize_view_once_delivery_success(session, message: OutboundMessage, delivery_snapshot: dict[str, str]) -> None:
     """Finalize one view-once queue row only after WAHA confirms delivery.
 
@@ -205,6 +252,7 @@ async def _finalize_view_once_delivery_success(session, message: OutboundMessage
 
     await ViewOnceMediaService(session).mark_returned(view_once_source_id)
     message.media_url = None
+    _mark_view_once_non_resendable(message)
     session.add(
         AuditLog(
             action="view_once_returned_to_owner",
@@ -241,6 +289,14 @@ def _view_once_source_id(message: OutboundMessage) -> str | None:
     return source_id[:200]
 
 
+def _mark_view_once_non_resendable(message: OutboundMessage) -> None:
+    metadata = dict(message.formatting_json) if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("source") != "view_once_command" or not metadata.get("source_message_id"):
+        return
+    metadata["resendable"] = False
+    message.formatting_json = metadata
+
+
 async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -> None:
     next_retry_count = message.retry_count + 1
     message.retry_count = next_retry_count
@@ -258,6 +314,7 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
         # Retention is OFF. Once retries are exhausted there is no reason to keep a
         # private WAHA file capability in durable queue state or backups.
         message.media_url = None
+        _mark_view_once_non_resendable(message)
         await ViewOnceMediaService(session).mark_delivery_unavailable(view_once_source_id)
         session.add(
             AuditLog(
