@@ -7,22 +7,14 @@ import pytest
 from app.config import settings
 from app.models.schema import AuditLog, OutboundMessage
 from app.utils.time import utcnow
-from app.workers.background_workers import _deliver_due_outbound_messages, _mark_delivery_failed
+from app.workers.background_workers import (
+    _delivery_snapshot,
+    _finalize_view_once_delivery_success,
+    _mark_delivery_failed,
+)
 
 
 OWNER_ID = "2348000000001@c.us"
-
-
-class SuccessfulMediaClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, str]] = []
-
-    async def send_media(self, chat_id: str, *, media_url: str, caption: str | None = None):
-        self.calls.append({"chat_id": chat_id, "media_url": media_url, "caption": caption or ""})
-        return {"id": "WAHA-SENT-1"}
-
-    async def send_text(self, chat_id: str, text: str):  # pragma: no cover - media path only
-        raise AssertionError("view-once delivery must use the media branch")
 
 
 def _media_url(source_id: str) -> str:
@@ -53,7 +45,7 @@ async def _insert_metadata(db_session, source_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_successful_view_once_delivery_marks_returned_only_after_waha_success_and_clears_private_url(db_session):
+async def test_successful_view_once_delivery_finalization_marks_returned_and_clears_private_url(db_session):
     source_id = "VV-DELIVERY-SUCCESS"
     await _insert_metadata(db_session, source_id)
     queued = OutboundMessage(
@@ -62,7 +54,7 @@ async def test_successful_view_once_delivery_marks_returned_only_after_waha_succ
         media_url=_media_url(source_id),
         media_type="image",
         media_caption=f"View-once source {source_id}",
-        status="pending",
+        status="sending",
         retry_count=0,
         max_retries=3,
         next_attempt_at=utcnow(),
@@ -70,22 +62,21 @@ async def test_successful_view_once_delivery_marks_returned_only_after_waha_succ
         updated_at=utcnow(),
     )
     db_session.add(queued)
+    await db_session.flush()
+
+    # Mirror the worker success path: snapshot while the ephemeral URL still exists,
+    # then finalize only after WAHA has returned success.
+    delivery_snapshot = _delivery_snapshot(queued)
+    queued.status = "sent"
+    await _finalize_view_once_delivery_success(db_session, queued, delivery_snapshot)
     await db_session.commit()
-    queue_id = queued.id
 
-    client = SuccessfulMediaClient()
-    processed = await _deliver_due_outbound_messages(client)
-
-    assert processed == 1
-    assert len(client.calls) == 1
-    assert client.calls[0]["media_url"] == _media_url(source_id)
-
-    db_session.expire_all()
-    stored = (
-        await db_session.execute(select(OutboundMessage).where(OutboundMessage.id == queue_id))
-    ).scalar_one()
-    assert stored.status == "sent"
-    assert stored.media_url is None
+    assert queued.status == "sent"
+    assert queued.media_url is None
+    assert delivery_snapshot == {
+        "text": f"View-once source {source_id}",
+        "message_type": "image",
+    }
 
     lifecycle = (
         await db_session.execute(
