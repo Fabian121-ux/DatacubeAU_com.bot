@@ -50,9 +50,6 @@ class ViewOnceCapabilityService:
             "viewoncemessagev2extension",
         }
     )
-    # Only these containers are treated as alternate representations of the same
-    # message. Arbitrary recursive traversal can encounter quoted/context messages
-    # whose view-once marker does not describe the source currently being opened.
     _SAME_MESSAGE_KEYS = ("message", "_data")
     _MAX_DEPTH = 8
 
@@ -129,12 +126,7 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def reply_media_size(cls, payload: Any) -> int | None:
-        """Return the largest reported size across supported quoted-media locations.
-
-        WAHA engines can expose the same quoted media under `replyTo.media`,
-        `replyTo.message.media`, or `replyTo._data.media`. A safety bound must inspect
-        every supported location so a nested media object cannot bypass it.
-        """
+        """Return the largest reported size across supported quoted-media locations."""
         if not isinstance(payload, dict):
             return None
         reply_to = payload.get("replyTo")
@@ -159,14 +151,12 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
-        """Return view-once evidence belonging to this message representation only.
+        """Resolve explicit evidence for one message representation, fail closed.
 
-        Direct boolean markers on the current object are authoritative and are all
-        inspected before wrapper evidence so classification never depends on JSON key
-        insertion order. A direct false is fail-closed and overrides same-object
-        wrapper evidence. When no direct boolean exists, view-once wrappers and the
-        supported same-message containers (`message`, `_data`) may provide evidence.
-        Arbitrary dictionaries/lists are intentionally ignored.
+        Direct boolean markers are authoritative. When they are absent, wrapper and
+        alternate same-message representations are all inspected before deciding.
+        Any explicit negative evidence conflicts with positive evidence and wins
+        fail-closed, so classification cannot depend on container/key order.
         """
         if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return None
@@ -188,22 +178,28 @@ class ViewOnceCapabilityService:
         if direct_true:
             return True
 
+        saw_true = False
+        saw_false = False
         for key, value in payload.items():
             normalized = str(key).replace("-", "").replace("_", "").lower()
             if normalized in cls._WRAPPER_KEYS and isinstance(value, dict):
-                return True
+                saw_true = True
 
-        saw_false = False
         for key in cls._SAME_MESSAGE_KEYS:
             nested_payload = payload.get(key)
             if not isinstance(nested_payload, dict):
                 continue
             nested = cls._explicit_view_once(nested_payload, depth + 1)
             if nested is True:
-                return True
-            if nested is False:
+                saw_true = True
+            elif nested is False:
                 saw_false = True
-        return False if saw_false else None
+
+        if saw_false:
+            return False
+        if saw_true:
+            return True
+        return None
 
     @staticmethod
     def _parse_bool(value: Any) -> bool | None:
@@ -234,10 +230,7 @@ class ViewOnceCapabilityService:
         direct = payload.get("media")
         if isinstance(direct, dict):
             candidates.append(direct)
-        for path in (
-            ("message", "media"),
-            ("_data", "media"),
-        ):
+        for path in (("message", "media"), ("_data", "media")):
             value = cls._nested(payload, *path)
             if isinstance(value, dict):
                 candidates.append(value)
@@ -245,15 +238,6 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _media(cls, payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
-        """Merge supported representations of the same WAHA media object safely.
-
-        Engines may split the retrievable URL and MIME/type metadata across direct,
-        `message.media`, and `_data.media` representations. We therefore choose the
-        first retrievable URL but keep scanning for missing metadata. If any supplied
-        type/MIME evidence disagrees about image versus video, metadata is discarded
-        so the command layer fails closed instead of routing through the wrong WAHA
-        endpoint.
-        """
         candidates = cls._media_candidates(payload)
         selected_url: str | None = None
         selected_mime: str | None = None
@@ -280,9 +264,7 @@ class ViewOnceCapabilityService:
                 selected_type = media_type
 
         if len(observed_categories) > 1:
-            # Conflicting image/video evidence is unsafe for endpoint selection.
             return selected_url, None, None
-
         return selected_url, selected_mime, selected_type
 
     @staticmethod
