@@ -67,9 +67,17 @@ class ViewOnceMediaService:
                         source_chat_id = EXCLUDED.source_chat_id,
                         media_type = EXCLUDED.media_type,
                         media_mime = EXCLUDED.media_mime,
-                        capability_state = EXCLUDED.capability_state,
+                        capability_state = CASE
+                            WHEN view_once_media_metadata.returned_to_owner_at IS NOT NULL
+                                THEN 'returned_to_owner'
+                            ELSE EXCLUDED.capability_state
+                        END,
                         evidence_source = EXCLUDED.evidence_source,
-                        transport_available = EXCLUDED.transport_available,
+                        transport_available = CASE
+                            WHEN view_once_media_metadata.returned_to_owner_at IS NOT NULL
+                                THEN FALSE
+                            ELSE EXCLUDED.transport_available
+                        END,
                         metadata_json = EXCLUDED.metadata_json,
                         last_observed_at = NOW(),
                         deleted_at = NULL
@@ -97,7 +105,7 @@ class ViewOnceMediaService:
             text(
                 """
                 UPDATE view_once_media_metadata
-                SET returned_to_owner_at = NOW(),
+                SET returned_to_owner_at = COALESCE(returned_to_owner_at, NOW()),
                     capability_state = 'returned_to_owner',
                     transport_available = FALSE,
                     last_observed_at = NOW()
@@ -108,6 +116,7 @@ class ViewOnceMediaService:
         )
 
     async def mark_delivery_unavailable(self, source_message_id: str) -> None:
+        """Mark transport unavailable without regressing a successful return."""
         await self.session.execute(
             text(
                 """
@@ -115,7 +124,9 @@ class ViewOnceMediaService:
                 SET capability_state = 'unavailable',
                     transport_available = FALSE,
                     last_observed_at = NOW()
-                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                WHERE source_message_id = :source_message_id
+                  AND deleted_at IS NULL
+                  AND returned_to_owner_at IS NULL
                 """
             ),
             {"source_message_id": source_message_id[:200]},
