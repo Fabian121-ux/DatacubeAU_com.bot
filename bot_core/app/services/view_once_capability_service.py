@@ -200,7 +200,7 @@ class ViewOnceCapabilityService:
     def _parse_bool(value: Any) -> bool | None:
         if isinstance(value, bool):
             return value
-        text = str(value or "").strip().lower()
+        text = "" if value is None else str(value).strip().lower()
         if text in {"true", "1", "yes", "on"}:
             return True
         if text in {"false", "0", "no", "off"}:
