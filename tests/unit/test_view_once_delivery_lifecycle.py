@@ -12,6 +12,7 @@ from app.workers.background_workers import (
     _delivery_snapshot,
     _finalize_view_once_delivery_success,
     _mark_delivery_failed,
+    _waha_response_for_audit,
 )
 
 
@@ -43,6 +44,65 @@ async def _insert_metadata(db_session, source_id: str) -> None:
         ),
         {"source_id": source_id},
     )
+
+
+def test_view_once_waha_audit_response_redacts_nested_media_capabilities():
+    source_id = "VV-AUDIT-REDACTION"
+    queued = OutboundMessage(
+        chat_id=OWNER_ID,
+        message_text="",
+        media_url=_media_url(source_id),
+        media_type="image",
+        media_caption="private view-once",
+        status="sending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+        formatting_json={"source": "view_once_command", "source_message_id": source_id},
+        updated_at=utcnow(),
+    )
+    private_url = _media_url("WAHA-RESPONSE-CAPABILITY")
+    response = {
+        "id": "WAHA-DELIVERY-123",
+        "status": "sent",
+        "source": "api",
+        "media": {
+            "url": private_url,
+            "mimetype": "image/jpeg",
+            "base64": "should-not-be-retained",
+        },
+        "message": {"body": "private view-once", "file": {"url": private_url}},
+    }
+
+    audit_response = _waha_response_for_audit(queued, response)
+
+    assert audit_response == {
+        "redacted": True,
+        "response_type": "dict",
+        "id": "WAHA-DELIVERY-123",
+        "status": "sent",
+        "source": "api",
+    }
+    serialized = str(audit_response)
+    assert private_url not in serialized
+    assert "base64" not in serialized
+    assert "private view-once" not in serialized
+
+
+def test_non_view_once_waha_audit_response_preserves_existing_behavior():
+    queued = OutboundMessage(
+        chat_id=OWNER_ID,
+        message_text="ordinary",
+        status="sending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+        formatting_json={},
+        updated_at=utcnow(),
+    )
+    response = {"id": "ordinary-response", "status": "sent"}
+
+    assert _waha_response_for_audit(queued, response) is response
 
 
 @pytest.mark.asyncio
