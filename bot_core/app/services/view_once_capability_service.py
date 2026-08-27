@@ -50,6 +50,10 @@ class ViewOnceCapabilityService:
             "viewoncemessagev2extension",
         }
     )
+    # Only these containers are treated as alternate representations of the same
+    # message. Arbitrary recursive traversal can encounter quoted/context messages
+    # whose view-once marker does not describe the source currently being opened.
+    _SAME_MESSAGE_KEYS = ("message", "_data")
     _MAX_DEPTH = 8
 
     @classmethod
@@ -104,7 +108,7 @@ class ViewOnceCapabilityService:
 
         marker = cls._explicit_view_once(reply_to)
         media = cls._media(reply_to)
-        source_id = cls._scalar_id(reply_to.get("id"))
+        source_id = cls._message_id(reply_to)
         if marker is True and media[0]:
             reason = "Quoted WAHA snapshot contains explicit view-once evidence and a retrievable media URL."
         elif marker is True:
@@ -155,37 +159,43 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
-        if depth > cls._MAX_DEPTH:
+        """Return view-once evidence belonging to this message representation only.
+
+        A direct marker on the current object is authoritative. In particular, an
+        explicit `false` must not be overridden by a nested quoted/context message.
+        When no direct marker exists, descend only through containers that WAHA
+        engines use as alternate representations of the same message (`message` and
+        `_data`). Arbitrary dictionaries/lists are intentionally ignored.
+        """
+        if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return None
-        if isinstance(payload, dict):
-            explicit_false = False
-            for key, value in payload.items():
-                normalized = str(key).replace("-", "").replace("_", "").lower()
-                if normalized in cls._WRAPPER_KEYS and isinstance(value, dict):
-                    return True
-                if normalized in cls._BOOL_KEYS:
-                    parsed = cls._parse_bool(value)
-                    if parsed is True:
-                        return True
-                    if parsed is False:
-                        explicit_false = True
-            for value in payload.values():
-                nested = cls._explicit_view_once(value, depth + 1)
-                if nested is True:
-                    return True
-                if nested is False:
-                    explicit_false = True
-            return False if explicit_false else None
-        if isinstance(payload, list):
-            explicit_false = False
-            for value in payload[:50]:
-                nested = cls._explicit_view_once(value, depth + 1)
-                if nested is True:
-                    return True
-                if nested is False:
-                    explicit_false = True
-            return False if explicit_false else None
-        return None
+
+        explicit_true = False
+        for key, value in payload.items():
+            normalized = str(key).replace("-", "").replace("_", "").lower()
+            if normalized in cls._BOOL_KEYS:
+                parsed = cls._parse_bool(value)
+                if parsed is False:
+                    return False
+                if parsed is True:
+                    explicit_true = True
+            if normalized in cls._WRAPPER_KEYS and isinstance(value, dict):
+                return True
+
+        if explicit_true:
+            return True
+
+        saw_false = False
+        for key in cls._SAME_MESSAGE_KEYS:
+            nested_payload = payload.get(key)
+            if not isinstance(nested_payload, dict):
+                continue
+            nested = cls._explicit_view_once(nested_payload, depth + 1)
+            if nested is True:
+                return True
+            if nested is False:
+                saw_false = True
+        return False if saw_false else None
 
     @staticmethod
     def _parse_bool(value: Any) -> bool | None:
