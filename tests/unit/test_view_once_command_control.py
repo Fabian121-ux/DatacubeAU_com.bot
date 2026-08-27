@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import settings
 from app.core.message_normalizer import MessageNormalizer
@@ -12,6 +12,7 @@ from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.command_control_service import CommandControlService
 from app.services.view_once_command_service import ViewOnceCommandService
+from app.services.view_once_media_service import ViewOnceMediaService
 
 
 OWNER_ID = "2348000000001@c.us"
@@ -47,8 +48,8 @@ async def _seed_owner(db_session) -> AdminAccount:
     return owner
 
 
-def _trusted_media_url() -> str:
-    return settings.waha_service_url.rstrip("/") + "/api/files/view-once.jpg"
+def _trusted_media_url(filename: str = "view-once.jpg") -> str:
+    return settings.waha_service_url.rstrip("/") + f"/api/files/{filename}"
 
 
 def _event(
@@ -58,20 +59,29 @@ def _event(
     view_once: bool | None = True,
     media_url: str | None = None,
     media_size: int | None = None,
+    media_type: str = "image",
+    media_mime: str = "image/jpeg",
+    nested_media: bool = False,
 ) -> dict:
+    media = {
+        "mimetype": media_mime,
+        "type": media_type,
+    }
+    effective_media_url = _trusted_media_url("view-once.mp4" if media_type == "video" else "view-once.jpg") if media_url is None else media_url
+    if effective_media_url:
+        media["url"] = effective_media_url
+    if media_size is not None:
+        media["fileSize"] = media_size
+
     reply = {
         "id": "VV-SOURCE-1",
         "hasMedia": True,
-        "media": {
-            "mimetype": "image/jpeg",
-            "type": "image",
-        },
     }
-    effective_media_url = _trusted_media_url() if media_url is None else media_url
-    if effective_media_url:
-        reply["media"]["url"] = effective_media_url
-    if media_size is not None:
-        reply["media"]["fileSize"] = media_size
+    if nested_media:
+        reply["_data"] = {"media": media}
+        reply["media"] = {"mimetype": media_mime, "type": media_type}
+    else:
+        reply["media"] = media
     if view_once is not None:
         reply["viewOnce"] = view_once
     return {
@@ -110,6 +120,12 @@ async def test_owner_peer_reply_vv_queues_media_only_to_private_self_dm(db_sessi
     assert queued[0].media_type == "image"
     assert queued[0].formatting_json["source"] == "view_once_command"
     assert queued[0].formatting_json["source_message_id"] == "VV-SOURCE-1"
+
+    # Enqueueing is not delivery. The lifecycle must stay unreturned until the
+    # outbound worker receives a successful WAHA response.
+    metadata = await ViewOnceMediaService(db_session).get("VV-SOURCE-1")
+    assert metadata is not None
+    assert metadata.returned_to_owner_at is None
 
 
 @pytest.mark.asyncio
@@ -176,6 +192,55 @@ async def test_oversized_view_once_media_is_blocked_when_waha_reports_size(db_se
 
 
 @pytest.mark.asyncio
+async def test_oversized_nested_view_once_media_cannot_bypass_size_limit(db_session):
+    await _seed_owner(db_session)
+    message = MessageNormalizer().normalize(
+        _event(
+            ".vv",
+            command_id="VV-NESTED-TOO-LARGE",
+            media_size=ViewOnceCommandService.MAX_MEDIA_BYTES + 1,
+            nested_media=True,
+        )
+    )
+
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="VV-NESTED-TOO-LARGE",
+    )
+
+    assert result is not None
+    assert result.error == "media too large"
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
+    assert len(queued) == 1
+    assert queued[0].media_url is None
+
+
+@pytest.mark.asyncio
+async def test_view_once_video_fails_closed_until_verified_video_delivery_adapter_exists(db_session):
+    await _seed_owner(db_session)
+    message = MessageNormalizer().normalize(
+        _event(
+            ".vv",
+            command_id="VV-VIDEO",
+            media_type="video",
+            media_mime="video/mp4",
+        )
+    )
+
+    result = await CommandControlService(db_session).handle_from_me(
+        message,
+        transport_message_id="VV-VIDEO",
+    )
+
+    assert result is not None
+    assert result.error == "video delivery unavailable"
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
+    assert len(queued) == 1
+    assert queued[0].media_url is None
+    assert "video-capable outbound adapter" in queued[0].message_text.lower()
+
+
+@pytest.mark.asyncio
 async def test_vv_info_and_list_dispatch_as_subcommands_not_open(db_session):
     await _seed_owner(db_session)
     info = MessageNormalizer().normalize(_event("@Zina .vv info", command_id="VV-INFO"))
@@ -192,6 +257,42 @@ async def test_vv_info_and_list_dispatch_as_subcommands_not_open(db_session):
     assert "VIEW-ONCE ITEMS" in queued[1].message_text
     assert queued[0].media_url is None
     assert queued[1].media_url is None
+
+
+@pytest.mark.asyncio
+async def test_vv_list_reports_actual_displayed_count_when_response_bound_omits_rows(db_session):
+    await _seed_owner(db_session)
+    for index in range(25):
+        source_id = f"SRC-{index}-" + ("x" * 180)
+        chat_id = f"CHAT-{index}-" + ("y" * 100)
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO view_once_media_metadata (
+                    source_message_id, source_chat_id, media_type, media_mime,
+                    capability_state, evidence_source, transport_available,
+                    retention_mode, metadata_json, first_observed_at, last_observed_at
+                ) VALUES (
+                    :source_id, :chat_id, 'image', 'image/jpeg',
+                    'available_from_transport', 'test', TRUE,
+                    'none', '{}'::jsonb, NOW(), NOW()
+                )
+                """
+            ),
+            {"source_id": source_id, "chat_id": chat_id},
+        )
+
+    listing = MessageNormalizer().normalize(_event(".vv list 25", command_id="VV-LIST-BOUND"))
+    result = await CommandControlService(db_session).handle_from_me(listing, transport_message_id="VV-LIST-BOUND")
+
+    assert result is not None and result.error is None
+    queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
+    assert len(queued) == 1
+    text_value = queued[0].message_text
+    assert "shown of 25 matched" in text_value
+    assert "25 shown of 25 matched" not in text_value
+    assert "omitted" in text_value.lower()
+    assert len(text_value) <= ViewOnceCommandService.MAX_TEXT_REPLY_CHARS
 
 
 @pytest.mark.asyncio
