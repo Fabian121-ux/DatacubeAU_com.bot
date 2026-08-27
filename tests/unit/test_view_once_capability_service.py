@@ -189,3 +189,23 @@ def test_conflicting_same_message_snapshots_fail_closed_regardless_of_container_
 
     assert capability.is_view_once is False
     assert capability.retrievable_now is False
+
+
+def test_numeric_zero_negative_marker_wins_over_positive_same_message_evidence():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "MSG-NUMERIC-ZERO",
+                "viewOnce": 0,
+                "_data": {"viewOnce": 1},
+                "media": {
+                    "url": "http://waha:3000/api/files/numeric-zero.jpg",
+                    "mimetype": "image/jpeg",
+                    "type": "image",
+                },
+            }
+        }
+    )
+
+    assert capability.is_view_once is False
+    assert capability.retrievable_now is False
