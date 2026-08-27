@@ -30,6 +30,8 @@ class ViewOnceCommandService:
     CONFIG_RETENTION_KEY = "view_once.retention_enabled"
     OPEN_COMMANDS = frozenset({".vvopen", "/vvopen"})
     MAX_MEDIA_BYTES = 50 * 1024 * 1024
+    MAX_TEXT_REPLY_CHARS = 3500
+    MAX_LIST_BODY_CHARS = 3250
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -96,8 +98,22 @@ class ViewOnceCommandService:
             return await self._text(owner_chat_id, "/vvopen", capability.reason, "media unavailable")
 
         media_type = self._safe_media_type(capability.media_type, capability.media_mime)
-        if media_type is None:
-            return await self._text(owner_chat_id, "/vvopen", "View-once media type is unsupported for safe outbound delivery. Only image/video media is allowed.", "unsupported media type")
+        if media_type == "video":
+            await self._audit(
+                "view_once_video_delivery_unavailable",
+                "/vvopen",
+                request_id,
+                transport_message_id,
+                {"source_message_id": record.source_message_id},
+            )
+            return await self._text(
+                owner_chat_id,
+                "/vvopen",
+                "WAHA exposed this view-once video, but Zina does not yet have a verified video-capable outbound adapter. The video was not queued or retained.",
+                "video delivery unavailable",
+            )
+        if media_type != "image":
+            return await self._text(owner_chat_id, "/vvopen", "View-once media type is unsupported for safe outbound delivery. Only verified image delivery is currently enabled.", "unsupported media type")
         if not self._trusted_waha_media_url(capability.media_url):
             await self._audit(
                 "view_once_media_url_rejected",
@@ -108,7 +124,7 @@ class ViewOnceCommandService:
             )
             return await self._text(owner_chat_id, "/vvopen", "WAHA exposed a media URL outside the configured WAHA file origin. Retrieval was blocked.", "untrusted media url")
 
-        media_size = self._reply_media_size(getattr(message, "payload", None))
+        media_size = ViewOnceCapabilityService.reply_media_size(getattr(message, "payload", None))
         if media_size is not None and media_size > self.MAX_MEDIA_BYTES:
             await self._audit(
                 "view_once_media_size_rejected",
@@ -134,8 +150,13 @@ class ViewOnceCommandService:
         )
         self.session.add(queued)
         await self.session.flush()
-        await self.media.mark_returned(record.source_message_id)
-        await self._audit("view_once_returned_to_owner", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "media_type": media_type, "size_bytes": media_size})
+        await self._audit(
+            "view_once_delivery_queued",
+            "/vvopen",
+            request_id,
+            transport_message_id,
+            {"source_message_id": record.source_message_id, "media_type": media_type, "size_bytes": media_size, "outbound_queue_id": queued.id},
+        )
         return ViewOnceCommandResult(True, "/vvopen", outbound_queue_id=queued.id)
 
     async def _info(self, message: Any, owner_chat_id: str, request_id: str | None, transport_message_id: str | None) -> ViewOnceCommandResult:
@@ -165,13 +186,29 @@ class ViewOnceCommandService:
         rows = await self.media.list_recent(limit)
         if not rows:
             return await self._text(owner_chat_id, "/vvopen", "No view-once metadata has been observed yet.")
-        lines = [f"VIEW-ONCE ITEMS — {len(rows)} shown"]
+
+        rendered_rows: list[str] = []
         for row in rows:
-            lines.append(
+            entry = (
                 f"#{row.id} | {row.source_message_id} | {row.source_chat_id} | "
                 f"{row.media_type or 'unknown'} | {row.capability_state} | retention={row.retention_mode}"
             )
-        await self._audit("view_once_list", "/vvopen", request_id, transport_message_id, {"count": len(rows)})
+            candidate_body = "\n".join(rendered_rows + [entry])
+            if len(candidate_body) > self.MAX_LIST_BODY_CHARS:
+                break
+            rendered_rows.append(entry)
+
+        header = f"VIEW-ONCE ITEMS — {len(rendered_rows)} shown of {len(rows)} matched"
+        lines = [header, *rendered_rows]
+        if len(rendered_rows) < len(rows):
+            lines.append("Additional rows were omitted to keep the WhatsApp response within the safe size limit.")
+        await self._audit(
+            "view_once_list",
+            "/vvopen",
+            request_id,
+            transport_message_id,
+            {"displayed_count": len(rendered_rows), "matched_count": len(rows)},
+        )
         return await self._text(owner_chat_id, "/vvopen", "\n".join(lines))
 
     async def _delete(self, message: Any, explicit_id: str, owner_chat_id: str, request_id: str | None, transport_message_id: str | None) -> ViewOnceCommandResult:
@@ -201,9 +238,10 @@ class ViewOnceCommandService:
         return await self._text(owner_chat_id, "/vvopen", f"View-once automatic retention: {'ON' if current else 'OFF'}. Persistent byte retention is currently unsupported.")
 
     async def _text(self, owner_chat_id: str, command: str, text_value: str, error: str | None = None) -> ViewOnceCommandResult:
+        safe_text = text_value[: self.MAX_TEXT_REPLY_CHARS]
         queued = OutboundMessage(
             chat_id=owner_chat_id,
-            message_text=text_value[:3500],
+            message_text=safe_text,
             status="pending",
             retry_count=0,
             max_retries=3,
@@ -213,7 +251,7 @@ class ViewOnceCommandService:
         )
         self.session.add(queued)
         await self.session.flush()
-        return ViewOnceCommandResult(True, command, reply_text=text_value, outbound_queue_id=queued.id, error=error)
+        return ViewOnceCommandResult(True, command, reply_text=safe_text, outbound_queue_id=queued.id, error=error)
 
     async def _audit(self, action: str, command: str, request_id: str | None, transport_message_id: str | None, details: dict[str, Any]) -> None:
         self.session.add(
@@ -268,26 +306,3 @@ class ViewOnceCommandService:
         if port is None:
             port = 443 if scheme == "https" else 80 if scheme == "http" else None
         return scheme, host, port, parsed.path or "/"
-
-    @staticmethod
-    def _reply_media_size(payload: Any) -> int | None:
-        if not isinstance(payload, dict):
-            return None
-        reply = payload.get("replyTo")
-        if not isinstance(reply, dict):
-            return None
-        media = reply.get("media")
-        if not isinstance(media, dict):
-            return None
-        raw = media.get("fileSize")
-        if raw is None:
-            raw = media.get("filesize")
-        if raw is None:
-            raw = media.get("size")
-        if raw is None:
-            return None
-        try:
-            size = int(raw)
-        except (TypeError, ValueError):
-            return None
-        return max(0, size)
