@@ -58,6 +58,27 @@ def test_root_negative_marker_wins_even_when_wrapper_key_appears_first():
     assert capability.retrievable_now is False
 
 
+def test_nested_same_message_negative_wins_over_root_positive_marker():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "ROOT-POSITIVE-NESTED-NEGATIVE",
+                "viewOnce": True,
+                "media": {
+                    "url": "http://waha:3000/api/files/conflicted.jpg",
+                    "mimetype": "image/jpeg",
+                    "type": "image",
+                },
+                "_data": {"viewOnce": False},
+            }
+        }
+    )
+
+    assert capability.source_message_id == "ROOT-POSITIVE-NESTED-NEGATIVE"
+    assert capability.is_view_once is False
+    assert capability.retrievable_now is False
+
+
 def test_unrelated_nested_context_marker_is_not_treated_as_source_view_once_evidence():
     capability = ViewOnceCapabilityService.inspect_reply_snapshot(
         {
