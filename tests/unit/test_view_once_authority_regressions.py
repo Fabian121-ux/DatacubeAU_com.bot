@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
 
@@ -7,6 +9,7 @@ from app.config import settings
 from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.command_control_service import CommandControlService
+from app.services.view_once_command_service import ViewOnceCommandService
 
 
 OWNER_ID = "2348000000001@c.us"
@@ -68,7 +71,7 @@ def _event(body: str) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("permission", ["admin", "user"])
-async def test_downgraded_primary_account_cannot_use_view_once_peer_control(db_session, permission):
+async def test_downgraded_primary_account_is_not_resolved_as_owner_peer_control(db_session, permission):
     await _seed_primary(db_session, permission)
     message = MessageNormalizer().normalize(_event("@Zina .vv"))
 
@@ -78,7 +81,35 @@ async def test_downgraded_primary_account_cannot_use_view_once_peer_control(db_s
         request_id="VV-AUTH-CMD",
     )
 
-    assert result is not None and result.consumed is True
+    # CommandControlService._primary_owner() itself only resolves an enabled
+    # primary whose persisted permission is exactly owner, so a downgraded
+    # primary never enters the peer-DM view-once control path.
+    assert result is None
+    assert (await db_session.execute(select(OutboundMessage))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permission", ["admin", "user"])
+async def test_view_once_service_uses_persisted_permission_over_mistaken_owner_label(db_session, permission):
+    owner = SimpleNamespace(
+        normalized_whatsapp_id=OWNER_ID,
+        whatsapp_number="2348000000001",
+        permission_level=permission,
+    )
+    message = MessageNormalizer().normalize(_event("@Zina .vv"))
+
+    result = await ViewOnceCommandService(db_session).handle(
+        ".vv",
+        "",
+        message=message,
+        owner=owner,
+        # Simulate a buggy upstream caller supplying the old hard-coded label.
+        permission="owner",
+        request_id="VV-AUTH-CMD",
+        transport_message_id="VV-AUTH-CMD",
+    )
+
+    assert result.consumed is True
     assert result.command == "/vvopen"
     assert result.error == "owner permission required"
     assert (await db_session.execute(select(OutboundMessage))).scalars().all() == []
