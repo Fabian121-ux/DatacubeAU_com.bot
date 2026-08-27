@@ -30,7 +30,7 @@ class ViewOnceMediaService:
     This service intentionally persists metadata only. It never persists WAHA media
     URLs, media bytes, base64 data, or raw webhook payloads. A caller may use the
     returned capability's in-memory media URL for one immediate OWNER-only outbound
-    delivery, but that URL must not be written to PostgreSQL or audit metadata.
+    delivery, but that URL must not be written to this metadata table or audit logs.
     """
 
     DEFAULT_LIST_LIMIT = 10
@@ -97,11 +97,28 @@ class ViewOnceMediaService:
             text(
                 """
                 UPDATE view_once_media_metadata
-                SET returned_to_owner_at = NOW(), last_observed_at = NOW()
+                SET returned_to_owner_at = NOW(),
+                    capability_state = 'returned_to_owner',
+                    transport_available = FALSE,
+                    last_observed_at = NOW()
                 WHERE source_message_id = :source_message_id AND deleted_at IS NULL
                 """
             ),
-            {"source_message_id": source_message_id},
+            {"source_message_id": source_message_id[:200]},
+        )
+
+    async def mark_delivery_unavailable(self, source_message_id: str) -> None:
+        await self.session.execute(
+            text(
+                """
+                UPDATE view_once_media_metadata
+                SET capability_state = 'unavailable',
+                    transport_available = FALSE,
+                    last_observed_at = NOW()
+                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                """
+            ),
+            {"source_message_id": source_message_id[:200]},
         )
 
     async def list_recent(self, limit: int | None = None) -> list[ViewOnceMetadataRecord]:
