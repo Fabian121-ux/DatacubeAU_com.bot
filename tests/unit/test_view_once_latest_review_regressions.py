@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.config import settings
 from app.models.schema import OutboundMessage
 from app.services.view_once_capability_service import ViewOnceCapabilityService
 from app.services.view_once_command_service import ViewOnceCommandService
@@ -193,6 +194,7 @@ async def test_conflicting_image_type_and_video_mime_never_queues_media(db_sessi
 @pytest.mark.asyncio
 async def test_vv_media_queue_has_absolute_capability_expiry(db_session):
     service = ViewOnceCommandService(db_session)
+    trusted_url = settings.waha_service_url.rstrip("/") + "/api/files/expiry.jpg"
     message = SimpleNamespace(
         chat_id="2348000000002@c.us",
         payload={
@@ -200,7 +202,7 @@ async def test_vv_media_queue_has_absolute_capability_expiry(db_session):
                 "id": "VV-EXPIRY",
                 "viewOnce": True,
                 "media": {
-                    "url": "http://waha:3000/api/files/expiry.jpg",
+                    "url": trusted_url,
                     "type": "image",
                     "mimetype": "image/jpeg",
                 },
@@ -228,4 +230,4 @@ async def test_vv_media_queue_has_absolute_capability_expiry(db_session):
     expires_at = datetime.fromisoformat(queued.formatting_json["capability_expires_at"])
     assert expires_at > before
     assert expires_at <= after + ViewOnceCommandService.DELIVERY_CAPABILITY_TTL
-    assert queued.media_url == "http://waha:3000/api/files/expiry.jpg"
+    assert queued.media_url == trusted_url
