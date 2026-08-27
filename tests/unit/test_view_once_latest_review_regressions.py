@@ -38,6 +38,27 @@ def test_root_negative_marker_wins_over_unrelated_nested_context_view_once_marke
     assert capability.retrievable_now is False
 
 
+def test_root_negative_marker_wins_even_when_wrapper_key_appears_first():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "ROOT-ORDER-MSG",
+                "viewOnceMessage": {"message": {"imageMessage": {}}},
+                "viewOnce": False,
+                "media": {
+                    "url": "http://waha:3000/api/files/ordinary-order.jpg",
+                    "mimetype": "image/jpeg",
+                    "type": "image",
+                },
+            }
+        }
+    )
+
+    assert capability.source_message_id == "ROOT-ORDER-MSG"
+    assert capability.is_view_once is False
+    assert capability.retrievable_now is False
+
+
 def test_unrelated_nested_context_marker_is_not_treated_as_source_view_once_evidence():
     capability = ViewOnceCapabilityService.inspect_reply_snapshot(
         {
@@ -135,3 +156,47 @@ async def test_unsupported_vv_subcommand_queues_help_to_owner_self_dm(db_session
     assert queued.chat_id == OWNER_ID
     assert queued.media_url is None
     assert "view-once commands" in queued.message_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_conflicting_image_type_and_video_mime_never_queues_media(db_session):
+    service = ViewOnceCommandService(db_session)
+    message = SimpleNamespace(
+        payload={
+            "replyTo": {
+                "id": "VV-CONFLICT",
+                "viewOnce": True,
+                "media": {
+                    "url": "http://waha:3000/api/files/conflict.mp4",
+                    "type": "image",
+                    "mimetype": "video/mp4",
+                },
+            }
+        }
+    )
+
+    result = await service.handle(
+        ".vv",
+        "",
+        message=message,
+        owner=SimpleNamespace(
+            normalized_whatsapp_id=OWNER_ID,
+            whatsapp_number="2348000000001",
+        ),
+        permission="owner",
+        request_id="VV-CONFLICT",
+        transport_message_id="VV-CONFLICT",
+    )
+
+    assert result.consumed is True
+    assert result.error == "unsupported media type"
+    assert result.outbound_queue_id is not None
+
+    queued = (
+        await db_session.execute(
+            select(OutboundMessage).where(OutboundMessage.id == result.outbound_queue_id)
+        )
+    ).scalar_one()
+    assert queued.chat_id == OWNER_ID
+    assert queued.media_url is None
+    assert "unsupported" in queued.message_text.lower()
