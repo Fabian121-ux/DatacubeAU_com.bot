@@ -218,6 +218,7 @@ async def test_vv_media_queue_has_absolute_capability_expiry(db_session):
         request_id="VV-EXPIRY",
         transport_message_id="VV-EXPIRY",
     )
+    after = utcnow()
 
     queued = (
         await db_session.execute(
@@ -226,5 +227,5 @@ async def test_vv_media_queue_has_absolute_capability_expiry(db_session):
     ).scalar_one()
     expires_at = datetime.fromisoformat(queued.formatting_json["capability_expires_at"])
     assert expires_at > before
-    assert expires_at <= before + ViewOnceCommandService.DELIVERY_CAPABILITY_TTL
+    assert expires_at <= after + ViewOnceCommandService.DELIVERY_CAPABILITY_TTL
     assert queued.media_url == "http://waha:3000/api/files/expiry.jpg"
