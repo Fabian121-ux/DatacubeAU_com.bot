@@ -66,9 +66,20 @@ class ViewOnceCapabilityService:
                 reason="WAHA payload unavailable or invalid.",
             )
 
+        source_id, id_conflict = cls._consistent_message_id(payload)
+        if id_conflict:
+            return ViewOnceCapability(
+                source_message_id=None,
+                is_view_once=None,
+                media_url=None,
+                media_mime=None,
+                media_type=None,
+                evidence_source="waha_payload",
+                reason="WAHA message snapshots disagree on the source message ID; view-once evidence was not combined.",
+            )
+
         marker = cls._explicit_view_once(payload)
         media = cls._media(payload)
-        source_id = cls._message_id(payload)
         if marker is True and media[0]:
             reason = "Explicit WAHA/engine view-once evidence and retrievable media URL are present."
         elif marker is True:
@@ -103,9 +114,20 @@ class ViewOnceCapabilityService:
                 reason="Reply to a source message before using a view-once command.",
             )
 
+        source_id, id_conflict = cls._consistent_message_id(reply_to)
+        if id_conflict:
+            return ViewOnceCapability(
+                source_message_id=None,
+                is_view_once=None,
+                media_url=None,
+                media_mime=None,
+                media_type=None,
+                evidence_source="waha_reply_snapshot",
+                reason="Quoted WAHA snapshots disagree on the source message ID; retrieval is denied rather than mixing evidence from different messages.",
+            )
+
         marker = cls._explicit_view_once(reply_to)
         media = cls._media(reply_to)
-        source_id = cls._message_id(reply_to)
         if marker is True and media[0]:
             reason = "Quoted WAHA snapshot contains explicit view-once evidence and a retrievable media URL."
         elif marker is True:
@@ -131,6 +153,10 @@ class ViewOnceCapabilityService:
             return None
         reply_to = payload.get("replyTo")
         if not isinstance(reply_to, dict):
+            return None
+
+        _, id_conflict = cls._consistent_message_id(reply_to)
+        if id_conflict:
             return None
 
         sizes: list[int] = []
@@ -209,15 +235,30 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _message_id(cls, payload: dict[str, Any]) -> str | None:
+        source_id, conflict = cls._consistent_message_id(payload)
+        return None if conflict else source_id
+
+    @classmethod
+    def _consistent_message_id(cls, payload: dict[str, Any]) -> tuple[str | None, bool]:
+        """Return one source ID only when supported same-message snapshots agree.
+
+        WAHA engines can repeat the quoted message under direct, `message`, and `_data`
+        representations. Evidence from those containers may only be combined when all
+        non-empty IDs identify the same message. A disagreement fails closed so media
+        from one message cannot be authorized by a marker from another.
+        """
+        ids: list[str] = []
         for value in (
             payload.get("id"),
             cls._nested(payload, "message", "id"),
             cls._nested(payload, "_data", "id"),
         ):
             scalar = cls._scalar_id(value)
-            if scalar:
-                return scalar
-        return None
+            if scalar and scalar not in ids:
+                ids.append(scalar)
+        if len(ids) > 1:
+            return None, True
+        return (ids[0] if ids else None), False
 
     @classmethod
     def _media_candidates(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
