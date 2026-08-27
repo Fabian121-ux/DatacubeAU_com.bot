@@ -161,29 +161,37 @@ class ViewOnceCapabilityService:
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
         """Return view-once evidence belonging to this message representation only.
 
-        A direct marker on the current object is authoritative. In particular, an
-        explicit `false` must not be overridden by a nested quoted/context message.
-        When no direct marker exists, descend only through containers that WAHA
-        engines use as alternate representations of the same message (`message` and
-        `_data`). Arbitrary dictionaries/lists are intentionally ignored.
+        Direct boolean markers on the current object are authoritative and are all
+        inspected before wrapper evidence so classification never depends on JSON key
+        insertion order. A direct false is fail-closed and overrides same-object
+        wrapper evidence. When no direct boolean exists, view-once wrappers and the
+        supported same-message containers (`message`, `_data`) may provide evidence.
+        Arbitrary dictionaries/lists are intentionally ignored.
         """
         if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return None
 
-        explicit_true = False
+        direct_true = False
+        direct_false = False
         for key, value in payload.items():
             normalized = str(key).replace("-", "").replace("_", "").lower()
-            if normalized in cls._BOOL_KEYS:
-                parsed = cls._parse_bool(value)
-                if parsed is False:
-                    return False
-                if parsed is True:
-                    explicit_true = True
+            if normalized not in cls._BOOL_KEYS:
+                continue
+            parsed = cls._parse_bool(value)
+            if parsed is False:
+                direct_false = True
+            elif parsed is True:
+                direct_true = True
+
+        if direct_false:
+            return False
+        if direct_true:
+            return True
+
+        for key, value in payload.items():
+            normalized = str(key).replace("-", "").replace("_", "").lower()
             if normalized in cls._WRAPPER_KEYS and isinstance(value, dict):
                 return True
-
-        if explicit_true:
-            return True
 
         saw_false = False
         for key in cls._SAME_MESSAGE_KEYS:
@@ -237,19 +245,57 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _media(cls, payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        """Merge supported representations of the same WAHA media object safely.
+
+        Engines may split the retrievable URL and MIME/type metadata across direct,
+        `message.media`, and `_data.media` representations. We therefore choose the
+        first retrievable URL but keep scanning for missing metadata. If any supplied
+        type/MIME evidence disagrees about image versus video, metadata is discarded
+        so the command layer fails closed instead of routing through the wrong WAHA
+        endpoint.
+        """
         candidates = cls._media_candidates(payload)
-        metadata_fallback: tuple[str | None, str | None, str | None] | None = None
+        selected_url: str | None = None
+        selected_mime: str | None = None
+        selected_type: str | None = None
+        observed_categories: set[str] = set()
 
         for media in candidates:
             url = str(media.get("url") or "").strip() or None
             mime = str(media.get("mimetype") or media.get("mimeType") or media.get("mime") or "").strip() or None
             media_type = str(media.get("type") or "").strip() or None
-            if url:
-                return url, mime, media_type
-            if metadata_fallback is None and (mime or media_type):
-                metadata_fallback = (None, mime, media_type)
 
-        return metadata_fallback or (None, None, None)
+            mime_category = cls._media_category(None, mime)
+            type_category = cls._media_category(media_type, None)
+            if mime_category:
+                observed_categories.add(mime_category)
+            if type_category:
+                observed_categories.add(type_category)
+
+            if selected_url is None and url:
+                selected_url = url
+            if selected_mime is None and mime:
+                selected_mime = mime
+            if selected_type is None and media_type:
+                selected_type = media_type
+
+        if len(observed_categories) > 1:
+            # Conflicting image/video evidence is unsafe for endpoint selection.
+            return selected_url, None, None
+
+        return selected_url, selected_mime, selected_type
+
+    @staticmethod
+    def _media_category(media_type: str | None, mime: str | None) -> str | None:
+        candidate = str(media_type or "").strip().lower()
+        mime_value = str(mime or "").strip().lower()
+        if candidate in {"image", "video"}:
+            return candidate
+        if mime_value.startswith("image/"):
+            return "image"
+        if mime_value.startswith("video/"):
+            return "video"
+        return None
 
     @staticmethod
     def _nested(payload: Any, *path: str) -> Any:
