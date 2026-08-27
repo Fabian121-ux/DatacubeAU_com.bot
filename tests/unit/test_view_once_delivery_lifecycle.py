@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import select, text
 
 import pytest
@@ -10,6 +12,7 @@ from app.utils.time import utcnow
 from app.workers.background_workers import (
     _block_scrubbed_view_once_resend,
     _delivery_snapshot,
+    _expire_stale_view_once_capability,
     _finalize_view_once_delivery_success,
     _mark_delivery_failed,
     _waha_response_for_audit,
@@ -125,8 +128,6 @@ async def test_successful_view_once_delivery_finalization_marks_returned_and_cle
     db_session.add(queued)
     await db_session.flush()
 
-    # Mirror the worker success path: snapshot while the ephemeral URL still exists,
-    # then finalize only after WAHA has returned success.
     delivery_snapshot = _delivery_snapshot(queued)
     queued.status = "sent"
     await _finalize_view_once_delivery_success(db_session, queued, delivery_snapshot)
@@ -254,6 +255,108 @@ async def test_retryable_view_once_failure_keeps_url_only_for_the_next_bounded_r
 
 
 @pytest.mark.asyncio
+async def test_expired_pending_view_once_capability_is_scrubbed_before_transport(db_session):
+    source_id = "VV-EXPIRED-PENDING"
+    await _insert_metadata(db_session, source_id)
+    queued = OutboundMessage(
+        chat_id=OWNER_ID,
+        message_text="",
+        media_url=_media_url(source_id),
+        media_type="image",
+        media_caption=f"View-once source {source_id}",
+        status="sending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+        formatting_json={
+            "source": "view_once_command",
+            "source_message_id": source_id,
+            "capability_expires_at": (utcnow() - timedelta(seconds=1)).isoformat(),
+        },
+        updated_at=utcnow(),
+    )
+    db_session.add(queued)
+    await db_session.flush()
+
+    expired = await _expire_stale_view_once_capability(db_session, queued)
+
+    assert expired is True
+    assert queued.status == "failed"
+    assert queued.media_url is None
+    assert queued.formatting_json["resendable"] is False
+    assert "expired" in queued.error_message.lower()
+    lifecycle = (
+        await db_session.execute(
+            text(
+                """
+                SELECT capability_state, transport_available
+                FROM view_once_media_metadata
+                WHERE source_message_id = :source_id
+                """
+            ),
+            {"source_id": source_id},
+        )
+    ).mappings().one()
+    assert lifecycle["capability_state"] == "unavailable"
+    assert lifecycle["transport_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_late_duplicate_failure_cannot_regress_successful_view_once_lifecycle(db_session):
+    source_id = "VV-DUPLICATE-OUTCOME"
+    await _insert_metadata(db_session, source_id)
+
+    successful = OutboundMessage(
+        chat_id=OWNER_ID,
+        message_text="",
+        media_url=_media_url(source_id),
+        media_type="image",
+        media_caption=f"View-once source {source_id}",
+        status="sending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+        formatting_json={"source": "view_once_command", "source_message_id": source_id},
+        updated_at=utcnow(),
+    )
+    failed_duplicate = OutboundMessage(
+        chat_id=OWNER_ID,
+        message_text="",
+        media_url=_media_url(source_id + "-duplicate"),
+        media_type="image",
+        media_caption=f"View-once source {source_id}",
+        status="sending",
+        retry_count=3,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+        formatting_json={"source": "view_once_command", "source_message_id": source_id},
+        updated_at=utcnow(),
+    )
+    db_session.add_all([successful, failed_duplicate])
+    await db_session.flush()
+
+    await _finalize_view_once_delivery_success(db_session, successful, _delivery_snapshot(successful))
+    await db_session.commit()
+    await _mark_delivery_failed(db_session, failed_duplicate, "late duplicate failure")
+
+    lifecycle = (
+        await db_session.execute(
+            text(
+                """
+                SELECT capability_state, transport_available, returned_to_owner_at
+                FROM view_once_media_metadata
+                WHERE source_message_id = :source_id
+                """
+            ),
+            {"source_id": source_id},
+        )
+    ).mappings().one()
+    assert lifecycle["capability_state"] == "returned_to_owner"
+    assert lifecycle["transport_available"] is False
+    assert lifecycle["returned_to_owner_at"] is not None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("terminal_status", ["sent", "failed"])
 async def test_scrubbed_view_once_media_is_non_resendable_before_any_transport_send(db_session, terminal_status):
     source_id = f"VV-RESEND-BLOCKED-{terminal_status.upper()}"
@@ -278,8 +381,6 @@ async def test_scrubbed_view_once_media_is_non_resendable_before_any_transport_s
     db_session.add(queued)
     await db_session.flush()
 
-    # Mirror an operator/admin reset of a previously terminal row. The worker must
-    # reject it locally rather than falling through to send_text with an empty body.
     queued.status = terminal_status
     await db_session.flush()
     queued.status = "sending"
