@@ -122,6 +122,50 @@ def test_media_extractor_prefers_later_retrievable_candidate_over_metadata_only_
     assert capability.retrievable_now is True
 
 
+def test_media_extractor_merges_later_metadata_into_earlier_url_candidate():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "MSG-SPLIT",
+                "viewOnce": True,
+                "media": {"url": "http://waha:3000/api/files/split.jpg"},
+                "_data": {
+                    "media": {
+                        "mimetype": "image/jpeg",
+                        "type": "image",
+                    }
+                },
+            }
+        }
+    )
+
+    assert capability.media_url == "http://waha:3000/api/files/split.jpg"
+    assert capability.media_mime == "image/jpeg"
+    assert capability.media_type == "image"
+    assert capability.retrievable_now is True
+
+
+def test_conflicting_media_type_and_mime_evidence_is_discarded_fail_closed():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "MSG-CONFLICT",
+                "viewOnce": True,
+                "media": {
+                    "url": "http://waha:3000/api/files/conflict.bin",
+                    "type": "image",
+                    "mimetype": "video/mp4",
+                },
+            }
+        }
+    )
+
+    assert capability.media_url == "http://waha:3000/api/files/conflict.bin"
+    assert capability.media_type is None
+    assert capability.media_mime is None
+    assert capability.retrievable_now is True
+
+
 def test_reply_media_size_checks_all_supported_media_locations_and_uses_largest_reported_size():
     payload = {
         "replyTo": {
