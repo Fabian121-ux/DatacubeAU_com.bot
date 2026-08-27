@@ -209,3 +209,28 @@ def test_numeric_zero_negative_marker_wins_over_positive_same_message_evidence()
 
     assert capability.is_view_once is False
     assert capability.retrievable_now is False
+
+
+def test_mismatched_reply_snapshot_ids_fail_closed_before_combining_view_once_evidence():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "ORDINARY-A",
+                "media": {
+                    "url": "http://waha:3000/api/files/ordinary-a.jpg",
+                    "mimetype": "image/jpeg",
+                    "type": "image",
+                },
+                "message": {
+                    "id": "VIEW-ONCE-B",
+                    "viewOnce": True,
+                },
+            }
+        }
+    )
+
+    assert capability.source_message_id is None
+    assert capability.is_view_once is None
+    assert capability.media_url is None
+    assert capability.retrievable_now is False
+    assert "disagree on the source message id" in capability.reason.lower()
