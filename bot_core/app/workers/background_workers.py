@@ -174,6 +174,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 await _mark_delivery_failed(session, message, str(exc))
             else:
                 delivery_snapshot = _delivery_snapshot(message)
+                audit_response = _waha_response_for_audit(message, response)
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
@@ -188,7 +189,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                         details_json={
                             "chat_id": message.chat_id,
                             "delivery_snapshot": delivery_snapshot,
-                            "waha_response": response,
+                            "waha_response": audit_response,
                         },
                     )
                 )
@@ -277,6 +278,32 @@ def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
         "text": message.message_text,
         "message_type": "text",
     }
+
+
+def _waha_response_for_audit(message: OutboundMessage, response: Any) -> Any:
+    """Keep ordinary delivery auditing unchanged but redact view-once responses.
+
+    WAHA media delivery responses may contain a fresh file/media URL even after the
+    original queue capability has been scrubbed. For view-once rows we therefore
+    persist only a bounded acknowledgement plus safe scalar delivery identifiers.
+    No nested response object is retained, so file URLs, media metadata, base64,
+    message bodies, or other retrieval capabilities cannot enter audit backups.
+    """
+    if not _view_once_source_id(message):
+        return response
+
+    snapshot: dict[str, Any] = {
+        "redacted": True,
+        "response_type": type(response).__name__,
+    }
+    if not isinstance(response, dict):
+        return snapshot
+
+    for key in ("id", "messageId", "status", "source"):
+        value = response.get(key)
+        if isinstance(value, (str, int, float, bool)) and not isinstance(value, bytes):
+            snapshot[key] = str(value)[:200]
+    return snapshot
 
 
 def _view_once_source_id(message: OutboundMessage) -> str | None:
