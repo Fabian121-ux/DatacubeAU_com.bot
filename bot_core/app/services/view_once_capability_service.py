@@ -240,25 +240,36 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _consistent_message_id(cls, payload: dict[str, Any]) -> tuple[str | None, bool]:
-        """Return one source ID only when supported same-message snapshots agree.
+        """Return one source ID only when every consumed same-message snapshot agrees.
 
-        WAHA engines can repeat the quoted message under direct, `message`, and `_data`
-        representations. Evidence from those containers may only be combined when all
-        non-empty IDs identify the same message. A disagreement fails closed so media
-        from one message cannot be authorized by a marker from another.
+        Marker evidence may recurse through WAHA's supported `message` / `_data`
+        representations, so source-ID validation must traverse the exact same paths.
+        This prevents a deeper snapshot from authorizing media that belongs to a
+        different quoted message.
         """
-        ids: list[str] = []
-        for value in (
-            payload.get("id"),
-            cls._nested(payload, "message", "id"),
-            cls._nested(payload, "_data", "id"),
-        ):
-            scalar = cls._scalar_id(value)
-            if scalar and scalar not in ids:
-                ids.append(scalar)
+        ids = cls._collect_supported_message_ids(payload)
         if len(ids) > 1:
             return None, True
         return (ids[0] if ids else None), False
+
+    @classmethod
+    def _collect_supported_message_ids(cls, payload: Any, depth: int = 0) -> list[str]:
+        if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
+            return []
+
+        ids: list[str] = []
+        direct = cls._scalar_id(payload.get("id"))
+        if direct:
+            ids.append(direct)
+
+        for key in cls._SAME_MESSAGE_KEYS:
+            nested = payload.get(key)
+            if not isinstance(nested, dict):
+                continue
+            for nested_id in cls._collect_supported_message_ids(nested, depth + 1):
+                if nested_id not in ids:
+                    ids.append(nested_id)
+        return ids
 
     @classmethod
     def _media_candidates(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
