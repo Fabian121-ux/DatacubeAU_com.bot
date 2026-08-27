@@ -169,6 +169,34 @@ def test_mismatched_supported_reply_ids_fail_closed_before_evidence_is_combined(
     assert "disagree on the source message id" in capability.reason.lower()
 
 
+def test_recursively_nested_snapshot_id_mismatch_fails_closed_before_marker_is_consumed():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "ROOT-SOURCE",
+                "media": {
+                    "url": "http://waha:3000/api/files/root-source.jpg",
+                    "mimetype": "image/jpeg",
+                    "type": "image",
+                },
+                "message": {
+                    "id": "ROOT-SOURCE",
+                    "_data": {
+                        "id": "DEEP-DIFFERENT-SOURCE",
+                        "viewOnce": True,
+                    },
+                },
+            }
+        }
+    )
+
+    assert capability.source_message_id is None
+    assert capability.is_view_once is None
+    assert capability.media_url is None
+    assert capability.retrievable_now is False
+    assert "disagree on the source message id" in capability.reason.lower()
+
+
 @pytest.mark.asyncio
 async def test_mismatched_supported_reply_ids_never_queue_media(db_session):
     service = ViewOnceCommandService(db_session)
