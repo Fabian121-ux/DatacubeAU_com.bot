@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from app.models.schema import OutboundMessage
 from app.services.view_once_capability_service import ViewOnceCapabilityService
 from app.services.view_once_command_service import ViewOnceCommandService
+from app.utils.time import utcnow
 
 
 OWNER_ID = "2348000000001@c.us"
@@ -24,11 +26,7 @@ def test_root_negative_marker_wins_over_unrelated_nested_context_view_once_marke
                     "mimetype": "image/jpeg",
                     "type": "image",
                 },
-                "contextInfo": {
-                    "quotedMessage": {
-                        "viewOnce": True,
-                    }
-                },
+                "contextInfo": {"quotedMessage": {"viewOnce": True}},
             }
         }
     )
@@ -69,11 +67,7 @@ def test_unrelated_nested_context_marker_is_not_treated_as_source_view_once_evid
                     "mimetype": "image/jpeg",
                     "type": "image",
                 },
-                "contextInfo": {
-                    "quotedMessage": {
-                        "viewOnce": True,
-                    }
-                },
+                "contextInfo": {"quotedMessage": {"viewOnce": True}},
             }
         }
     )
@@ -135,10 +129,7 @@ async def test_unsupported_vv_subcommand_queues_help_to_owner_self_dm(db_session
         ".vv",
         "foo",
         message=SimpleNamespace(payload={}),
-        owner=SimpleNamespace(
-            normalized_whatsapp_id=OWNER_ID,
-            whatsapp_number="2348000000001",
-        ),
+        owner=SimpleNamespace(normalized_whatsapp_id=OWNER_ID, whatsapp_number="2348000000001"),
         permission="owner",
         request_id="VV-UNSUPPORTED",
         transport_message_id="VV-UNSUPPORTED",
@@ -179,10 +170,7 @@ async def test_conflicting_image_type_and_video_mime_never_queues_media(db_sessi
         ".vv",
         "",
         message=message,
-        owner=SimpleNamespace(
-            normalized_whatsapp_id=OWNER_ID,
-            whatsapp_number="2348000000001",
-        ),
+        owner=SimpleNamespace(normalized_whatsapp_id=OWNER_ID, whatsapp_number="2348000000001"),
         permission="owner",
         request_id="VV-CONFLICT",
         transport_message_id="VV-CONFLICT",
@@ -200,3 +188,43 @@ async def test_conflicting_image_type_and_video_mime_never_queues_media(db_sessi
     assert queued.chat_id == OWNER_ID
     assert queued.media_url is None
     assert "unsupported" in queued.message_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_vv_media_queue_has_absolute_capability_expiry(db_session):
+    service = ViewOnceCommandService(db_session)
+    message = SimpleNamespace(
+        chat_id="2348000000002@c.us",
+        payload={
+            "replyTo": {
+                "id": "VV-EXPIRY",
+                "viewOnce": True,
+                "media": {
+                    "url": "http://waha:3000/api/files/expiry.jpg",
+                    "type": "image",
+                    "mimetype": "image/jpeg",
+                },
+            }
+        },
+    )
+
+    before = utcnow()
+    result = await service.handle(
+        ".vv",
+        "",
+        message=message,
+        owner=SimpleNamespace(normalized_whatsapp_id=OWNER_ID, whatsapp_number="2348000000001"),
+        permission="owner",
+        request_id="VV-EXPIRY",
+        transport_message_id="VV-EXPIRY",
+    )
+
+    queued = (
+        await db_session.execute(
+            select(OutboundMessage).where(OutboundMessage.id == result.outbound_queue_id)
+        )
+    ).scalar_one()
+    expires_at = datetime.fromisoformat(queued.formatting_json["capability_expires_at"])
+    assert expires_at > before
+    assert expires_at <= before + ViewOnceCommandService.DELIVERY_CAPABILITY_TTL
+    assert queued.media_url == "http://waha:3000/api/files/expiry.jpg"
