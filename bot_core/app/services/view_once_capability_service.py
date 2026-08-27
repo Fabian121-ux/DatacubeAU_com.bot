@@ -153,33 +153,28 @@ class ViewOnceCapabilityService:
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
         """Resolve explicit evidence for one message representation, fail closed.
 
-        Direct boolean markers are authoritative. When they are absent, wrapper and
-        alternate same-message representations are all inspected before deciding.
-        Any explicit negative evidence conflicts with positive evidence and wins
-        fail-closed, so classification cannot depend on container/key order.
+        Direct boolean markers, wrapper evidence, and supported alternate same-message
+        representations are all inspected before deciding. Any explicit negative
+        evidence wins over positive evidence, including when the root is positive but
+        a supported nested representation is explicitly negative. This prevents
+        classification from depending on key/container order.
         """
         if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return None
 
-        direct_true = False
-        direct_false = False
+        saw_true = False
+        saw_false = False
+
         for key, value in payload.items():
             normalized = str(key).replace("-", "").replace("_", "").lower()
             if normalized not in cls._BOOL_KEYS:
                 continue
             parsed = cls._parse_bool(value)
             if parsed is False:
-                direct_false = True
+                saw_false = True
             elif parsed is True:
-                direct_true = True
+                saw_true = True
 
-        if direct_false:
-            return False
-        if direct_true:
-            return True
-
-        saw_true = False
-        saw_false = False
         for key, value in payload.items():
             normalized = str(key).replace("-", "").replace("_", "").lower()
             if normalized in cls._WRAPPER_KEYS and isinstance(value, dict):
