@@ -98,3 +98,37 @@ def test_invalid_or_missing_reply_snapshot_never_claims_recovery():
     assert capability.media_url is None
     assert capability.retrievable_now is False
     assert "reply to a source message" in capability.reason.lower()
+
+
+def test_media_extractor_prefers_later_retrievable_candidate_over_metadata_only_direct_media():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "MSG-FALLBACK",
+                "viewOnce": True,
+                "media": {"mimetype": "image/jpeg", "type": "image"},
+                "_data": {
+                    "media": {
+                        "url": "http://waha:3000/api/files/fallback.jpg",
+                        "mimetype": "image/jpeg",
+                        "type": "image",
+                    }
+                },
+            }
+        }
+    )
+
+    assert capability.media_url == "http://waha:3000/api/files/fallback.jpg"
+    assert capability.retrievable_now is True
+
+
+def test_reply_media_size_checks_all_supported_media_locations_and_uses_largest_reported_size():
+    payload = {
+        "replyTo": {
+            "media": {"fileSize": 100},
+            "message": {"media": {"filesize": 200}},
+            "_data": {"media": {"size": 300}},
+        }
+    }
+
+    assert ViewOnceCapabilityService.reply_media_size(payload) == 300
