@@ -27,6 +27,7 @@ _VIEW_ONCE_RESEND_BLOCKED_ERROR = (
 _VIEW_ONCE_CAPABILITY_EXPIRED_ERROR = (
     "View-once media delivery capability expired before delivery and was scrubbed."
 )
+_AUDIT_ENTITY_ID_MAX_CHARS = 120
 
 
 async def outbound_queue_delivery_worker() -> None:
@@ -228,7 +229,7 @@ async def _expire_stale_view_once_capability(session, message: OutboundMessage) 
         AuditLog(
             action="view_once_delivery_capability_expired",
             entity_type="view_once_media",
-            entity_id=source_id,
+            entity_id=_view_once_audit_entity_id(source_id),
             details_json={
                 "outbound_queue_id": message.id,
                 "reason": "absolute_delivery_ttl_elapsed",
@@ -264,7 +265,7 @@ async def _block_scrubbed_view_once_resend(session, message: OutboundMessage) ->
         AuditLog(
             action="view_once_resend_blocked",
             entity_type="view_once_media",
-            entity_id=source_id,
+            entity_id=_view_once_audit_entity_id(source_id),
             details_json={
                 "outbound_queue_id": message.id,
                 "reason": "temporary_media_capability_scrubbed",
@@ -294,7 +295,7 @@ async def _finalize_view_once_delivery_success(session, message: OutboundMessage
         AuditLog(
             action="view_once_returned_to_owner",
             entity_type="view_once_media",
-            entity_id=view_once_source_id,
+            entity_id=_view_once_audit_entity_id(view_once_source_id),
             details_json={
                 "outbound_queue_id": message.id,
                 "media_type": delivery_snapshot.get("message_type"),
@@ -336,6 +337,11 @@ def _view_once_source_id(message: OutboundMessage) -> str | None:
     if not source_id:
         return None
     return source_id[:200]
+
+
+def _view_once_audit_entity_id(source_id: str) -> str:
+    """Map WAHA source IDs onto AuditLog.entity_id's VARCHAR(120) boundary."""
+    return str(source_id).strip()[:_AUDIT_ENTITY_ID_MAX_CHARS]
 
 
 def _view_once_capability_expires_at(message: OutboundMessage) -> datetime | None:
@@ -381,7 +387,7 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
             AuditLog(
                 action="view_once_delivery_terminal_failed",
                 entity_type="view_once_media",
-                entity_id=view_once_source_id,
+                entity_id=_view_once_audit_entity_id(view_once_source_id),
                 details_json={
                     "outbound_queue_id": message.id,
                     "retry_count": message.retry_count,
