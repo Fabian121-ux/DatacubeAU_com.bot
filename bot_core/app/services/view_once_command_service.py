@@ -278,10 +278,10 @@ class ViewOnceCommandService:
     ) -> None:
         self.session.add(
             AuditLog(
-                event_type=event_type,
+                action=event_type,
                 entity_type="view_once_command",
                 entity_id=transport_message_id or request_id,
-                metadata_json={"command": command, "request_id": request_id, **metadata},
+                details_json={"command": command, "request_id": request_id, **metadata},
             )
         )
         await self.session.flush()
