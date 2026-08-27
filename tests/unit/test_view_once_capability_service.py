@@ -74,9 +74,7 @@ def test_engine_wrapper_counts_as_explicit_view_once_evidence():
             "id": "MSG-4",
             "message": {
                 "viewOnceMessageV2": {
-                    "message": {
-                        "imageMessage": {"caption": "private"},
-                    }
+                    "message": {"imageMessage": {"caption": "private"}}
                 }
             },
             "media": {
@@ -129,12 +127,7 @@ def test_media_extractor_merges_later_metadata_into_earlier_url_candidate():
                 "id": "MSG-SPLIT",
                 "viewOnce": True,
                 "media": {"url": "http://waha:3000/api/files/split.jpg"},
-                "_data": {
-                    "media": {
-                        "mimetype": "image/jpeg",
-                        "type": "image",
-                    }
-                },
+                "_data": {"media": {"mimetype": "image/jpeg", "type": "image"}},
             }
         }
     )
@@ -176,3 +169,23 @@ def test_reply_media_size_checks_all_supported_media_locations_and_uses_largest_
     }
 
     assert ViewOnceCapabilityService.reply_media_size(payload) == 300
+
+
+def test_conflicting_same_message_snapshots_fail_closed_regardless_of_container_order():
+    capability = ViewOnceCapabilityService.inspect_reply_snapshot(
+        {
+            "replyTo": {
+                "id": "MSG-NESTED-CONFLICT",
+                "message": {"viewOnce": True},
+                "_data": {"viewOnce": False},
+                "media": {
+                    "url": "http://waha:3000/api/files/conflict.jpg",
+                    "mimetype": "image/jpeg",
+                    "type": "image",
+                },
+            }
+        }
+    )
+
+    assert capability.is_view_once is False
+    assert capability.retrievable_now is False
