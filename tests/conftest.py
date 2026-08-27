@@ -51,6 +51,23 @@ async def setup_test_database():
     await engine.dispose()
 
 
+async def _clear_optional_raw_tables(session) -> None:
+    """Clear migration-owned tables that are not represented in SQLAlchemy metadata."""
+    await session.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF to_regclass('public.view_once_media_metadata') IS NOT NULL THEN
+                    DELETE FROM view_once_media_metadata;
+                END IF;
+            END
+            $$;
+            """
+        )
+    )
+
+
 @pytest_asyncio.fixture
 async def db_session():
     database_url = os.environ.get(
@@ -67,6 +84,7 @@ async def db_session():
 
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with Session() as session:
+        await _clear_optional_raw_tables(session)
         for model in (
             ScheduledAction,
             OutboundMessage,
@@ -94,6 +112,7 @@ async def db_session():
         await session.commit()
         yield session
         await session.rollback()
+        await _clear_optional_raw_tables(session)
         for model in (
             ScheduledAction,
             OutboundMessage,
