@@ -13,6 +13,7 @@ from app.services.conversation_open_loop_service import ConversationOpenLoopServ
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.scheduled_action_service import ScheduledActionService
+from app.services.view_once_media_service import ViewOnceMediaService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
 
@@ -167,9 +168,31 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             except WahaClientError as exc:
                 await _mark_delivery_failed(session, message, str(exc))
             else:
+                delivery_snapshot = _delivery_snapshot(message)
+                view_once_source_id = _view_once_source_id(message)
+
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
+
+                if view_once_source_id:
+                    # The WAHA file URL is a temporary retrieval capability, not retained
+                    # media. Clear it immediately after confirmed delivery and only now
+                    # mark the view-once lifecycle as returned to Fabian.
+                    await ViewOnceMediaService(session).mark_returned(view_once_source_id)
+                    message.media_url = None
+                    session.add(
+                        AuditLog(
+                            action="view_once_returned_to_owner",
+                            entity_type="view_once_media",
+                            entity_id=view_once_source_id,
+                            details_json={
+                                "outbound_queue_id": message.id,
+                                "media_type": delivery_snapshot.get("message_type"),
+                            },
+                        )
+                    )
+
                 await ScheduledActionService(session).reconcile_outbound_delivery(message)
                 session.add(
                     AuditLog(
@@ -178,7 +201,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                         entity_id=str(message.id),
                         details_json={
                             "chat_id": message.chat_id,
-                            "delivery_snapshot": _delivery_snapshot(message),
+                            "delivery_snapshot": delivery_snapshot,
                             "waha_response": response,
                         },
                     )
@@ -201,6 +224,16 @@ def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
     }
 
 
+def _view_once_source_id(message: OutboundMessage) -> str | None:
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("source") != "view_once_command":
+        return None
+    source_id = str(metadata.get("source_message_id") or "").strip()
+    if not source_id:
+        return None
+    return source_id[:200]
+
+
 async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -> None:
     next_retry_count = message.retry_count + 1
     message.retry_count = next_retry_count
@@ -212,6 +245,24 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
     else:
         message.status = "retrying"
         message.next_attempt_at = utcnow() + _retry_delay(next_retry_count)
+
+    view_once_source_id = _view_once_source_id(message)
+    if view_once_source_id and message.status == "failed":
+        # Retention is OFF. Once retries are exhausted there is no reason to keep a
+        # private WAHA file capability in durable queue state or backups.
+        message.media_url = None
+        await ViewOnceMediaService(session).mark_delivery_unavailable(view_once_source_id)
+        session.add(
+            AuditLog(
+                action="view_once_delivery_terminal_failed",
+                entity_type="view_once_media",
+                entity_id=view_once_source_id,
+                details_json={
+                    "outbound_queue_id": message.id,
+                    "retry_count": message.retry_count,
+                },
+            )
+        )
 
     await ScheduledActionService(session).reconcile_outbound_delivery(message)
     session.add(
