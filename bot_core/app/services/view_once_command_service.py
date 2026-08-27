@@ -170,7 +170,6 @@ class ViewOnceCommandService:
                 "capability_expires_at": capability_expires_at.isoformat(),
             },
         )
-        await self.session.commit()
         return ViewOnceCommandResult(
             consumed=True,
             command="/vvopen",
@@ -265,7 +264,6 @@ class ViewOnceCommandService:
         )
         self.session.add(outbound)
         await self.session.flush()
-        await self.session.commit()
         return ViewOnceCommandResult(True, command, reply_text=safe, outbound_queue_id=outbound.id, error=error)
 
     async def _audit(
