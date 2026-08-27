@@ -169,30 +169,11 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 await _mark_delivery_failed(session, message, str(exc))
             else:
                 delivery_snapshot = _delivery_snapshot(message)
-                view_once_source_id = _view_once_source_id(message)
-
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
 
-                if view_once_source_id:
-                    # The WAHA file URL is a temporary retrieval capability, not retained
-                    # media. Clear it immediately after confirmed delivery and only now
-                    # mark the view-once lifecycle as returned to Fabian.
-                    await ViewOnceMediaService(session).mark_returned(view_once_source_id)
-                    message.media_url = None
-                    session.add(
-                        AuditLog(
-                            action="view_once_returned_to_owner",
-                            entity_type="view_once_media",
-                            entity_id=view_once_source_id,
-                            details_json={
-                                "outbound_queue_id": message.id,
-                                "media_type": delivery_snapshot.get("message_type"),
-                            },
-                        )
-                    )
-
+                await _finalize_view_once_delivery_success(session, message, delivery_snapshot)
                 await ScheduledActionService(session).reconcile_outbound_delivery(message)
                 session.add(
                     AuditLog(
@@ -209,6 +190,32 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 await session.commit()
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
+
+
+async def _finalize_view_once_delivery_success(session, message: OutboundMessage, delivery_snapshot: dict[str, str]) -> None:
+    """Finalize one view-once queue row only after WAHA confirms delivery.
+
+    The temporary WAHA file URL is a retrieval capability, not retained media. This
+    helper is intentionally session-injected so its state transition can be tested
+    without crossing async database pools/event loops.
+    """
+    view_once_source_id = _view_once_source_id(message)
+    if not view_once_source_id:
+        return
+
+    await ViewOnceMediaService(session).mark_returned(view_once_source_id)
+    message.media_url = None
+    session.add(
+        AuditLog(
+            action="view_once_returned_to_owner",
+            entity_type="view_once_media",
+            entity_id=view_once_source_id,
+            details_json={
+                "outbound_queue_id": message.id,
+                "media_type": delivery_snapshot.get("message_type"),
+            },
+        )
+    )
 
 
 def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
