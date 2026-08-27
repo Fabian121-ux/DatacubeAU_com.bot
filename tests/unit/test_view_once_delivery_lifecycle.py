@@ -31,9 +31,12 @@ def _media_url(source_id: str) -> str:
 
 async def _insert_metadata(db_session, source_id: str) -> None:
     await db_session.execute(
+        text("DELETE FROM view_once_media_metadata WHERE source_message_id = :source_id"),
+        {"source_id": source_id},
+    )
+    await db_session.execute(
         text(
             """
-            DELETE FROM view_once_media_metadata WHERE source_message_id = :source_id;
             INSERT INTO view_once_media_metadata (
                 source_message_id, source_chat_id, media_type, media_mime,
                 capability_state, evidence_source, transport_available,
