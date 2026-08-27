@@ -124,6 +124,36 @@ class ViewOnceCapabilityService:
         )
 
     @classmethod
+    def reply_media_size(cls, payload: Any) -> int | None:
+        """Return the largest reported size across supported quoted-media locations.
+
+        WAHA engines can expose the same quoted media under `replyTo.media`,
+        `replyTo.message.media`, or `replyTo._data.media`. A safety bound must inspect
+        every supported location so a nested media object cannot bypass it.
+        """
+        if not isinstance(payload, dict):
+            return None
+        reply_to = payload.get("replyTo")
+        if not isinstance(reply_to, dict):
+            return None
+
+        sizes: list[int] = []
+        for media in cls._media_candidates(reply_to):
+            raw = media.get("fileSize")
+            if raw is None:
+                raw = media.get("filesize")
+            if raw is None:
+                raw = media.get("size")
+            if raw is None:
+                continue
+            try:
+                size = int(raw)
+            except (TypeError, ValueError):
+                continue
+            sizes.append(max(0, size))
+        return max(sizes) if sizes else None
+
+    @classmethod
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
         if depth > cls._MAX_DEPTH:
             return None
@@ -181,8 +211,8 @@ class ViewOnceCapabilityService:
         return None
 
     @classmethod
-    def _media(cls, payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
-        candidates = []
+    def _media_candidates(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
         direct = payload.get("media")
         if isinstance(direct, dict):
             candidates.append(direct)
@@ -193,14 +223,23 @@ class ViewOnceCapabilityService:
             value = cls._nested(payload, *path)
             if isinstance(value, dict):
                 candidates.append(value)
+        return candidates
+
+    @classmethod
+    def _media(cls, payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        candidates = cls._media_candidates(payload)
+        metadata_fallback: tuple[str | None, str | None, str | None] | None = None
 
         for media in candidates:
             url = str(media.get("url") or "").strip() or None
             mime = str(media.get("mimetype") or media.get("mimeType") or media.get("mime") or "").strip() or None
             media_type = str(media.get("type") or "").strip() or None
-            if url or mime or media_type:
+            if url:
                 return url, mime, media_type
-        return None, None, None
+            if metadata_fallback is None and (mime or media_type):
+                metadata_fallback = (None, mime, media_type)
+
+        return metadata_fallback or (None, None, None)
 
     @staticmethod
     def _nested(payload: Any, *path: str) -> Any:
