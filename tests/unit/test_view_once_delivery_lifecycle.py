@@ -8,6 +8,7 @@ from app.config import settings
 from app.models.schema import AuditLog, OutboundMessage
 from app.utils.time import utcnow
 from app.workers.background_workers import (
+    _block_scrubbed_view_once_resend,
     _delivery_snapshot,
     _finalize_view_once_delivery_success,
     _mark_delivery_failed,
@@ -73,6 +74,7 @@ async def test_successful_view_once_delivery_finalization_marks_returned_and_cle
 
     assert queued.status == "sent"
     assert queued.media_url is None
+    assert queued.formatting_json["resendable"] is False
     assert delivery_snapshot == {
         "text": f"View-once source {source_id}",
         "message_type": "image",
@@ -131,6 +133,7 @@ async def test_terminal_view_once_delivery_failure_clears_private_url_and_marks_
 
     assert queued.status == "failed"
     assert queued.media_url is None
+    assert queued.formatting_json["resendable"] is False
     lifecycle = (
         await db_session.execute(
             text(
@@ -172,6 +175,7 @@ async def test_retryable_view_once_failure_keeps_url_only_for_the_next_bounded_r
 
     assert queued.status == "retrying"
     assert queued.media_url == _media_url(source_id)
+    assert queued.formatting_json.get("resendable") is not False
     lifecycle = (
         await db_session.execute(
             text(
@@ -187,3 +191,55 @@ async def test_retryable_view_once_failure_keeps_url_only_for_the_next_bounded_r
     assert lifecycle["capability_state"] == "available_from_transport"
     assert lifecycle["transport_available"] is True
     assert lifecycle["returned_to_owner_at"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["sent", "failed"])
+async def test_scrubbed_view_once_media_is_non_resendable_before_any_transport_send(db_session, terminal_status):
+    source_id = f"VV-RESEND-BLOCKED-{terminal_status.upper()}"
+    await _insert_metadata(db_session, source_id)
+    queued = OutboundMessage(
+        chat_id=OWNER_ID,
+        message_text="",
+        media_url=None,
+        media_type="image",
+        media_caption=f"View-once source {source_id}",
+        status="sending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+        formatting_json={
+            "source": "view_once_command",
+            "source_message_id": source_id,
+            "resendable": False,
+        },
+        updated_at=utcnow(),
+    )
+    db_session.add(queued)
+    await db_session.flush()
+
+    # Mirror an operator/admin reset of a previously terminal row. The worker must
+    # reject it locally rather than falling through to send_text with an empty body.
+    queued.status = terminal_status
+    await db_session.flush()
+    queued.status = "sending"
+
+    blocked = await _block_scrubbed_view_once_resend(db_session, queued)
+
+    assert blocked is True
+    assert queued.status == "failed"
+    assert queued.media_url is None
+    assert queued.formatting_json["resendable"] is False
+    assert "no longer available for resend" in queued.error_message
+
+    audit = (
+        await db_session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "view_once_resend_blocked")
+            .where(AuditLog.entity_id == source_id)
+            .order_by(AuditLog.id.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+    assert audit.details_json["outbound_queue_id"] == queued.id
+    assert "media_url" not in str(audit.details_json).lower()
