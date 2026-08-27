@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 _DELIVERY_STATUSES = ("pending", "retrying")
 _VIEW_ONCE_RESEND_BLOCKED_ERROR = (
     "View-once media is no longer available for resend after its temporary WAHA file capability was scrubbed."
+)
+_VIEW_ONCE_CAPABILITY_EXPIRED_ERROR = (
+    "View-once media delivery capability expired before delivery and was scrubbed."
 )
 
 
@@ -159,6 +162,8 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
+            if await _expire_stale_view_once_capability(session, message):
+                continue
             if await _block_scrubbed_view_once_resend(session, message):
                 continue
             try:
@@ -198,14 +203,51 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         return processed
 
 
-async def _block_scrubbed_view_once_resend(session, message: OutboundMessage) -> bool:
-    """Fail closed when an operator resets a scrubbed view-once media row.
+async def _expire_stale_view_once_capability(session, message: OutboundMessage) -> bool:
+    """Scrub a temporary view-once URL after its absolute delivery TTL.
 
-    The outbound admin surface can reset historical rows to ``pending``. Once Zina
-    has delivered or terminally failed a view-once item, the temporary WAHA file
-    capability is deliberately erased. Such a row must never fall through to the
-    text branch and send a blank message after a manual resend.
+    Retention is OFF, so a durable WAHA file capability must never remain eligible
+    indefinitely merely because the delivery worker was paused or retries were
+    delayed. Legacy view-once rows with no valid expiry are failed closed as stale.
     """
+    source_id = _view_once_source_id(message)
+    if not source_id or not message.media_url:
+        return False
+
+    expires_at = _view_once_capability_expires_at(message)
+    if expires_at is not None and expires_at > utcnow():
+        return False
+
+    message.media_url = None
+    message.status = "failed"
+    message.error_message = _VIEW_ONCE_CAPABILITY_EXPIRED_ERROR
+    message.updated_at = utcnow()
+    _mark_view_once_non_resendable(message)
+    await ViewOnceMediaService(session).mark_delivery_unavailable(source_id)
+    session.add(
+        AuditLog(
+            action="view_once_delivery_capability_expired",
+            entity_type="view_once_media",
+            entity_id=source_id,
+            details_json={
+                "outbound_queue_id": message.id,
+                "reason": "absolute_delivery_ttl_elapsed",
+            },
+        )
+    )
+    await session.commit()
+    log_event(
+        logger,
+        logging.WARNING,
+        "view_once_delivery_capability_expired",
+        queue_id=message.id,
+        chat_id=message.chat_id,
+    )
+    return True
+
+
+async def _block_scrubbed_view_once_resend(session, message: OutboundMessage) -> bool:
+    """Fail closed when an operator resets a scrubbed view-once media row."""
     source_id = _view_once_source_id(message)
     if not source_id or message.media_url:
         return False
@@ -241,12 +283,6 @@ async def _block_scrubbed_view_once_resend(session, message: OutboundMessage) ->
 
 
 async def _finalize_view_once_delivery_success(session, message: OutboundMessage, delivery_snapshot: dict[str, str]) -> None:
-    """Finalize one view-once queue row only after WAHA confirms delivery.
-
-    The temporary WAHA file URL is a retrieval capability, not retained media. This
-    helper is intentionally session-injected so its state transition can be tested
-    without crossing async database pools/event loops.
-    """
     view_once_source_id = _view_once_source_id(message)
     if not view_once_source_id:
         return
@@ -268,34 +304,20 @@ async def _finalize_view_once_delivery_success(session, message: OutboundMessage
 
 
 def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
-    """Mirror the exact branch used by WAHA delivery when recording durable history."""
     if message.media_url:
         return {
             "text": message.media_caption or message.message_text,
             "message_type": message.media_type or "image",
         }
-    return {
-        "text": message.message_text,
-        "message_type": "text",
-    }
+    return {"text": message.message_text, "message_type": "text"}
 
 
 def _waha_response_for_audit(message: OutboundMessage, response: Any) -> Any:
-    """Keep ordinary delivery auditing unchanged but redact view-once responses.
-
-    WAHA media delivery responses may contain a fresh file/media URL even after the
-    original queue capability has been scrubbed. For view-once rows we therefore
-    persist only a bounded acknowledgement plus safe scalar delivery identifiers.
-    No nested response object is retained, so file URLs, media metadata, base64,
-    message bodies, or other retrieval capabilities cannot enter audit backups.
-    """
+    """Keep ordinary delivery auditing unchanged but redact view-once responses."""
     if not _view_once_source_id(message):
         return response
 
-    snapshot: dict[str, Any] = {
-        "redacted": True,
-        "response_type": type(response).__name__,
-    }
+    snapshot: dict[str, Any] = {"redacted": True, "response_type": type(response).__name__}
     if not isinstance(response, dict):
         return snapshot
 
@@ -314,6 +336,20 @@ def _view_once_source_id(message: OutboundMessage) -> str | None:
     if not source_id:
         return None
     return source_id[:200]
+
+
+def _view_once_capability_expires_at(message: OutboundMessage) -> datetime | None:
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    raw = str(metadata.get("capability_expires_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        return None
+    return value
 
 
 def _mark_view_once_non_resendable(message: OutboundMessage) -> None:
@@ -338,8 +374,6 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
 
     view_once_source_id = _view_once_source_id(message)
     if view_once_source_id and message.status == "failed":
-        # Retention is OFF. Once retries are exhausted there is no reason to keep a
-        # private WAHA file capability in durable queue state or backups.
         message.media_url = None
         _mark_view_once_non_resendable(message)
         await ViewOnceMediaService(session).mark_delivery_unavailable(view_once_source_id)
