@@ -79,11 +79,11 @@ class ViewOnceCommandService:
         if subcommand == "delete":
             return await self._delete(message, rest, owner_chat_id, request_id, transport_message_id)
 
-        return ViewOnceCommandResult(
-            True,
+        return await self._text(
+            owner_chat_id,
             canonical,
-            reply_text="View-once commands: .vv, .vvopen, .vv info, .vv list [limit], .vv delete [source-id], .vvretain off. Persistent .vvretain on is unavailable until private byte retention is implemented.",
-            error="unsupported view-once subcommand",
+            "View-once commands: .vv, .vvopen, .vv info, .vv list [limit], .vv delete [source-id], .vvretain off. Persistent .vvretain on is unavailable until private byte retention is implemented.",
+            "unsupported view-once subcommand",
         )
 
     async def _open(self, message: Any, owner_chat_id: str, request_id: str | None, transport_message_id: str | None) -> ViewOnceCommandResult:
