@@ -20,6 +20,8 @@ class ViewOnceMetadataRecord:
     evidence_source: str
     transport_available: bool
     retention_mode: str
+    first_observed_at: Any | None
+    last_observed_at: Any | None
     returned_to_owner_at: Any | None
     deleted_at: Any | None
 
@@ -83,7 +85,8 @@ class ViewOnceMediaService:
                         deleted_at = NULL
                     RETURNING id, source_message_id, source_chat_id, media_type, media_mime,
                               capability_state, evidence_source, transport_available,
-                              retention_mode, returned_to_owner_at, deleted_at
+                              retention_mode, first_observed_at, last_observed_at,
+                              returned_to_owner_at, deleted_at
                     """
                 ),
                 {
@@ -140,7 +143,8 @@ class ViewOnceMediaService:
                     """
                     SELECT id, source_message_id, source_chat_id, media_type, media_mime,
                            capability_state, evidence_source, transport_available,
-                           retention_mode, returned_to_owner_at, deleted_at
+                           retention_mode, first_observed_at, last_observed_at,
+                           returned_to_owner_at, deleted_at
                     FROM view_once_media_metadata
                     WHERE deleted_at IS NULL
                     ORDER BY last_observed_at DESC, id DESC
@@ -159,7 +163,8 @@ class ViewOnceMediaService:
                     """
                     SELECT id, source_message_id, source_chat_id, media_type, media_mime,
                            capability_state, evidence_source, transport_available,
-                           retention_mode, returned_to_owner_at, deleted_at
+                           retention_mode, first_observed_at, last_observed_at,
+                           returned_to_owner_at, deleted_at
                     FROM view_once_media_metadata
                     WHERE source_message_id = :source_message_id
                     LIMIT 1
@@ -176,6 +181,7 @@ class ViewOnceMediaService:
                 """
                 UPDATE view_once_media_metadata
                 SET deleted_at = COALESCE(deleted_at, NOW()),
+                    capability_state = 'deleted',
                     transport_available = FALSE,
                     retention_mode = 'none',
                     last_observed_at = NOW()
@@ -185,6 +191,19 @@ class ViewOnceMediaService:
             {"source_message_id": source_message_id[:200]},
         )
         return bool(result.rowcount)
+
+    async def delete(self, source_message_id: str) -> ViewOnceMetadataRecord | None:
+        """Soft-delete exactly one metadata record and return its lifecycle state.
+
+        Repeated deletion is idempotent: an existing already-deleted record is returned
+        as deleted, while an unknown source returns None. No media bytes are involved.
+        """
+        existing = await self.get(source_message_id)
+        if existing is None:
+            return None
+        if existing.deleted_at is None:
+            await self.delete_metadata(source_message_id)
+        return await self.get(source_message_id)
 
     @staticmethod
     def retention_supported() -> bool:
@@ -213,6 +232,8 @@ class ViewOnceMediaService:
             evidence_source=str(row["evidence_source"]),
             transport_available=bool(row["transport_available"]),
             retention_mode=str(row["retention_mode"]),
+            first_observed_at=row["first_observed_at"],
+            last_observed_at=row["last_observed_at"],
             returned_to_owner_at=row["returned_to_owner_at"],
             deleted_at=row["deleted_at"],
         )
