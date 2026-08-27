@@ -33,6 +33,7 @@ class ViewOnceCommandService:
     MAX_MEDIA_BYTES = 50 * 1024 * 1024
     MAX_TEXT_REPLY_CHARS = 3500
     MAX_LIST_BODY_CHARS = 3250
+    MAX_AUDIT_ENTITY_ID_CHARS = 120
     DELIVERY_CAPABILITY_TTL = timedelta(minutes=15)
 
     def __init__(self, session: AsyncSession):
@@ -52,8 +53,10 @@ class ViewOnceCommandService:
         transport_message_id: str | None = None,
     ) -> ViewOnceCommandResult:
         canonical = "/vvopen"
-        if (permission or "").strip().lower() != "owner":
-            await self._audit("view_once_command_denied", command, request_id, transport_message_id, {"reason": "owner_required"})
+        stored_permission = str(getattr(owner, "permission_level", "") or "").strip().lower()
+        effective_permission = stored_permission or (permission or "").strip().lower()
+        if effective_permission != "owner":
+            await self._audit("view_once_command_denied", command, request_id, transport_message_id, {"reason": "owner_required", "permission": effective_permission})
             return ViewOnceCommandResult(True, canonical, reply_text="Owner command. Access denied.", error="owner permission required")
 
         owner_chat_id = owner.normalized_whatsapp_id or AdminManagementService.normalize_whatsapp_id(owner.whatsapp_number)
@@ -278,11 +281,18 @@ class ViewOnceCommandService:
             AuditLog(
                 action=event_type,
                 entity_type="view_once_command",
-                entity_id=transport_message_id or request_id,
+                entity_id=self._audit_entity_id(transport_message_id or request_id),
                 details_json={"command": command, "request_id": request_id, **metadata},
             )
         )
         await self.session.flush()
+
+    @classmethod
+    def _audit_entity_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value)
+        return normalized[: cls.MAX_AUDIT_ENTITY_ID_CHARS]
 
     @staticmethod
     def _safe_media_type(media_type: str | None, media_mime: str | None) -> str | None:
