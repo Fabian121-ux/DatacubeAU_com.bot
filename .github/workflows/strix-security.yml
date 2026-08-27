@@ -49,6 +49,7 @@ jobs:
 
           python - <<'PY'
           from pathlib import Path
+          import re
 
           workflow = Path('.github/workflows/strix-security.yml').read_text(encoding='utf-8')
           marker = '  local-repo-security-scan:\n'
@@ -56,21 +57,28 @@ jobs:
               raise SystemExit('Strix workflow is missing the manual local security scan job.')
           scan_job = workflow.split(marker, 1)[1]
 
-          target_lines = [
-              line.strip()
-              for line in scan_job.splitlines()
-              if line.strip().startswith('--target ')
-          ]
-          expected = '--target "$GITHUB_WORKSPACE" \\'
-          if target_lines != [expected]:
+          # Inspect every target argument in the operational scan job, including
+          # conventional one-line `strix ... --target ...` invocations. A later
+          # edit cannot hide an alternate/network target merely by changing line
+          # wrapping or using --target=<value> syntax.
+          target_values = re.findall(
+              r'--target(?:=|\s+)("[^"]*"|\'[^\']*\'|[^\s\\]+)',
+              scan_job,
+          )
+          expected_target = '"$STRIX_SCAN_ROOT"'
+          if target_values != [expected_target]:
               raise SystemExit(
-                  'Strix workflow must contain exactly one local repository target: '
-                  '--target "$GITHUB_WORKSPACE". Network or alternate targets require '
+                  'Strix workflow must contain exactly one sanitized local repository target: '
+                  '--target "$STRIX_SCAN_ROOT". Network or alternate targets require '
                   'separate explicit staging authorization.'
               )
 
           required_operational_lines = (
               "python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.5.3'",
+              'fetch-depth: 1',
+              "rsync -a --delete --exclude='.git/' --exclude='strix_runs/' \"$GITHUB_WORKSPACE/\" \"$scan_root/\"",
+              'test ! -e "$scan_root/.git"',
+              'echo "STRIX_SCAN_ROOT=$scan_root" >> "$GITHUB_ENV"',
               'docker network create --driver bridge --internal "$network" >/dev/null',
               'echo "STRIX_DOCKER_SANDBOX_NETWORK=$network" >> "$GITHUB_ENV"',
               'STRIX_TELEMETRY: "false"',
@@ -104,7 +112,7 @@ jobs:
       - name: Check out Zina
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Validate authorized scope and scan controls
@@ -147,6 +155,19 @@ jobs:
           test -f docker-compose.yml
           docker info >/dev/null
 
+      - name: Prepare sanitized repository scan target
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_root="$RUNNER_TEMP/zina-strix-scan-target"
+          rm -rf -- "$scan_root"
+          mkdir -p "$scan_root"
+          rsync -a --delete --exclude='.git/' --exclude='strix_runs/' "$GITHUB_WORKSPACE/" "$scan_root/"
+          test -f "$scan_root/pyproject.toml"
+          test -d "$scan_root/bot_core"
+          test ! -e "$scan_root/.git"
+          echo "STRIX_SCAN_ROOT=$scan_root" >> "$GITHUB_ENV"
+
       - name: Install pinned Strix CLI
         shell: bash
         run: |
@@ -183,6 +204,9 @@ jobs:
           STRIX_SANDBOX_LOG_MAX_FILE: "2"
         run: |
           set -euo pipefail
+          test -n "${STRIX_SCAN_ROOT:-}"
+          test -d "$STRIX_SCAN_ROOT"
+          test ! -e "$STRIX_SCAN_ROOT/.git"
           test -n "${STRIX_DOCKER_SANDBOX_NETWORK:-}"
           test "$(docker network inspect -f '{{.Internal}}' "$STRIX_DOCKER_SANDBOX_NETWORK")" = "true"
 
@@ -192,10 +216,10 @@ jobs:
           # only the host-side Strix process retains the LLM-provider channel.
           strix \
             --non-interactive \
-            --target "$GITHUB_WORKSPACE" \
+            --target "$STRIX_SCAN_ROOT" \
             --scan-mode "$SCAN_MODE" \
             --max-budget "$MAX_BUDGET" \
-            --instruction-file "$GITHUB_WORKSPACE/.strix/instructions.md"
+            --instruction-file "$STRIX_SCAN_ROOT/.strix/instructions.md"
 
       - name: Verify Strix completed normally
         if: always()
