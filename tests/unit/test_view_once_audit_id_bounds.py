@@ -5,6 +5,7 @@ from sqlalchemy import select, text
 
 from app.config import settings
 from app.models.schema import AuditLog, OutboundMessage
+from app.services.view_once_command_service import ViewOnceCommandService
 from app.utils.time import utcnow
 from app.workers.background_workers import (
     _delivery_snapshot,
@@ -41,6 +42,36 @@ def test_view_once_audit_entity_id_is_bounded_to_schema_limit():
     source_id = "S" * 200
     assert _view_once_audit_entity_id(source_id) == source_id[:120]
     assert len(_view_once_audit_entity_id(source_id)) == 120
+
+
+def test_view_once_command_audit_entity_id_is_bounded_to_schema_limit():
+    transport_id = "T" * 255
+    assert ViewOnceCommandService._audit_entity_id(transport_id) == transport_id[:120]
+    assert len(ViewOnceCommandService._audit_entity_id(transport_id)) == 120
+
+
+@pytest.mark.asyncio
+async def test_long_view_once_command_transport_id_can_flush_audit(db_session):
+    transport_id = "C" * 255
+    service = ViewOnceCommandService(db_session)
+    await service._audit(
+        "view_once_command_denied",
+        ".vv",
+        "request-short",
+        transport_id,
+        {"reason": "owner_required"},
+    )
+
+    audit = (
+        await db_session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "view_once_command_denied")
+            .order_by(AuditLog.id.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+    assert audit.entity_id == transport_id[:120]
+    assert len(audit.entity_id) == 120
 
 
 @pytest.mark.asyncio
