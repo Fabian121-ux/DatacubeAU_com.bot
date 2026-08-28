@@ -35,49 +35,18 @@ class ViewOnceCapabilityService:
     A plain media message is therefore never upgraded to view-once by inference.
     """
 
-    _BOOL_KEYS = frozenset(
-        {
-            "viewonce",
-            "view_once",
-            "isviewonce",
-            "is_view_once",
-        }
-    )
-    _WRAPPER_KEYS = frozenset(
-        {
-            "viewoncemessage",
-            "viewoncemessagev2",
-            "viewoncemessagev2extension",
-        }
-    )
+    _BOOL_KEYS = frozenset({"viewonce", "view_once", "isviewonce", "is_view_once"})
+    _WRAPPER_KEYS = frozenset({"viewoncemessage", "viewoncemessagev2", "viewoncemessagev2extension"})
     _SAME_MESSAGE_KEYS = ("message", "_data")
     _MAX_DEPTH = 8
 
     @classmethod
     def inspect_message_payload(cls, payload: Any) -> ViewOnceCapability:
         if not isinstance(payload, dict):
-            return ViewOnceCapability(
-                source_message_id=None,
-                is_view_once=None,
-                media_url=None,
-                media_mime=None,
-                media_type=None,
-                evidence_source="waha_payload",
-                reason="WAHA payload unavailable or invalid.",
-            )
-
+            return ViewOnceCapability(None, None, None, None, None, "waha_payload", "WAHA payload unavailable or invalid.")
         source_id, id_conflict = cls._consistent_message_id(payload)
         if id_conflict:
-            return ViewOnceCapability(
-                source_message_id=None,
-                is_view_once=None,
-                media_url=None,
-                media_mime=None,
-                media_type=None,
-                evidence_source="waha_payload",
-                reason="WAHA message snapshots disagree on the source message ID; view-once evidence was not combined.",
-            )
-
+            return ViewOnceCapability(None, None, None, None, None, "waha_payload", "WAHA message snapshots disagree on the source message ID; view-once evidence was not combined.")
         marker = cls._explicit_view_once(payload)
         media = cls._media(payload)
         if marker is True and media[0]:
@@ -88,15 +57,7 @@ class ViewOnceCapabilityService:
             reason = "WAHA explicitly marks this message as not view-once."
         else:
             reason = "WAHA exposed no explicit view-once marker; ordinary media is not treated as view-once."
-        return ViewOnceCapability(
-            source_message_id=source_id,
-            is_view_once=marker,
-            media_url=media[0],
-            media_mime=media[1],
-            media_type=media[2],
-            evidence_source="waha_payload",
-            reason=reason,
-        )
+        return ViewOnceCapability(source_id, marker, media[0], media[1], media[2], "waha_payload", reason)
 
     @classmethod
     def inspect_reply_snapshot(cls, payload: Any) -> ViewOnceCapability:
@@ -104,28 +65,10 @@ class ViewOnceCapabilityService:
             return cls.inspect_message_payload(payload)
         reply_to = payload.get("replyTo")
         if not isinstance(reply_to, dict):
-            return ViewOnceCapability(
-                source_message_id=None,
-                is_view_once=None,
-                media_url=None,
-                media_mime=None,
-                media_type=None,
-                evidence_source="waha_reply_snapshot",
-                reason="Reply to a source message before using a view-once command.",
-            )
-
+            return ViewOnceCapability(None, None, None, None, None, "waha_reply_snapshot", "Reply to a source message before using a view-once command.")
         source_id, id_conflict = cls._consistent_message_id(reply_to)
         if id_conflict:
-            return ViewOnceCapability(
-                source_message_id=None,
-                is_view_once=None,
-                media_url=None,
-                media_mime=None,
-                media_type=None,
-                evidence_source="waha_reply_snapshot",
-                reason="Quoted WAHA snapshots disagree on the source message ID; retrieval is denied rather than mixing evidence from different messages.",
-            )
-
+            return ViewOnceCapability(None, None, None, None, None, "waha_reply_snapshot", "Quoted WAHA snapshots disagree on the source message ID; retrieval is denied rather than mixing evidence from different messages.")
         marker = cls._explicit_view_once(reply_to)
         media = cls._media(reply_to)
         if marker is True and media[0]:
@@ -136,29 +79,19 @@ class ViewOnceCapabilityService:
             reason = "Quoted WAHA snapshot explicitly marks the media as not view-once."
         else:
             reason = "Quoted WAHA snapshot has no explicit view-once evidence; retrieval is denied rather than guessed."
-        return ViewOnceCapability(
-            source_message_id=source_id,
-            is_view_once=marker,
-            media_url=media[0],
-            media_mime=media[1],
-            media_type=media[2],
-            evidence_source="waha_reply_snapshot",
-            reason=reason,
-        )
+        return ViewOnceCapability(source_id, marker, media[0], media[1], media[2], "waha_reply_snapshot", reason)
 
     @classmethod
     def reply_media_size(cls, payload: Any) -> int | None:
-        """Return the largest reported size across supported quoted-media locations."""
+        """Return the largest reported size across all supported same-message media snapshots."""
         if not isinstance(payload, dict):
             return None
         reply_to = payload.get("replyTo")
         if not isinstance(reply_to, dict):
             return None
-
         _, id_conflict = cls._consistent_message_id(reply_to)
         if id_conflict:
             return None
-
         sizes: list[int] = []
         for media in cls._media_candidates(reply_to):
             raw = media.get("fileSize")
@@ -177,20 +110,10 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
-        """Resolve explicit evidence for one message representation, fail closed.
-
-        Direct boolean markers, wrapper evidence, and supported alternate same-message
-        representations are all inspected before deciding. Any explicit negative
-        evidence wins over positive evidence, including when the root is positive but
-        a supported nested representation is explicitly negative. This prevents
-        classification from depending on key/container order.
-        """
         if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return None
-
         saw_true = False
         saw_false = False
-
         for key, value in payload.items():
             normalized = str(key).replace("-", "").replace("_", "").lower()
             if normalized not in cls._BOOL_KEYS:
@@ -200,12 +123,10 @@ class ViewOnceCapabilityService:
                 saw_false = True
             elif parsed is True:
                 saw_true = True
-
         for key, value in payload.items():
             normalized = str(key).replace("-", "").replace("_", "").lower()
             if normalized in cls._WRAPPER_KEYS and isinstance(value, dict):
                 saw_true = True
-
         for key in cls._SAME_MESSAGE_KEYS:
             nested_payload = payload.get(key)
             if not isinstance(nested_payload, dict):
@@ -215,7 +136,6 @@ class ViewOnceCapabilityService:
                 saw_true = True
             elif nested is False:
                 saw_false = True
-
         if saw_false:
             return False
         if saw_true:
@@ -240,13 +160,6 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _consistent_message_id(cls, payload: dict[str, Any]) -> tuple[str | None, bool]:
-        """Return one source ID only when every consumed same-message snapshot agrees.
-
-        Marker evidence may recurse through WAHA's supported `message` / `_data`
-        representations, so source-ID validation must traverse the exact same paths.
-        This prevents a deeper snapshot from authorizing media that belongs to a
-        different quoted message.
-        """
         ids = cls._collect_supported_message_ids(payload)
         if len(ids) > 1:
             return None, True
@@ -256,12 +169,10 @@ class ViewOnceCapabilityService:
     def _collect_supported_message_ids(cls, payload: Any, depth: int = 0) -> list[str]:
         if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return []
-
         ids: list[str] = []
         direct = cls._scalar_id(payload.get("id"))
         if direct:
             ids.append(direct)
-
         for key in cls._SAME_MESSAGE_KEYS:
             nested = payload.get(key)
             if not isinstance(nested, dict):
@@ -272,15 +183,24 @@ class ViewOnceCapabilityService:
         return ids
 
     @classmethod
-    def _media_candidates(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _media_candidates(cls, payload: Any, depth: int = 0) -> list[dict[str, Any]]:
+        """Collect media from every same-message representation consumed elsewhere.
+
+        ID validation and view-once marker resolution recurse through `message` and
+        `_data`; media/size evidence must use that identical bounded traversal so a
+        deeper snapshot cannot bypass type or size safety checks.
+        """
+        if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
+            return []
         candidates: list[dict[str, Any]] = []
         direct = payload.get("media")
         if isinstance(direct, dict):
             candidates.append(direct)
-        for path in (("message", "media"), ("_data", "media")):
-            value = cls._nested(payload, *path)
-            if isinstance(value, dict):
-                candidates.append(value)
+        for key in cls._SAME_MESSAGE_KEYS:
+            nested = payload.get(key)
+            if not isinstance(nested, dict):
+                continue
+            candidates.extend(cls._media_candidates(nested, depth + 1))
         return candidates
 
     @classmethod
@@ -290,26 +210,22 @@ class ViewOnceCapabilityService:
         selected_mime: str | None = None
         selected_type: str | None = None
         observed_categories: set[str] = set()
-
         for media in candidates:
             url = str(media.get("url") or "").strip() or None
             mime = str(media.get("mimetype") or media.get("mimeType") or media.get("mime") or "").strip() or None
             media_type = str(media.get("type") or "").strip() or None
-
             mime_category = cls._media_category(None, mime)
             type_category = cls._media_category(media_type, None)
             if mime_category:
                 observed_categories.add(mime_category)
             if type_category:
                 observed_categories.add(type_category)
-
             if selected_url is None and url:
                 selected_url = url
             if selected_mime is None and mime:
                 selected_mime = mime
             if selected_type is None and media_type:
                 selected_type = media_type
-
         if len(observed_categories) > 1:
             return selected_url, None, None
         return selected_url, selected_mime, selected_type
