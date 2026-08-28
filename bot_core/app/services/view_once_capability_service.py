@@ -236,12 +236,15 @@ class ViewOnceCapabilityService:
         selected_mime: str | None = None
         selected_type: str | None = None
         observed_categories: set[str] = set()
+        saw_explicit_unsupported_mime = False
         for media in candidates:
             url = str(media.get("url") or "").strip() or None
             mime = str(media.get("mimetype") or media.get("mimeType") or media.get("mime") or "").strip() or None
             media_type = str(media.get("type") or "").strip() or None
             mime_category = cls._media_category(None, mime)
             type_category = cls._media_category(media_type, None)
+            if mime and mime_category is None:
+                saw_explicit_unsupported_mime = True
             if mime_category:
                 observed_categories.add(mime_category)
             if type_category:
@@ -252,7 +255,7 @@ class ViewOnceCapabilityService:
                 selected_mime = mime
             if selected_type is None and media_type:
                 selected_type = media_type
-        if len(observed_categories) > 1:
+        if saw_explicit_unsupported_mime or len(observed_categories) > 1:
             return selected_url, None, None
         return selected_url, selected_mime, selected_type
 
