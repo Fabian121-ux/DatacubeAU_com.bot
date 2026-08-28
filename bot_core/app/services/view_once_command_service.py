@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -245,7 +245,7 @@ class ViewOnceCommandService:
 
     @staticmethod
     def _trusted_waha_media_url(url: str) -> bool:
-        """Accept only a configured WAHA file capability; malformed URLs fail closed."""
+        """Accept only a configured WAHA file capability; normalized path must stay under /api/files/."""
         try:
             parsed = urlparse(str(url or ""))
             hostname = parsed.hostname
@@ -254,8 +254,24 @@ class ViewOnceCommandService:
             return False
         if parsed.scheme not in {"http", "https"} or not hostname:
             return False
-        if not parsed.path.startswith("/api/files/"):
+
+        path = parsed.path
+        for _ in range(3):
+            lowered = path.lower()
+            if "%2f" in lowered or "%5c" in lowered:
+                return False
+            decoded = unquote(path)
+            if decoded == path:
+                break
+            path = decoded
+        if "\\" in path:
             return False
+        segments = path.split("/")
+        if any(segment in {".", ".."} for segment in segments):
+            return False
+        if not path.startswith("/api/files/") or path == "/api/files/":
+            return False
+
         trusted_origins = {settings.waha_service_url.rstrip("/"), settings.waha_base_url.rstrip("/")}
         candidate_origin = f"{parsed.scheme}://{netloc}".rstrip("/")
         return candidate_origin in trusted_origins
