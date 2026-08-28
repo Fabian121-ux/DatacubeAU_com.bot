@@ -161,6 +161,7 @@ class ViewOnceCommandService:
         )
         self.session.add(outbound)
         await self.session.flush()
+        await self.media.mark_capability_expiry(record.source_message_id, capability_expires_at)
         await self._audit(
             "view_once_media_queued",
             "/vvopen",
@@ -188,11 +189,15 @@ class ViewOnceCommandService:
             "VIEW-ONCE INFO\n"
             f"Source ID: {record.source_message_id}\n"
             f"Source chat: {record.source_chat_id or 'unknown'}\n"
+            f"Original sent: {record.original_message_at or 'unknown'}\n"
             f"Media type: {record.media_type or 'unknown'}\n"
             f"MIME: {record.media_mime or 'unknown'}\n"
             f"Capability state: {record.capability_state}\n"
             f"Transport available: {'yes' if record.transport_available else 'no'}\n"
+            f"Temporary capability expiry: {record.capability_expires_at or 'none'}\n"
             f"Retention: {record.retention_mode}\n"
+            "Retained at: not retained\n"
+            "Retention expiry: not applicable\n"
             f"Observed: {record.first_observed_at.isoformat() if record.first_observed_at else 'unknown'}\n"
             f"Returned: {record.returned_to_owner_at.isoformat() if record.returned_to_owner_at else 'not returned'}\n"
             f"Deleted: {record.deleted_at.isoformat() if record.deleted_at else 'no'}\n"
