@@ -78,15 +78,19 @@ class ViewOnceMediaService:
                     )
                     ON CONFLICT (source_message_id) DO UPDATE SET
                         source_chat_id = EXCLUDED.source_chat_id,
-                        media_type = EXCLUDED.media_type,
-                        media_mime = EXCLUDED.media_mime,
+                        media_type = COALESCE(EXCLUDED.media_type, view_once_media_metadata.media_type),
+                        media_mime = COALESCE(EXCLUDED.media_mime, view_once_media_metadata.media_mime),
                         capability_state = CASE
+                            WHEN view_once_media_metadata.deleted_at IS NOT NULL
+                                THEN 'deleted'
                             WHEN view_once_media_metadata.returned_to_owner_at IS NOT NULL
                                 THEN 'returned_to_owner'
                             ELSE EXCLUDED.capability_state
                         END,
                         evidence_source = EXCLUDED.evidence_source,
                         transport_available = CASE
+                            WHEN view_once_media_metadata.deleted_at IS NOT NULL
+                                THEN FALSE
                             WHEN view_once_media_metadata.returned_to_owner_at IS NOT NULL
                                 THEN FALSE
                             ELSE EXCLUDED.transport_available
@@ -96,7 +100,7 @@ class ViewOnceMediaService:
                             || EXCLUDED.metadata_json
                         ),
                         last_observed_at = NOW(),
-                        deleted_at = NULL
+                        deleted_at = view_once_media_metadata.deleted_at
                     RETURNING id, source_message_id, source_chat_id, media_type, media_mime,
                               capability_state, evidence_source, transport_available,
                               retention_mode, first_observed_at, last_observed_at,
