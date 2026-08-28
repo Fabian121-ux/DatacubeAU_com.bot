@@ -68,21 +68,18 @@ class ViewOnceCommandService:
             return await self._open(message, owner_chat_id, request_id, transport_message_id)
         if command == ".vvretain":
             return await self._retention(normalized_args, owner_chat_id, request_id, transport_message_id)
-
         if command == ".vv" and not normalized_args:
             return await self._open(message, owner_chat_id, request_id, transport_message_id)
 
         parts = normalized_args.split(maxsplit=1)
         subcommand = parts[0].lower().strip() if parts else ""
         rest = parts[1] if len(parts) > 1 else ""
-
         if subcommand == "info":
             return await self._info(message, owner_chat_id, request_id, transport_message_id)
         if subcommand == "list":
             return await self._list(rest, owner_chat_id, request_id, transport_message_id)
         if subcommand == "delete":
             return await self._delete(message, rest, owner_chat_id, request_id, transport_message_id)
-
         return await self._text(
             owner_chat_id,
             canonical,
@@ -103,46 +100,18 @@ class ViewOnceCommandService:
 
         media_type = self._safe_media_type(capability.media_type, capability.media_mime)
         if media_type == "video":
-            await self._audit(
-                "view_once_video_delivery_unavailable",
-                "/vvopen",
-                request_id,
-                transport_message_id,
-                {"source_message_id": record.source_message_id},
-            )
-            return await self._text(
-                owner_chat_id,
-                "/vvopen",
-                "WAHA exposed this view-once video, but Zina does not yet have a verified video-capable outbound adapter. The video was not queued or retained.",
-                "video delivery unavailable",
-            )
+            await self._audit("view_once_video_delivery_unavailable", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id})
+            return await self._text(owner_chat_id, "/vvopen", "WAHA exposed this view-once video, but Zina does not yet have a verified video-capable outbound adapter. The video was not queued or retained.", "video delivery unavailable")
         if media_type != "image":
             return await self._text(owner_chat_id, "/vvopen", "View-once media type is unsupported for safe outbound delivery. Only verified image delivery is currently enabled.", "unsupported media type")
         if not self._trusted_waha_media_url(capability.media_url):
-            await self._audit(
-                "view_once_media_url_rejected",
-                "/vvopen",
-                request_id,
-                transport_message_id,
-                {"source_message_id": record.source_message_id, "reason": "untrusted_waha_media_origin"},
-            )
+            await self._audit("view_once_media_url_rejected", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "reason": "untrusted_waha_media_origin"})
             return await self._text(owner_chat_id, "/vvopen", "WAHA exposed a media URL outside the configured WAHA file origin. Retrieval was blocked.", "untrusted media url")
 
         media_size = ViewOnceCapabilityService.reply_media_size(getattr(message, "payload", None))
         if media_size is not None and media_size > self.MAX_MEDIA_BYTES:
-            await self._audit(
-                "view_once_media_size_rejected",
-                "/vvopen",
-                request_id,
-                transport_message_id,
-                {"source_message_id": record.source_message_id, "reported_size": media_size},
-            )
-            return await self._text(
-                owner_chat_id,
-                "/vvopen",
-                "WAHA reports this view-once media is larger than the 50 MB safety limit, so it was not queued or retained.",
-                "media too large",
-            )
+            await self._audit("view_once_media_size_rejected", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "reported_size": media_size})
+            return await self._text(owner_chat_id, "/vvopen", "WAHA reports this view-once media is larger than the 50 MB safety limit, so it was not queued or retained.", "media too large")
 
         capability_expires_at = utcnow() + self.DELIVERY_CAPABILITY_TTL
         outbound = OutboundMessage(
@@ -162,24 +131,8 @@ class ViewOnceCommandService:
         self.session.add(outbound)
         await self.session.flush()
         await self.media.mark_capability_expiry(record.source_message_id, capability_expires_at)
-        await self._audit(
-            "view_once_media_queued",
-            "/vvopen",
-            request_id,
-            transport_message_id,
-            {
-                "source_message_id": record.source_message_id,
-                "outbound_queue_id": outbound.id,
-                "media_type": "image",
-                "capability_expires_at": capability_expires_at.isoformat(),
-            },
-        )
-        return ViewOnceCommandResult(
-            consumed=True,
-            command="/vvopen",
-            reply_text="View-once image queued for private owner delivery.",
-            outbound_queue_id=outbound.id,
-        )
+        await self._audit("view_once_media_queued", "/vvopen", request_id, transport_message_id, {"source_message_id": record.source_message_id, "outbound_queue_id": outbound.id, "media_type": "image", "capability_expires_at": capability_expires_at.isoformat()})
+        return ViewOnceCommandResult(True, "/vvopen", reply_text="View-once image queued for private owner delivery.", outbound_queue_id=outbound.id)
 
     async def _info(self, message: Any, owner_chat_id: str, request_id: str | None, transport_message_id: str | None) -> ViewOnceCommandResult:
         capability, record = await self.media.observe_reply(message)
@@ -217,15 +170,10 @@ class ViewOnceCommandService:
         rows = await self.media.list_recent(limit=limit)
         if not rows:
             return await self._text(owner_chat_id, "/vvopen", "VIEW-ONCE ITEMS\nNo observed view-once metadata yet.", None)
-
         lines = ["VIEW-ONCE ITEMS"]
         displayed = 0
         for row in rows:
-            line = (
-                f"{displayed + 1}. {row.source_message_id} | {row.source_chat_id or 'unknown'} | "
-                f"{row.media_type or 'unknown'} | {row.capability_state} | "
-                f"{row.last_observed_at.isoformat() if row.last_observed_at else 'unknown'}"
-            )
+            line = f"{displayed + 1}. {row.source_message_id} | {row.source_chat_id or 'unknown'} | {row.media_type or 'unknown'} | {row.capability_state} | {row.last_observed_at.isoformat() if row.last_observed_at else 'unknown'}"
             prospective = "\n".join(lines + [line])
             if len(prospective) > self.MAX_LIST_BODY_CHARS:
                 break
@@ -243,6 +191,9 @@ class ViewOnceCommandService:
             source_id = capability.source_message_id or ""
         if not source_id:
             return await self._text(owner_chat_id, "/vvopen", "Reply to a view-once item or provide its source ID: .vv delete <source-id>", "source message unavailable")
+        if ViewOnceMediaService.valid_source_message_id(source_id) is None:
+            await self._audit("view_once_metadata_delete_rejected", "/vvopen", request_id, transport_message_id, {"reason": "invalid_source_message_id"})
+            return await self._text(owner_chat_id, "/vvopen", "The view-once source ID is invalid or exceeds the 200-character safety limit. Nothing was deleted.", "invalid source message id")
         record = await self.media.delete(source_id)
         if record is None:
             return await self._text(owner_chat_id, "/vvopen", "No matching view-once metadata was found.", "view-once item not found")
@@ -263,41 +214,20 @@ class ViewOnceCommandService:
 
     async def _text(self, owner_chat_id: str, command: str, text: str, error: str | None) -> ViewOnceCommandResult:
         safe = text[: self.MAX_TEXT_REPLY_CHARS]
-        outbound = OutboundMessage(
-            chat_id=owner_chat_id,
-            message_text=safe,
-            status="pending",
-            retry_count=0,
-            formatting_json={"source": "view_once_command", "resendable": True},
-        )
+        outbound = OutboundMessage(chat_id=owner_chat_id, message_text=safe, status="pending", retry_count=0, formatting_json={"source": "view_once_command", "resendable": True})
         self.session.add(outbound)
         await self.session.flush()
         return ViewOnceCommandResult(True, command, reply_text=safe, outbound_queue_id=outbound.id, error=error)
 
-    async def _audit(
-        self,
-        event_type: str,
-        command: str,
-        request_id: str | None,
-        transport_message_id: str | None,
-        metadata: dict[str, Any],
-    ) -> None:
-        self.session.add(
-            AuditLog(
-                action=event_type,
-                entity_type="view_once_command",
-                entity_id=self._audit_entity_id(transport_message_id or request_id),
-                details_json={"command": command, "request_id": request_id, **metadata},
-            )
-        )
+    async def _audit(self, event_type: str, command: str, request_id: str | None, transport_message_id: str | None, metadata: dict[str, Any]) -> None:
+        self.session.add(AuditLog(action=event_type, entity_type="view_once_command", entity_id=self._audit_entity_id(transport_message_id or request_id), details_json={"command": command, "request_id": request_id, **metadata}))
         await self.session.flush()
 
     @classmethod
     def _audit_entity_id(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        normalized = str(value)
-        return normalized[: cls.MAX_AUDIT_ENTITY_ID_CHARS]
+        return str(value)[: cls.MAX_AUDIT_ENTITY_ID_CHARS]
 
     @staticmethod
     def _safe_media_type(media_type: str | None, media_mime: str | None) -> str | None:
@@ -315,11 +245,17 @@ class ViewOnceCommandService:
 
     @staticmethod
     def _trusted_waha_media_url(url: str) -> bool:
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        """Accept only a configured WAHA file capability; malformed URLs fail closed."""
+        try:
+            parsed = urlparse(str(url or ""))
+            hostname = parsed.hostname
+            netloc = parsed.netloc
+        except (TypeError, ValueError):
+            return False
+        if parsed.scheme not in {"http", "https"} or not hostname:
             return False
         if not parsed.path.startswith("/api/files/"):
             return False
         trusted_origins = {settings.waha_service_url.rstrip("/"), settings.waha_base_url.rstrip("/")}
-        candidate_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        candidate_origin = f"{parsed.scheme}://{netloc}".rstrip("/")
         return candidate_origin in trusted_origins
