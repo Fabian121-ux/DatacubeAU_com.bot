@@ -124,7 +124,7 @@ class ViewOnceMediaService:
                 UPDATE view_once_media_metadata
                 SET metadata_json = jsonb_strip_nulls(
                         COALESCE(metadata_json, '{}'::jsonb)
-                        || jsonb_build_object('capability_expires_at', :expiry)
+                        || jsonb_build_object('capability_expires_at', CAST(:expiry AS text))
                     ),
                     last_observed_at = NOW()
                 WHERE source_message_id = :source_message_id AND deleted_at IS NULL
