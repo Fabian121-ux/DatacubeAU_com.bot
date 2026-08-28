@@ -31,25 +31,28 @@ class ViewOnceMetadataRecord:
 
 
 class ViewOnceMediaService:
-    """Durable metadata boundary for Zina view-once commands.
-
-    This service intentionally persists metadata only. It never persists WAHA media
-    URLs, media bytes, base64 data, or raw webhook payloads. A caller may use the
-    returned capability's in-memory media URL for one immediate OWNER-only outbound
-    delivery, but that URL must not be written to this metadata table or audit logs.
-    """
+    """Durable metadata boundary for Zina view-once commands."""
 
     DEFAULT_LIST_LIMIT = 10
     MAX_LIST_LIMIT = 25
+    MAX_SOURCE_MESSAGE_ID_CHARS = 200
     _MAX_TIMESTAMP_DEPTH = 8
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    @classmethod
+    def valid_source_message_id(cls, value: Any) -> str | None:
+        source_id = str(value or "").strip()
+        if not source_id or len(source_id) > cls.MAX_SOURCE_MESSAGE_ID_CHARS:
+            return None
+        return source_id
+
     async def observe_reply(self, message: Any) -> tuple[ViewOnceCapability, ViewOnceMetadataRecord | None]:
         payload = getattr(message, "payload", None)
         capability = ViewOnceCapabilityService.inspect_reply_snapshot(payload)
-        if not capability.source_message_id:
+        source_id = self.valid_source_message_id(capability.source_message_id)
+        if not source_id:
             return capability, None
 
         state = self._state(capability)
@@ -99,7 +102,7 @@ class ViewOnceMediaService:
                     """
                 ),
                 {
-                    "source_message_id": capability.source_message_id,
+                    "source_message_id": source_id,
                     "source_chat_id": str(getattr(message, "chat_id", "") or "unknown-chat")[:120],
                     "media_type": (capability.media_type or "")[:40] or None,
                     "media_mime": (capability.media_mime or "")[:160] or None,
@@ -113,10 +116,9 @@ class ViewOnceMediaService:
         return capability, self._record(row)
 
     async def mark_capability_expiry(self, source_message_id: str, expires_at: Any) -> None:
-        """Persist only the wall-clock expiry of a temporary WAHA delivery capability.
-
-        The capability URL itself is never copied into this metadata table.
-        """
+        source_id = self.valid_source_message_id(source_message_id)
+        if not source_id:
+            return
         expiry = expires_at.isoformat() if hasattr(expires_at, "isoformat") else str(expires_at)
         await self.session.execute(
             text(
@@ -130,10 +132,13 @@ class ViewOnceMediaService:
                 WHERE source_message_id = :source_message_id AND deleted_at IS NULL
                 """
             ),
-            {"source_message_id": source_message_id[:200], "expiry": expiry},
+            {"source_message_id": source_id, "expiry": expiry},
         )
 
     async def mark_returned(self, source_message_id: str) -> None:
+        source_id = self.valid_source_message_id(source_message_id)
+        if not source_id:
+            return
         await self.session.execute(
             text(
                 """
@@ -145,11 +150,13 @@ class ViewOnceMediaService:
                 WHERE source_message_id = :source_message_id AND deleted_at IS NULL
                 """
             ),
-            {"source_message_id": source_message_id[:200]},
+            {"source_message_id": source_id},
         )
 
     async def mark_delivery_unavailable(self, source_message_id: str) -> None:
-        """Mark transport unavailable without regressing a successful return."""
+        source_id = self.valid_source_message_id(source_message_id)
+        if not source_id:
+            return
         await self.session.execute(
             text(
                 """
@@ -162,7 +169,7 @@ class ViewOnceMediaService:
                   AND returned_to_owner_at IS NULL
                 """
             ),
-            {"source_message_id": source_message_id[:200]},
+            {"source_message_id": source_id},
         )
 
     async def list_recent(self, limit: int | None = None) -> list[ViewOnceMetadataRecord]:
@@ -187,6 +194,9 @@ class ViewOnceMediaService:
         return [self._record(row) for row in rows]
 
     async def get(self, source_message_id: str) -> ViewOnceMetadataRecord | None:
+        source_id = self.valid_source_message_id(source_message_id)
+        if not source_id:
+            return None
         row = (
             await self.session.execute(
                 text(
@@ -200,12 +210,15 @@ class ViewOnceMediaService:
                     LIMIT 1
                     """
                 ),
-                {"source_message_id": source_message_id[:200]},
+                {"source_message_id": source_id},
             )
         ).mappings().one_or_none()
         return self._record(row) if row else None
 
     async def delete_metadata(self, source_message_id: str) -> bool:
+        source_id = self.valid_source_message_id(source_message_id)
+        if not source_id:
+            return False
         result = await self.session.execute(
             text(
                 """
@@ -218,26 +231,23 @@ class ViewOnceMediaService:
                 WHERE source_message_id = :source_message_id AND deleted_at IS NULL
                 """
             ),
-            {"source_message_id": source_message_id[:200]},
+            {"source_message_id": source_id},
         )
         return bool(result.rowcount)
 
     async def delete(self, source_message_id: str) -> ViewOnceMetadataRecord | None:
-        """Soft-delete exactly one metadata record and return its lifecycle state.
-
-        Repeated deletion is idempotent: an existing already-deleted record is returned
-        as deleted, while an unknown source returns None. No media bytes are involved.
-        """
-        existing = await self.get(source_message_id)
+        source_id = self.valid_source_message_id(source_message_id)
+        if not source_id:
+            return None
+        existing = await self.get(source_id)
         if existing is None:
             return None
         if existing.deleted_at is None:
-            await self.delete_metadata(source_message_id)
-        return await self.get(source_message_id)
+            await self.delete_metadata(source_id)
+        return await self.get(source_id)
 
     @staticmethod
     def retention_supported() -> bool:
-        """Persistent view-once byte retention is deliberately unavailable for now."""
         return False
 
     @staticmethod
@@ -257,7 +267,6 @@ class ViewOnceMediaService:
         reply_to = payload.get("replyTo")
         if not isinstance(reply_to, dict):
             return None
-
         values: list[str] = []
 
         def visit(node: Any, depth: int = 0) -> None:
@@ -287,7 +296,6 @@ class ViewOnceMediaService:
                 return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat()
         except (OverflowError, OSError, TypeError, ValueError):
             return None
-
         text_value = str(value).strip()
         if not text_value:
             return None
