@@ -59,8 +59,10 @@ class ViewOnceMediaService:
         metadata = {
             "reason": capability.reason[:500],
             "view_once_explicit": capability.is_view_once,
-            "original_message_at": self._reply_original_message_at(payload),
         }
+        original_message_at = self._reply_original_message_at(payload)
+        if original_message_at is not None:
+            metadata["original_message_at"] = original_message_at
         row = (
             await self.session.execute(
                 text(
