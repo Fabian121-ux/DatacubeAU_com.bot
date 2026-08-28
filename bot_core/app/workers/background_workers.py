@@ -370,15 +370,24 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
     next_retry_count = message.retry_count + 1
     message.retry_count = next_retry_count
     message.error_message = error[:2000]
-    message.updated_at = utcnow()
+    now = utcnow()
+    message.updated_at = now
+
+    view_once_source_id = _view_once_source_id(message)
+    capability_expires_at = _view_once_capability_expires_at(message) if view_once_source_id else None
 
     if next_retry_count > message.max_retries:
         message.status = "failed"
+    elif view_once_source_id and (capability_expires_at is None or capability_expires_at <= now):
+        message.status = "failed"
+        message.error_message = _VIEW_ONCE_CAPABILITY_EXPIRED_ERROR
     else:
         message.status = "retrying"
-        message.next_attempt_at = utcnow() + _retry_delay(next_retry_count)
+        retry_at = now + _retry_delay(next_retry_count)
+        if capability_expires_at is not None:
+            retry_at = min(retry_at, capability_expires_at)
+        message.next_attempt_at = retry_at
 
-    view_once_source_id = _view_once_source_id(message)
     if view_once_source_id and message.status == "failed":
         message.media_url = None
         _mark_view_once_non_resendable(message)
