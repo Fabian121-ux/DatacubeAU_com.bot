@@ -169,6 +169,52 @@ async def test_malformed_media_url_returns_private_rejection_without_media_queue
     assert "blocked" in queued.message_text.lower()
 
 
+def test_waha_file_capability_rejects_path_escape_and_encoded_separators():
+    origin = settings.waha_service_url.rstrip("/")
+    assert ViewOnceCommandService._trusted_waha_media_url(origin + "/api/files/photo.jpg") is True
+    assert ViewOnceCommandService._trusted_waha_media_url(origin + "/api/files/../../api/sessions") is False
+    assert ViewOnceCommandService._trusted_waha_media_url(origin + "/api/files/%2e%2e/%2e%2e/api/sessions") is False
+    assert ViewOnceCommandService._trusted_waha_media_url(origin + "/api/files/item%2f..%2f..%2fapi%2fsessions") is False
+    assert ViewOnceCommandService._trusted_waha_media_url(origin + "/api/files/item%5c..%5capi%5csessions") is False
+
+
+@pytest.mark.asyncio
+async def test_path_escape_media_url_returns_private_rejection_without_media_queue(db_session):
+    service = ViewOnceCommandService(db_session)
+    origin = settings.waha_service_url.rstrip("/")
+    message = SimpleNamespace(
+        chat_id="2348000000002@c.us",
+        payload={
+            "replyTo": {
+                "id": "PATH-ESCAPE-URL",
+                "viewOnce": True,
+                "media": {
+                    "url": origin + "/api/files/../../api/sessions",
+                    "type": "image",
+                    "mimetype": "image/jpeg",
+                },
+            }
+        },
+    )
+
+    result = await service.handle(
+        ".vv",
+        "",
+        message=message,
+        owner=_owner(),
+        permission="owner",
+        request_id="PATH-ESCAPE-URL",
+        transport_message_id="PATH-ESCAPE-URL",
+    )
+
+    assert result.error == "untrusted media url"
+    queued = (
+        await db_session.execute(select(OutboundMessage).where(OutboundMessage.id == result.outbound_queue_id))
+    ).scalar_one()
+    assert queued.media_url is None
+    assert "blocked" in queued.message_text.lower()
+
+
 @pytest.mark.asyncio
 async def test_capability_expiry_jsonb_bind_is_typed_and_round_trips(db_session):
     media = ViewOnceMediaService(db_session)
