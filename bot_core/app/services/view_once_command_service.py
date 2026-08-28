@@ -258,6 +258,8 @@ class ViewOnceCommandService:
             mime_category = "image"
         elif mime_value.startswith("video/"):
             mime_category = "video"
+        elif mime_value:
+            return None
         if type_category and mime_category and type_category != mime_category:
             return None
         return type_category or mime_category
