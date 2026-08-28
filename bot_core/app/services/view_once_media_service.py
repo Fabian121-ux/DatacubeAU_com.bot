@@ -57,7 +57,6 @@ class ViewOnceMediaService:
             "reason": capability.reason[:500],
             "view_once_explicit": capability.is_view_once,
             "original_message_at": self._reply_original_message_at(payload),
-            "capability_expires_at": None,
         }
         row = (
             await self.session.execute(
