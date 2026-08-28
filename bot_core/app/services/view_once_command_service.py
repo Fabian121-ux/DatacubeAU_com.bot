@@ -194,11 +194,30 @@ class ViewOnceCommandService:
         if ViewOnceMediaService.valid_source_message_id(source_id) is None:
             await self._audit("view_once_metadata_delete_rejected", "/vvopen", request_id, transport_message_id, {"reason": "invalid_source_message_id"})
             return await self._text(owner_chat_id, "/vvopen", "The view-once source ID is invalid or exceeds the 200-character safety limit. Nothing was deleted.", "invalid source message id")
+
+        existing = await self.media.get(source_id)
+        if existing is None:
+            return await self._text(owner_chat_id, "/vvopen", "No matching view-once metadata was found, and no retained media was deleted.", "view-once item not found")
+        if existing.retention_mode == "none" or not self.media.retention_supported():
+            await self._audit(
+                "view_once_delete_no_retained_media",
+                "/vvopen",
+                request_id,
+                transport_message_id,
+                {"source_message_id": source_id, "retention_mode": existing.retention_mode},
+            )
+            return await self._text(
+                owner_chat_id,
+                "/vvopen",
+                f"No retained media exists for {source_id}. Nothing was deleted; observation metadata remains available for lifecycle/audit.",
+                "no retained media",
+            )
+
         record = await self.media.delete(source_id)
         if record is None:
-            return await self._text(owner_chat_id, "/vvopen", "No matching view-once metadata was found.", "view-once item not found")
+            return await self._text(owner_chat_id, "/vvopen", "No retained media was found for that source. Nothing was deleted.", "no retained media")
         await self._audit("view_once_metadata_deleted", "/vvopen", request_id, transport_message_id, {"source_message_id": source_id})
-        return await self._text(owner_chat_id, "/vvopen", f"View-once metadata for {source_id} is marked deleted. No retained media bytes exist in this version.", None)
+        return await self._text(owner_chat_id, "/vvopen", f"Retained view-once media for {source_id} was deleted and its lifecycle metadata was marked deleted.", None)
 
     async def _retention(self, args: str, owner_chat_id: str, request_id: str | None, transport_message_id: str | None) -> ViewOnceCommandResult:
         value = (args or "").strip().lower()
