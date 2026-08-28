@@ -161,10 +161,35 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def _consistent_message_id(cls, payload: dict[str, Any]) -> tuple[str | None, bool]:
+        if cls._has_invalid_supported_message_id(payload):
+            return None, True
         ids = cls._collect_supported_message_ids(payload)
         if len(ids) > 1:
             return None, True
         return (ids[0] if ids else None), False
+
+    @classmethod
+    def _has_invalid_supported_message_id(cls, payload: Any, depth: int = 0) -> bool:
+        """Treat non-empty over-limit IDs in consumed snapshots as conflicting evidence.
+
+        Marker and media extraction recurse through `message` / `_data`, so an ID in
+        any of those same-message representations must be either valid and consistent
+        or fail closed. An overlong ID is never silently downgraded to "missing".
+        """
+        if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
+            return False
+        if "id" in payload:
+            value = payload.get("id")
+            if isinstance(value, dict):
+                value = value.get("_serialized") or value.get("id")
+            text_value = str(value or "").strip()
+            if text_value and len(text_value) > 200:
+                return True
+        for key in cls._SAME_MESSAGE_KEYS:
+            nested = payload.get(key)
+            if isinstance(nested, dict) and cls._has_invalid_supported_message_id(nested, depth + 1):
+                return True
+        return False
 
     @classmethod
     def _collect_supported_message_ids(cls, payload: Any, depth: int = 0) -> list[str]:
