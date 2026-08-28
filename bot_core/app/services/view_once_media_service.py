@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
 from typing import Any
 
 from sqlalchemy import text
@@ -24,6 +26,8 @@ class ViewOnceMetadataRecord:
     last_observed_at: Any | None
     returned_to_owner_at: Any | None
     deleted_at: Any | None
+    original_message_at: str | None
+    capability_expires_at: str | None
 
 
 class ViewOnceMediaService:
@@ -37,6 +41,7 @@ class ViewOnceMediaService:
 
     DEFAULT_LIST_LIMIT = 10
     MAX_LIST_LIMIT = 25
+    _MAX_TIMESTAMP_DEPTH = 8
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -51,6 +56,8 @@ class ViewOnceMediaService:
         metadata = {
             "reason": capability.reason[:500],
             "view_once_explicit": capability.is_view_once,
+            "original_message_at": self._reply_original_message_at(payload),
+            "capability_expires_at": None,
         }
         row = (
             await self.session.execute(
@@ -80,13 +87,16 @@ class ViewOnceMediaService:
                                 THEN FALSE
                             ELSE EXCLUDED.transport_available
                         END,
-                        metadata_json = EXCLUDED.metadata_json,
+                        metadata_json = jsonb_strip_nulls(
+                            COALESCE(view_once_media_metadata.metadata_json, '{}'::jsonb)
+                            || EXCLUDED.metadata_json
+                        ),
                         last_observed_at = NOW(),
                         deleted_at = NULL
                     RETURNING id, source_message_id, source_chat_id, media_type, media_mime,
                               capability_state, evidence_source, transport_available,
                               retention_mode, first_observed_at, last_observed_at,
-                              returned_to_owner_at, deleted_at
+                              returned_to_owner_at, deleted_at, metadata_json
                     """
                 ),
                 {
@@ -97,11 +107,32 @@ class ViewOnceMediaService:
                     "capability_state": state,
                     "evidence_source": capability.evidence_source[:80],
                     "transport_available": bool(capability.retrievable_now),
-                    "metadata_json": __import__("json").dumps(metadata),
+                    "metadata_json": json.dumps(metadata),
                 },
             )
         ).mappings().one()
         return capability, self._record(row)
+
+    async def mark_capability_expiry(self, source_message_id: str, expires_at: Any) -> None:
+        """Persist only the wall-clock expiry of a temporary WAHA delivery capability.
+
+        The capability URL itself is never copied into this metadata table.
+        """
+        expiry = expires_at.isoformat() if hasattr(expires_at, "isoformat") else str(expires_at)
+        await self.session.execute(
+            text(
+                """
+                UPDATE view_once_media_metadata
+                SET metadata_json = jsonb_strip_nulls(
+                        COALESCE(metadata_json, '{}'::jsonb)
+                        || jsonb_build_object('capability_expires_at', :expiry)
+                    ),
+                    last_observed_at = NOW()
+                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                """
+            ),
+            {"source_message_id": source_message_id[:200], "expiry": expiry},
+        )
 
     async def mark_returned(self, source_message_id: str) -> None:
         await self.session.execute(
@@ -144,7 +175,7 @@ class ViewOnceMediaService:
                     SELECT id, source_message_id, source_chat_id, media_type, media_mime,
                            capability_state, evidence_source, transport_available,
                            retention_mode, first_observed_at, last_observed_at,
-                           returned_to_owner_at, deleted_at
+                           returned_to_owner_at, deleted_at, metadata_json
                     FROM view_once_media_metadata
                     WHERE deleted_at IS NULL
                     ORDER BY last_observed_at DESC, id DESC
@@ -164,7 +195,7 @@ class ViewOnceMediaService:
                     SELECT id, source_message_id, source_chat_id, media_type, media_mime,
                            capability_state, evidence_source, transport_available,
                            retention_mode, first_observed_at, last_observed_at,
-                           returned_to_owner_at, deleted_at
+                           returned_to_owner_at, deleted_at, metadata_json
                     FROM view_once_media_metadata
                     WHERE source_message_id = :source_message_id
                     LIMIT 1
@@ -220,8 +251,65 @@ class ViewOnceMediaService:
             return "not_view_once"
         return "capability_unknown"
 
+    @classmethod
+    def _reply_original_message_at(cls, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        reply_to = payload.get("replyTo")
+        if not isinstance(reply_to, dict):
+            return None
+
+        values: list[str] = []
+
+        def visit(node: Any, depth: int = 0) -> None:
+            if depth > cls._MAX_TIMESTAMP_DEPTH or not isinstance(node, dict):
+                return
+            for key in ("timestamp", "messageTimestamp", "t"):
+                parsed = cls._normalize_timestamp(node.get(key))
+                if parsed and parsed not in values:
+                    values.append(parsed)
+            for key in ("message", "_data"):
+                visit(node.get(key), depth + 1)
+
+        visit(reply_to)
+        return values[0] if len(values) == 1 else None
+
+    @staticmethod
+    def _normalize_timestamp(value: Any) -> str | None:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            if isinstance(value, (int, float)) or str(value).strip().replace(".", "", 1).isdigit():
+                numeric = float(value)
+                if numeric > 10_000_000_000:
+                    numeric /= 1000.0
+                if numeric <= 0:
+                    return None
+                return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, TypeError, ValueError):
+            return None
+
+        text_value = str(value).strip()
+        if not text_value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+
     @staticmethod
     def _record(row: Any) -> ViewOnceMetadataRecord:
+        metadata = row.get("metadata_json") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
         return ViewOnceMetadataRecord(
             id=int(row["id"]),
             source_message_id=str(row["source_message_id"]),
@@ -236,4 +324,6 @@ class ViewOnceMediaService:
             last_observed_at=row["last_observed_at"],
             returned_to_owner_at=row["returned_to_owner_at"],
             deleted_at=row["deleted_at"],
+            original_message_at=metadata.get("original_message_at"),
+            capability_expires_at=metadata.get("capability_expires_at"),
         )
