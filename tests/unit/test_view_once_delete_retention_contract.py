@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from sqlalchemy import select
 
@@ -17,16 +15,30 @@ SOURCE_ID = "VV-DELETE-NO-RETENTION"
 
 
 async def _seed_owner(db_session) -> None:
-    owner = AdminAccount(
-        name="Fabian",
-        whatsapp_number="2348000000001",
-        normalized_whatsapp_id=OWNER_ID,
-        role="primary_admin",
-        permission_level="owner",
-        is_primary=True,
-        is_enabled=True,
-    )
-    db_session.add(owner)
+    owner = (
+        await db_session.execute(
+            select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == OWNER_ID).limit(1)
+        )
+    ).scalar_one_or_none()
+    if owner is None:
+        owner = AdminAccount(
+            name="Fabian",
+            whatsapp_number="2348000000001",
+            normalized_whatsapp_id=OWNER_ID,
+            role="primary_admin",
+            permission_level="owner",
+            is_primary=True,
+            is_enabled=True,
+        )
+        db_session.add(owner)
+    else:
+        owner.name = "Fabian"
+        owner.whatsapp_number = "2348000000001"
+        owner.normalized_whatsapp_id = OWNER_ID
+        owner.role = "primary_admin"
+        owner.permission_level = "owner"
+        owner.is_primary = True
+        owner.is_enabled = True
     await db_session.flush()
 
 
@@ -87,7 +99,14 @@ async def test_vv_delete_reports_no_retained_media_and_preserves_observation_met
     assert queued[0].media_url is None
     assert "nothing was deleted" in queued[0].message_text.lower()
 
-    audits = (await db_session.execute(select(AuditLog).where(AuditLog.action == "view_once_delete_no_retained_media"))).scalars().all()
+    audits = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "view_once_delete_no_retained_media",
+                AuditLog.entity_id == "VV-DELETE-CMD",
+            )
+        )
+    ).scalars().all()
     assert len(audits) == 1
     assert audits[0].details_json.get("source_message_id") == SOURCE_ID
     assert audits[0].details_json.get("retention_mode") == "none"
