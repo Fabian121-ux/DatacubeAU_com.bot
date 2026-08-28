@@ -378,7 +378,7 @@ async def _mark_delivery_failed(session, message: OutboundMessage, error: str) -
 
     if next_retry_count > message.max_retries:
         message.status = "failed"
-    elif view_once_source_id and (capability_expires_at is None or capability_expires_at <= now):
+    elif view_once_source_id and capability_expires_at is not None and capability_expires_at <= now:
         message.status = "failed"
         message.error_message = _VIEW_ONCE_CAPABILITY_EXPIRED_ERROR
     else:
