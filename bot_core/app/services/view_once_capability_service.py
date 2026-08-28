@@ -83,7 +83,12 @@ class ViewOnceCapabilityService:
 
     @classmethod
     def reply_media_size(cls, payload: Any) -> int | None:
-        """Return the largest reported size across all supported same-message media snapshots."""
+        """Return the largest valid reported size across all supported media aliases/snapshots.
+
+        Every present `fileSize`/`filesize`/`size` alias is inspected independently.
+        Invalid aliases are ignored rather than masking a later valid safety signal,
+        while the largest valid non-negative value is used for the command ceiling.
+        """
         if not isinstance(payload, dict):
             return None
         reply_to = payload.get("replyTo")
@@ -94,18 +99,14 @@ class ViewOnceCapabilityService:
             return None
         sizes: list[int] = []
         for media in cls._media_candidates(reply_to):
-            raw = media.get("fileSize")
-            if raw is None:
-                raw = media.get("filesize")
-            if raw is None:
-                raw = media.get("size")
-            if raw is None:
-                continue
-            try:
-                size = int(raw)
-            except (TypeError, ValueError):
-                continue
-            sizes.append(max(0, size))
+            for key in ("fileSize", "filesize", "size"):
+                if key not in media or media.get(key) is None:
+                    continue
+                try:
+                    size = int(media.get(key))
+                except (TypeError, ValueError):
+                    continue
+                sizes.append(max(0, size))
         return max(sizes) if sizes else None
 
     @classmethod
