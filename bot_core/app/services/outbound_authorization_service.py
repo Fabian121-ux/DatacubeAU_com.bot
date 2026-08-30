@@ -70,6 +70,27 @@ class OutboundAuthorizationService:
             response_category=response_category or "normal_reply",
         )
 
+    async def authorize_queue_message(
+        self,
+        message: Any,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[AuthorizationContext | None, AuthorizationDecision]:
+        """Authorize one concrete queue row without letting callers bypass context checks.
+
+        This is the integration boundary for the delivery worker. Missing source/contact
+        identifiers, a target mismatch, or content changed after the authority stamp all
+        fail closed before any approval or contact-policy lookup can permit delivery.
+        """
+        context = self.context_from_queue_message(message)
+        if context is None:
+            return None, AuthorizationDecision(
+                False,
+                "none",
+                "queue row missing exact durable authority context or content hash mismatch",
+            )
+        return context, await self.authorize(context, now=now)
+
     async def create_pending_approval(
         self,
         *,
