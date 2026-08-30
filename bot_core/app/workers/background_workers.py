@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
+from app.config import settings
 from app.db import SessionLocal
 from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
@@ -147,6 +148,9 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         for message in messages:
             if message.status == "sending" and message.updated_at and message.updated_at > now - timedelta(minutes=5):
                 continue
+            if not _delivery_authorized(message):
+                await _mark_delivery_blocked(session, message, reason="missing durable outbound authorization")
+                continue
             message.status = "sending"
             message.updated_at = now
             due_messages.append(message)
@@ -186,6 +190,65 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 await session.commit()
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
+
+
+def _delivery_authorized(message: OutboundMessage) -> bool:
+    """Fail closed for ordinary router replies until durable approval/policy exists.
+
+    Existing owner-created queue paths (for example `.push` and scheduled actions)
+    remain governed by their own durable command/action records. Router-generated
+    replies identify themselves through `delivery_policy`; an `immediate` router
+    reply to any non-owner chat is blocked at the final delivery boundary. This is
+    deliberately a containment fence, not the final contact-policy implementation.
+    """
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
+    if delivery_policy != "immediate":
+        return True
+    return _is_owner_chat_id(message.chat_id)
+
+
+def _is_owner_chat_id(chat_id: str) -> bool:
+    wanted = (chat_id or "").strip().lower()
+    if not wanted:
+        return False
+    owner_ids = {
+        item.strip().lower()
+        for item in str(settings.owner_whatsapp_ids or "").replace(";", ",").split(",")
+        if item.strip()
+    }
+    return wanted in owner_ids
+
+
+async def _mark_delivery_blocked(session, message: OutboundMessage, *, reason: str) -> None:
+    message.status = "deferred"
+    message.error_message = reason[:2000]
+    message.updated_at = utcnow()
+    session.add(
+        AuditLog(
+            action="outbound_queue_authorization_blocked",
+            entity_type="outbound_queue",
+            entity_id=str(message.id),
+            details_json={
+                "chat_id": message.chat_id,
+                "status": message.status,
+                "reason": message.error_message,
+                "delivery_policy": (
+                    message.formatting_json.get("delivery_policy")
+                    if isinstance(message.formatting_json, dict)
+                    else None
+                ),
+            },
+        )
+    )
+    log_event(
+        logger,
+        logging.WARNING,
+        "outbound_queue_authorization_blocked",
+        queue_id=message.id,
+        chat_id=message.chat_id,
+        reason=reason,
+    )
 
 
 def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:
