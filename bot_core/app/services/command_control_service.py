@@ -16,6 +16,7 @@ from app.services.command_catalog_service import CommandCatalogService
 from app.services.natural_action_planner_service import DEFAULT_OWNER_TIMEZONE, NaturalActionPlannerService
 from app.services.owner_command_service import OwnerCommandService
 from app.services.owner_management_command_service import OwnerManagementCommandService
+from app.services.owner_outbound_approval_command_service import OwnerOutboundApprovalCommandService
 from app.services.push_command_service import PushCommandService
 from app.utils.time import utcnow
 
@@ -53,6 +54,13 @@ class CommandControlService:
         ".contacts": "/contacts",
         ".contact": "/contact",
         ".contactsync": "/contactsync",
+    }
+    _OUTBOUND_APPROVAL_ALIASES = {
+        ".approval": "info",
+        ".approve": "approve",
+        ".approval-edit": "edit",
+        ".approval-reject": "reject",
+        ".approval-requeue": "requeue",
     }
 
     def __init__(self, session: AsyncSession):
@@ -171,6 +179,36 @@ class CommandControlService:
             )
             return await self._finish(message.chat_id, result)
 
+        approval_action, approval_args = self._outbound_approval_action(command, args)
+        if approval_action:
+            approval = await OwnerOutboundApprovalCommandService(self.session).handle(
+                approval_action,
+                approval_args,
+                permission=permission,
+                owner_identity=f"admin:{admin.id}",
+            )
+            await self._audit(
+                "command_control_outbound_approval",
+                command=command,
+                request_id=request_id,
+                transport_message_id=transport_message_id,
+                entity_id=str(approval.approval_id) if approval.approval_id is not None else None,
+                details={
+                    "permission": permission,
+                    "action": approval_action,
+                    "result": "denied" if approval.error else "ok",
+                },
+            )
+            return await self._finish(
+                message.chat_id,
+                CommandControlResult(
+                    consumed=approval.consumed,
+                    command=command,
+                    reply_text=approval.reply_text,
+                    error=approval.error,
+                ),
+            )
+
         management_command = self._MANAGEMENT_ALIASES.get(command, command)
         if management_command in OwnerManagementCommandService.COMMANDS:
             result = await OwnerManagementCommandService(self.session).handle(
@@ -278,6 +316,20 @@ class CommandControlService:
         """
         parsed = cls.parse(text_value)
         return bool(parsed and parsed[0] in {".push", cls.PUSH_COMMAND})
+
+    @classmethod
+    def _outbound_approval_action(cls, command: str, args: str) -> tuple[str | None, str]:
+        action = cls._OUTBOUND_APPROVAL_ALIASES.get(command)
+        if action is None:
+            return None, args
+        if command != ".approval":
+            return action, args
+
+        first, separator, remainder = (args or "").strip().partition(" ")
+        normalized = first.lower()
+        if normalized in OwnerOutboundApprovalCommandService.ACTIONS:
+            return normalized, remainder.strip() if separator else ""
+        return "info", args
 
     @staticmethod
     def _slash_alias(command: str) -> str | None:
