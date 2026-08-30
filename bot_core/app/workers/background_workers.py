@@ -13,6 +13,7 @@ from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
@@ -145,12 +146,17 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         )
         messages = (await session.execute(stmt)).scalars().all()
         due_messages: list[OutboundMessage] = []
+        approval_ids: dict[int, int] = {}
+        authority = OutboundAuthorizationService(session)
         for message in messages:
             if message.status == "sending" and message.updated_at and message.updated_at > now - timedelta(minutes=5):
                 continue
-            if not _delivery_authorized(message):
-                await _mark_delivery_blocked(session, message, reason="missing durable outbound authorization")
+            allowed, reason, approval_id = await _delivery_authorized(session, authority, message)
+            if not allowed:
+                await _mark_delivery_blocked(session, message, reason=reason)
                 continue
+            if approval_id is not None:
+                approval_ids[int(message.id)] = approval_id
             message.status = "sending"
             message.updated_at = now
             due_messages.append(message)
@@ -171,6 +177,28 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             except WahaClientError as exc:
                 await _mark_delivery_failed(session, message, str(exc))
             else:
+                approval_id = approval_ids.get(int(message.id))
+                if approval_id is not None:
+                    consumed = await OutboundAuthorizationService(session).consume_approval(approval_id)
+                    if not consumed:
+                        session.add(
+                            AuditLog(
+                                action="outbound_approval_consumption_invariant_failed",
+                                entity_type="outbound_queue",
+                                entity_id=str(message.id),
+                                details_json={
+                                    "chat_id": message.chat_id,
+                                    "approval_id": approval_id,
+                                },
+                            )
+                        )
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "outbound_approval_consumption_invariant_failed",
+                            queue_id=message.id,
+                            approval_id=approval_id,
+                        )
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
@@ -184,6 +212,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                             "chat_id": message.chat_id,
                             "delivery_snapshot": _delivery_snapshot(message),
                             "waha_response": response,
+                            "approval_id": approval_id,
                         },
                     )
                 )
@@ -192,20 +221,30 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         return processed
 
 
-def _delivery_authorized(message: OutboundMessage) -> bool:
-    """Fail closed for ordinary router replies until durable approval/policy exists.
+async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:
+    """Apply the final outbound authorization fence without bypassing exact context checks.
 
     Existing owner-created queue paths (for example `.push` and scheduled actions)
-    remain governed by their own durable command/action records. Router-generated
-    replies identify themselves through `delivery_policy`; an `immediate` router
-    reply to any non-owner chat is blocked at the final delivery boundary. This is
-    deliberately a containment fence, not the final contact-policy implementation.
+    remain governed by their own durable command/action records and do not carry a
+    router delivery policy. Router-generated external replies must either be the exact
+    configured owner chat or pass OutboundAuthorizationService against the durable
+    source/contact/content binding. Missing/stale/mismatched authority fails closed.
     """
     metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
-    if delivery_policy != "immediate":
-        return True
-    return _is_owner_chat_id(message.chat_id)
+    if not delivery_policy:
+        return True, "existing owner-controlled queue path", None
+    if _is_owner_chat_id(message.chat_id):
+        return True, "exact configured owner chat", None
+    if delivery_policy == "immediate":
+        return False, "legacy external immediate router reply is not durably authorized", None
+    if delivery_policy not in {"approval_required", "authorized_external"}:
+        return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None
+
+    _context, decision = await authority.authorize_queue_message(message)
+    if not decision.allowed:
+        return False, decision.reason, None
+    return True, decision.reason, decision.approval_id
 
 
 def _is_owner_chat_id(chat_id: str) -> bool:
