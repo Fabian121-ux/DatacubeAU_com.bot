@@ -17,6 +17,7 @@ from app.services.conversation_takeover_service import ConversationTakeoverServi
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
 from app.services.owner_command_service import OwnerCommandService
+from app.services.router_outbound_authority_service import RouterOutboundAuthorityService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
@@ -81,6 +82,7 @@ class InboundRouter:
         )
 
         owner_command = await OwnerCommandService(self.session).handle(normalized, contact)
+        owner_chat = self._is_owner_chat_id(normalized.chat_id)
         if owner_command:
             wait_for_fabian_first = False
             planned = await self.reply_planner._apply_identity_guard(
@@ -106,7 +108,7 @@ class InboundRouter:
                 )
 
             typing_started = False
-            if not wait_for_fabian_first:
+            if owner_chat and not wait_for_fabian_first:
                 typing_started = await self._maybe_start_typing(normalized.chat_id)
             planned = await self.reply_planner.plan(normalized, contact.id)
             if typing_started:
@@ -159,12 +161,17 @@ class InboundRouter:
                 outbound_message_id=None,
             ))
 
-        reply_deferred = wait_for_fabian_first
+        requires_owner_approval = owner_command is None and not owner_chat
+        reply_deferred = wait_for_fabian_first or requires_owner_approval
         if not reply_deferred:
             await self._maybe_typing_delay(normalized, planned)
         formatting_metadata = self._reply_formatting_metadata(planned)
         formatting_metadata["delivery_policy"] = (
-            "wait_for_fabian_first" if reply_deferred else "immediate"
+            "approval_required"
+            if requires_owner_approval
+            else "wait_for_fabian_first"
+            if reply_deferred
+            else "immediate"
         )
         formatting_metadata["reply_deferred"] = reply_deferred
         queued = await self._queue_outbound_message(
@@ -176,6 +183,23 @@ class InboundRouter:
             formatting_json=formatting_metadata,
             delivery_status="deferred" if reply_deferred else "pending",
         )
+        approval_id: int | None = None
+        if requires_owner_approval:
+            prepared = await RouterOutboundAuthorityService(self.session).prepare_external_reply(
+                queued,
+                inbound_message_id=inbound.id,
+                contact_id=contact.id,
+                response_category="normal_reply",
+            )
+            approval_id = prepared.approval_id
+            formatting_metadata = dict(queued.formatting_json or {})
+            planned.source_diagnostics.setdefault("outbound_authority", {}).update(
+                {
+                    "approval_required": True,
+                    "approval_id": approval_id,
+                    "response_category": prepared.context.response_category,
+                }
+            )
         outbound = await self._save_outbound_message(
             normalized,
             contact.id,
@@ -263,6 +287,7 @@ class InboundRouter:
             details_json={
                 "inbound_message_id": inbound.id,
                 "outbound_queue_id": queued.id,
+                "approval_id": approval_id,
                 "decision_type": planned.decision_type.value,
                 "chat_id": normalized.chat_id,
                 "media_url": planned.media_url,
@@ -281,6 +306,7 @@ class InboundRouter:
             inbound_message_id=inbound.id,
             outbound_message_id=outbound.id,
             outbound_queue_id=queued.id,
+            approval_id=approval_id,
             decision_type=planned.decision_type.value,
             reply_deferred=reply_deferred,
         )
@@ -303,6 +329,18 @@ class InboundRouter:
 
     async def close(self) -> None:
         return None
+
+    @staticmethod
+    def _is_owner_chat_id(chat_id: str) -> bool:
+        wanted = (chat_id or "").strip().lower()
+        if not wanted:
+            return False
+        owner_ids = {
+            item.strip().lower()
+            for item in str(settings.owner_whatsapp_ids or "").replace(";", ",").split(",")
+            if item.strip()
+        }
+        return wanted in owner_ids
 
     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
         whatsapp_id = normalized.sender_id
