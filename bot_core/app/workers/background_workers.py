@@ -151,7 +151,15 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         authority = OutboundAuthorizationService(session)
         safety = OutboundSafetyLimitService(session)
         for message in messages:
-            if message.status == "sending" and message.updated_at and message.updated_at > now - timedelta(minutes=5):
+            if message.status == "sending":
+                if message.updated_at and message.updated_at > now - timedelta(minutes=5):
+                    continue
+                await _mark_delivery_uncertain(
+                    session,
+                    message,
+                    reason="delivery state uncertain after interrupted send; automatic replay blocked",
+                    commit=False,
+                )
                 continue
             allowed, reason, approval_id = await _delivery_authorized(session, authority, message)
             if not allowed:
@@ -182,7 +190,11 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 else:
                     response = await client.send_text(chat_id=message.chat_id, text=message.message_text)
             except WahaClientError as exc:
-                await _mark_delivery_failed(session, message, str(exc))
+                await _mark_delivery_uncertain(
+                    session,
+                    message,
+                    reason=f"WAHA delivery outcome uncertain; automatic replay blocked: {exc}",
+                )
             else:
                 approval_id = approval_ids.get(int(message.id))
                 if approval_id is not None:
@@ -270,6 +282,7 @@ async def _mark_delivery_blocked(session, message: OutboundMessage, *, reason: s
     message.status = "deferred"
     message.error_message = reason[:2000]
     message.updated_at = utcnow()
+    await ScheduledActionService(session).reconcile_outbound_delivery(message)
     session.add(
         AuditLog(
             action="outbound_queue_authorization_blocked",
@@ -294,6 +307,48 @@ async def _mark_delivery_blocked(session, message: OutboundMessage, *, reason: s
         queue_id=message.id,
         chat_id=message.chat_id,
         reason=reason,
+    )
+
+
+async def _mark_delivery_uncertain(
+    session,
+    message: OutboundMessage,
+    *,
+    reason: str,
+    commit: bool = True,
+) -> None:
+    """Quarantine a row whose external send outcome cannot be proven.
+
+    Replaying an uncertain row risks a duplicate real-world message. PostgreSQL keeps
+    the row and evidence for OWNER reconciliation; no retry is scheduled automatically.
+    """
+    message.status = "deferred"
+    message.error_message = reason[:2000]
+    message.updated_at = utcnow()
+    await ScheduledActionService(session).reconcile_outbound_delivery(message)
+    session.add(
+        AuditLog(
+            action="outbound_queue_delivery_uncertain",
+            entity_type="outbound_queue",
+            entity_id=str(message.id),
+            details_json={
+                "chat_id": message.chat_id,
+                "status": message.status,
+                "reason": message.error_message,
+                "retry_count": message.retry_count,
+                "automatic_replay": False,
+            },
+        )
+    )
+    if commit:
+        await session.commit()
+    log_event(
+        logger,
+        logging.WARNING,
+        "outbound_queue_delivery_uncertain",
+        queue_id=message.id,
+        chat_id=message.chat_id,
+        automatic_replay=False,
     )
 
 
