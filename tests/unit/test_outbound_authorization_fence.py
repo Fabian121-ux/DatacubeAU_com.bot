@@ -1,3 +1,5 @@
+from unittest.mock import ANY
+
 import pytest
 
 from app.models.schema import OutboundMessage
@@ -116,7 +118,7 @@ async def test_external_scheduled_action_requires_exact_durable_binding(monkeypa
     assert allowed is True
     assert reason == "exact durable scheduled action binding"
     assert approval_id is None
-    assert calls == [(pytest.ANY, 91, 44, "222@c.us")]
+    assert calls == [(ANY, 91, 44, "222@c.us")]
     assert authority.calls == 0
 
 
