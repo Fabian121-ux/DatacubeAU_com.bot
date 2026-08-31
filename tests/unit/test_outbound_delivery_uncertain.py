@@ -189,13 +189,15 @@ async def test_uncertain_scheduled_action_cannot_be_rereleased_or_replayed_after
     assert action.outbound_queue_id == outbound.id
     assert (action.metadata_json or {}).get("delivery", {}).get("status") == "deferred"
 
+    outbound_id = outbound.id
+    action_id = action.id
     db_session.expire_all()
     release_count = await ScheduledActionService(db_session).release_due(limit=25)
     await db_session.commit()
     second_processed = await background_workers._deliver_due_outbound_messages(client)
 
-    persisted_outbound = await db_session.get(OutboundMessage, outbound.id)
-    persisted_action = await db_session.get(ScheduledAction, action.id)
+    persisted_outbound = await db_session.get(OutboundMessage, outbound_id)
+    persisted_action = await db_session.get(ScheduledAction, action_id)
     assert release_count == 0
     assert second_processed == 0
     assert client.calls == 0
