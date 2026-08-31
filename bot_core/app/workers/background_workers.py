@@ -246,8 +246,8 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
 
     Exact configured OWNER self-DM remains allowed. Router-generated external replies
     must pass OutboundAuthorizationService. A ScheduledAction may cross the fence only
-    when its queue row proves the exact durable action/queue/target binding and the
-    action is still enabled and queued. Missing metadata is never itself authority.
+    when its queue row proves the exact durable action/queue/target/content binding and
+    the action is still enabled and queued. Missing metadata is never itself authority.
     """
     metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
@@ -272,7 +272,7 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
 
 
 async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, metadata: dict[str, Any]) -> bool:
-    """Prove one legacy ScheduledAction queue row without trusting metadata alone."""
+    """Prove one ScheduledAction queue row without trusting queue metadata or content alone."""
     try:
         scheduled_action_id = int(metadata.get("scheduled_action_id"))
         outbound_queue_id = int(message.id)
@@ -281,9 +281,9 @@ async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, 
     if scheduled_action_id <= 0 or outbound_queue_id <= 0 or session is None:
         return False
 
-    row_id = (
+    row = (
         await session.execute(
-            select(ScheduledAction.id)
+            select(ScheduledAction)
             .where(ScheduledAction.id == scheduled_action_id)
             .where(ScheduledAction.outbound_queue_id == outbound_queue_id)
             .where(ScheduledAction.target_chat_id == message.chat_id)
@@ -293,7 +293,11 @@ async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, 
             .limit(1)
         )
     ).scalar_one_or_none()
-    return row_id is not None
+    if row is None:
+        return False
+
+    scheduled_text = (row.payload_json or {}).get("text")
+    return isinstance(scheduled_text, str) and bool(scheduled_text) and message.message_text == scheduled_text
 
 
 def _is_owner_chat_id(chat_id: str) -> bool:
