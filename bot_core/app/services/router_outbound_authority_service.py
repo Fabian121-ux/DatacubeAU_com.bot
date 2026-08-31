@@ -47,6 +47,7 @@ class RouterOutboundAuthorityService:
         if not target_chat_id:
             raise ValueError("exact target chat is required")
 
+        source_inbound_message_ids = [int(inbound_message_id)]
         content_sha256 = self.authorization.content_hash(message_text)
         metadata = dict(queue_message.formatting_json) if isinstance(queue_message.formatting_json, dict) else {}
         metadata.update(
@@ -54,6 +55,7 @@ class RouterOutboundAuthorityService:
                 "delivery_policy": "approval_required",
                 "reply_deferred": True,
                 "inbound_message_id": int(inbound_message_id),
+                "source_inbound_message_ids": source_inbound_message_ids,
                 "contact_id": int(contact_id),
                 "response_category": category,
                 "content_sha256": content_sha256,
