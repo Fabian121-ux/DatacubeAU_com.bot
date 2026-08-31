@@ -2,6 +2,7 @@ from unittest.mock import ANY
 
 import pytest
 
+from app.models.scheduled_action import ScheduledAction
 from app.models.schema import OutboundMessage
 from app.services.outbound_authorization_service import AuthorizationDecision
 from app.workers import background_workers
@@ -29,6 +30,22 @@ class _Authority:
     async def authorize_queue_message(self, message):
         self.calls += 1
         return object(), self.decision
+
+
+class _ScalarResult:
+    def __init__(self, row):
+        self.row = row
+
+    def scalar_one_or_none(self):
+        return self.row
+
+
+class _Session:
+    def __init__(self, row):
+        self.row = row
+
+    async def execute(self, statement):
+        return _ScalarResult(self.row)
 
 
 @pytest.mark.asyncio
@@ -143,6 +160,55 @@ async def test_external_scheduled_action_mismatch_cannot_bypass_fence(monkeypatc
     assert reason == "external queue row missing explicit durable outbound authority"
     assert approval_id is None
     assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduled_action_binding_requires_exact_original_content():
+    action = ScheduledAction(
+        id=44,
+        action_type="whatsapp.send_message",
+        target_chat_id="222@c.us",
+        payload_json={"text": "hello"},
+        status="queued",
+        is_enabled=True,
+        outbound_queue_id=91,
+        timezone="UTC",
+        idempotency_key="action-44",
+    )
+    message = _message(
+        chat_id="222@c.us",
+        formatting_json={"scheduled_action_id": 44},
+        message_id=91,
+    )
+
+    assert await background_workers._is_exact_scheduled_action_binding(
+        _Session(action), message, message.formatting_json
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_scheduled_action_tampered_queue_content_fails_closed():
+    action = ScheduledAction(
+        id=44,
+        action_type="whatsapp.send_message",
+        target_chat_id="222@c.us",
+        payload_json={"text": "owner approved text"},
+        status="queued",
+        is_enabled=True,
+        outbound_queue_id=91,
+        timezone="UTC",
+        idempotency_key="action-44",
+    )
+    message = _message(
+        chat_id="222@c.us",
+        formatting_json={"scheduled_action_id": 44},
+        message_id=91,
+    )
+    message.message_text = "tampered queue text"
+
+    assert await background_workers._is_exact_scheduled_action_binding(
+        _Session(action), message, message.formatting_json
+    ) is False
 
 
 @pytest.mark.asyncio
