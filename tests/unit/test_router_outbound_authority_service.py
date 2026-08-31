@@ -35,6 +35,7 @@ async def test_prepare_external_reply_stamps_exact_authority_and_defers(monkeypa
     assert queue_message.formatting_json["delivery_policy"] == "approval_required"
     assert queue_message.formatting_json["reply_deferred"] is True
     assert queue_message.formatting_json["inbound_message_id"] == 9
+    assert queue_message.formatting_json["source_inbound_message_ids"] == [9]
     assert queue_message.formatting_json["contact_id"] == 3
     assert queue_message.formatting_json["response_category"] == "normal_reply"
     assert queue_message.formatting_json["content_sha256"] == expected_hash
@@ -42,6 +43,29 @@ async def test_prepare_external_reply_stamps_exact_authority_and_defers(monkeypa
     assert prepared.context.outbound_queue_id == 17
     assert prepared.context.target_chat_id == "2348012345678@c.us"
     create_pending.assert_awaited_once_with(context=prepared.context)
+
+
+@pytest.mark.asyncio
+async def test_prepare_external_reply_replaces_untrusted_source_id_list(monkeypatch):
+    session = AsyncMock()
+    service = RouterOutboundAuthorityService(session)
+    create_pending = AsyncMock(return_value=42)
+    monkeypatch.setattr(service.authorization, "create_pending_approval", create_pending)
+    queue_message = SimpleNamespace(
+        id=18,
+        chat_id="2348012345678@c.us",
+        message_text="Second message",
+        formatting_json={"source_inbound_message_ids": [999, 1000]},
+        status="pending",
+    )
+
+    await service.prepare_external_reply(
+        queue_message,
+        inbound_message_id=10,
+        contact_id=3,
+    )
+
+    assert queue_message.formatting_json["source_inbound_message_ids"] == [10]
 
 
 @pytest.mark.asyncio
