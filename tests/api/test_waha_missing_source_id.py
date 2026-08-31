@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api import waha_events
-from app.main import app as production_app
 
 
-def test_production_app_exposes_only_canonical_waha_event_gateway():
-    paths = {getattr(route, "path", None) for route in production_app.routes}
+def test_production_app_registers_only_canonical_waha_event_gateway():
+    """Keep the deployment route contract explicit without importing app.main.
 
-    assert "/webhooks/waha-events" in paths
-    assert "/webhooks/waha" not in paths
+    Importing the production application from an API test can bind the process-wide
+    async SQLAlchemy engine to that test's event loop and contaminate later tests.
+    The production composition root is declarative, so inspect that exact source file
+    instead: WAHA must enter through one canonical gateway and the legacy direct
+    inbound router must not be mounted alongside it.
+    """
+    main_source = (
+        Path(__file__).resolve().parents[2] / "bot_core" / "app" / "main.py"
+    ).read_text(encoding="utf-8")
+
+    assert "app.include_router(waha_events.router)" in main_source
+    assert "app.include_router(inbound.router)" not in main_source
 
 
 @pytest.mark.asyncio
