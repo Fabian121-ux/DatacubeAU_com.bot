@@ -9,6 +9,7 @@ from sqlalchemy import or_, select
 
 from app.config import settings
 from app.db import SessionLocal
+from app.models.scheduled_action import ScheduledAction
 from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
@@ -241,20 +242,24 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
 
 
 async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:
-    """Apply the final outbound authorization fence without bypassing exact context checks.
+    """Apply the final outbound authorization fence against exact durable authority.
 
-    Existing owner-created queue paths (for example `.push` and scheduled actions)
-    remain governed by their own durable command/action records and do not carry a
-    router delivery policy. Router-generated external replies must either be the exact
-    configured owner chat or pass OutboundAuthorizationService against the durable
-    source/contact/content binding. Missing/stale/mismatched authority fails closed.
+    Exact configured OWNER self-DM remains allowed. Router-generated external replies
+    must pass OutboundAuthorizationService. A ScheduledAction may cross the fence only
+    when its queue row proves the exact durable action/queue/target binding and the
+    action is still enabled and queued. Missing metadata is never itself authority.
     """
     metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
-    if not delivery_policy:
-        return True, "existing owner-controlled queue path", None
+
     if _is_owner_chat_id(message.chat_id):
         return True, "exact configured owner chat", None
+
+    if not delivery_policy:
+        if await _is_exact_scheduled_action_binding(session, message, metadata):
+            return True, "exact durable scheduled action binding", None
+        return False, "external queue row missing explicit durable outbound authority", None
+
     if delivery_policy == "immediate":
         return False, "legacy external immediate router reply is not durably authorized", None
     if delivery_policy not in {"approval_required", "authorized_external"}:
@@ -264,6 +269,31 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
     if not decision.allowed:
         return False, decision.reason, None
     return True, decision.reason, decision.approval_id
+
+
+async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, metadata: dict[str, Any]) -> bool:
+    """Prove one legacy ScheduledAction queue row without trusting metadata alone."""
+    try:
+        scheduled_action_id = int(metadata.get("scheduled_action_id"))
+        outbound_queue_id = int(message.id)
+    except (TypeError, ValueError):
+        return False
+    if scheduled_action_id <= 0 or outbound_queue_id <= 0 or session is None:
+        return False
+
+    row_id = (
+        await session.execute(
+            select(ScheduledAction.id)
+            .where(ScheduledAction.id == scheduled_action_id)
+            .where(ScheduledAction.outbound_queue_id == outbound_queue_id)
+            .where(ScheduledAction.target_chat_id == message.chat_id)
+            .where(ScheduledAction.action_type == "whatsapp.send_message")
+            .where(ScheduledAction.status == "queued")
+            .where(ScheduledAction.is_enabled.is_(True))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row_id is not None
 
 
 def _is_owner_chat_id(chat_id: str) -> bool:
