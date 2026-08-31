@@ -7,6 +7,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import OutboundMessage
+from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
 
@@ -22,6 +23,8 @@ class OutboundSafetyLimitService:
     The delivery worker is the only caller. A transaction-scoped PostgreSQL advisory
     lock serializes safety reservations across worker instances. `sending` rows count
     as recent reservations so one batch cannot burst past the configured ceilings.
+    Recent canonically-equivalent content to the same exact chat is also suppressed;
+    duplicate text is never rephrased merely to evade this fence.
     """
 
     GLOBAL_LOCK_KEY = 910200001
@@ -30,6 +33,7 @@ class OutboundSafetyLimitService:
     PER_CONTACT_ACTIVE_BACKLOG = 10
     GLOBAL_ACTIVE_BACKLOG = 50
     WINDOW = timedelta(minutes=1)
+    DUPLICATE_WINDOW = timedelta(minutes=10)
     ACTIVE_STATUSES = ("pending", "retrying", "sending")
 
     def __init__(self, session: AsyncSession):
@@ -45,6 +49,10 @@ class OutboundSafetyLimitService:
             text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": self.GLOBAL_LOCK_KEY},
         )
+
+        duplicate = await self._recent_duplicate(message, chat_id=chat_id, now=instant)
+        if duplicate:
+            return OutboundSafetyDecision(False, "recent duplicate/similar outbound content suppressed")
 
         global_backlog = await self._count(
             OutboundMessage.status.in_(self.ACTIVE_STATUSES),
@@ -78,6 +86,30 @@ class OutboundSafetyLimitService:
             return OutboundSafetyDecision(False, "per-contact outbound safety rate limit reached")
 
         return OutboundSafetyDecision(True, "outbound safety limits allow delivery")
+
+    async def _recent_duplicate(self, message: OutboundMessage, *, chat_id: str, now: datetime) -> bool:
+        current = normalize_text(self._delivery_text(message))
+        if not current:
+            return False
+        stmt = (
+            select(OutboundMessage)
+            .where(
+                OutboundMessage.chat_id == chat_id,
+                OutboundMessage.status.in_(("sent", "sending")),
+                OutboundMessage.updated_at >= now - self.DUPLICATE_WINDOW,
+                OutboundMessage.id != int(message.id),
+            )
+            .order_by(OutboundMessage.updated_at.desc(), OutboundMessage.id.desc())
+            .limit(25)
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return any(normalize_text(self._delivery_text(row)) == current for row in rows)
+
+    @staticmethod
+    def _delivery_text(message: OutboundMessage) -> str:
+        if message.media_url:
+            return str(message.media_caption or message.message_text or "")
+        return str(message.message_text or "")
 
     async def _count(self, *filters) -> int:
         stmt = select(func.count()).select_from(OutboundMessage)
