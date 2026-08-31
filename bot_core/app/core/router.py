@@ -107,12 +107,12 @@ class InboundRouter:
                     details_json={"facts": profile_facts},
                 )
 
-            typing_started = False
-            if owner_chat and not wait_for_fabian_first:
-                typing_started = await self._maybe_start_typing(normalized.chat_id)
-            planned = await self.reply_planner.plan(normalized, contact.id)
-            if typing_started:
-                await self._maybe_stop_typing(normalized.chat_id)
+            planned = await self._plan_with_owner_typing(
+                normalized,
+                contact.id,
+                owner_chat=owner_chat,
+                wait_for_fabian_first=wait_for_fabian_first,
+            )
         self._attach_thinking_diagnostics(planned)
         decision = await self._save_router_decision(
             message_id=inbound.id,
@@ -342,14 +342,42 @@ class InboundRouter:
         }
         return wanted in owner_ids
 
+    async def _plan_with_owner_typing(
+        self,
+        normalized: NormalizedMessage,
+        contact_id: int,
+        *,
+        owner_chat: bool,
+        wait_for_fabian_first: bool,
+    ) -> PlannedReply:
+        typing_started = False
+        planner_error: BaseException | None = None
+        try:
+            if owner_chat and not wait_for_fabian_first:
+                typing_started = await self._maybe_start_typing(normalized.chat_id)
+            return await self.reply_planner.plan(normalized, contact_id)
+        except BaseException as exc:
+            planner_error = exc
+            raise
+        finally:
+            if typing_started:
+                try:
+                    await self._maybe_stop_typing(normalized.chat_id)
+                except BaseException as cleanup_exc:
+                    if planner_error is None:
+                        raise
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "waha_typing_cleanup_failed",
+                        chat_id=normalized.chat_id,
+                        error=str(cleanup_exc),
+                    )
+
     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
         whatsapp_id = normalized.sender_id
         identity = normalized.sender_identity or {}
         display_name = self._resolved_display_name(identity, normalized.sender_name)
-        # Serialize inbound identity refreshes with WAHA contact-sync mutations so an
-        # inbound transaction can never overwrite newer saved-address-book provenance.
-        # Under PostgreSQL READ COMMITTED, a SELECT ... FOR UPDATE that waits for a
-        # contact-sync transaction observes the committed row version before merging.
         stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1).with_for_update()
         model = (await self.session.execute(stmt)).scalar_one_or_none()
         if model:
@@ -395,10 +423,6 @@ class InboundRouter:
         )
         previous_identity = dict(model.identity_json) if isinstance(model.identity_json, dict) else {}
         merged_identity = dict(identity) if isinstance(identity, dict) else {}
-        # Saved-address-book provenance belongs to Contact Intelligence, not to an
-        # individual inbound message. Preserve the latest explicit true/false marker,
-        # sync timestamp and reconciliation reason when normal sender identity refreshes
-        # do not carry those fields.
         for key in (
             "is_saved_contact",
             "saved_contact_synced_at",
