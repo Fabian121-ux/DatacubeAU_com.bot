@@ -92,7 +92,10 @@ async def test_waha_send_error_is_delivery_uncertain_not_retrying(db_session, mo
     await db_session.commit()
 
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
-    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    # This test isolates the post-authorization uncertain-send state machine. Make the
+    # exact target the configured OWNER self-DM so the final authorization fence is
+    # explicitly satisfied without weakening the external-contact fail-closed path.
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "222@c.us")
     client = _UncertainClient()
 
     processed = await background_workers._deliver_due_outbound_messages(client)
