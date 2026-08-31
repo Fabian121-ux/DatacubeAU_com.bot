@@ -4,7 +4,9 @@ from datetime import timedelta
 
 import pytest
 
+from app.models.scheduled_action import ScheduledAction
 from app.models.schema import OutboundMessage
+from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WahaClientError
 from app.utils.time import utcnow
 from app.workers import background_workers
@@ -134,3 +136,69 @@ async def test_delivery_uncertain_state_survives_restart_style_reload(db_session
     assert persisted is not None
     assert persisted.status == "deferred"
     assert "automatic replay blocked" in (persisted.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_uncertain_scheduled_action_cannot_be_rereleased_or_replayed_after_restart(db_session, monkeypatch):
+    now = utcnow()
+    outbound = OutboundMessage(
+        chat_id="333@c.us",
+        message_text="owner scheduled exact text",
+        status="sending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(minutes=10),
+        updated_at=now - timedelta(minutes=10),
+    )
+    db_session.add(outbound)
+    await db_session.flush()
+
+    action = ScheduledAction(
+        action_type="whatsapp.send_message",
+        target_contact_id=None,
+        target_chat_id="333@c.us",
+        payload_json={"text": "owner scheduled exact text"},
+        timezone="UTC",
+        scheduled_for=now - timedelta(minutes=20),
+        status="queued",
+        is_enabled=True,
+        retry_count=0,
+        max_retries=3,
+        outbound_queue_id=outbound.id,
+        idempotency_key="test-uncertain-scheduled-action-no-replay",
+        metadata_json={},
+        executed_at=now - timedelta(minutes=10),
+        updated_at=now - timedelta(minutes=10),
+    )
+    db_session.add(action)
+    await db_session.flush()
+    outbound.formatting_json = {"scheduled_action_id": action.id}
+    await db_session.commit()
+
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    client = _ExplodingClient()
+
+    first_processed = await background_workers._deliver_due_outbound_messages(client)
+    await db_session.refresh(outbound)
+    await db_session.refresh(action)
+
+    assert first_processed == 0
+    assert client.calls == 0
+    assert outbound.status == "deferred"
+    assert action.status == "queued"
+    assert action.outbound_queue_id == outbound.id
+    assert (action.metadata_json or {}).get("delivery", {}).get("status") == "deferred"
+
+    db_session.expire_all()
+    release_count = await ScheduledActionService(db_session).release_due(limit=25)
+    await db_session.commit()
+    second_processed = await background_workers._deliver_due_outbound_messages(client)
+
+    persisted_outbound = await db_session.get(OutboundMessage, outbound.id)
+    persisted_action = await db_session.get(ScheduledAction, action.id)
+    assert release_count == 0
+    assert second_processed == 0
+    assert client.calls == 0
+    assert persisted_outbound is not None and persisted_outbound.status == "deferred"
+    assert persisted_action is not None and persisted_action.status == "queued"
+    assert persisted_action.outbound_queue_id == persisted_outbound.id
