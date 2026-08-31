@@ -5,6 +5,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api import waha_events
+from app.main import app as production_app
+
+
+def test_production_app_exposes_only_canonical_waha_event_gateway():
+    paths = {getattr(route, "path", None) for route in production_app.routes}
+
+    assert "/webhooks/waha-events" in paths
+    assert "/webhooks/waha" not in paths
 
 
 @pytest.mark.asyncio
