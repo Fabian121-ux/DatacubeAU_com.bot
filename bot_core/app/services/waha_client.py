@@ -33,7 +33,7 @@ class WAHAClient:
         if settings.waha_api_key:
             headers["X-Api-Key"] = settings.waha_api_key
         try:
-            body = await self._request("POST", url, headers=headers, json=payload)
+            body = await self._request("POST", url, headers=headers, json=payload, retry_safe=False)
             log_event(logger, logging.INFO, "waha_send_success", chat_id=chat_id, session=payload["session"])
             return body
         except (httpx.HTTPError, RuntimeError) as exc:
@@ -59,7 +59,7 @@ class WAHAClient:
         if settings.waha_api_key:
             headers["X-Api-Key"] = settings.waha_api_key
         try:
-            body = await self._request("POST", url, headers=headers, json=payload)
+            body = await self._request("POST", url, headers=headers, json=payload, retry_safe=False)
             log_event(logger, logging.INFO, "waha_media_send_success", chat_id=chat_id, session=payload["session"])
             return body
         except (httpx.HTTPError, RuntimeError) as exc:
@@ -221,8 +221,9 @@ class WAHAClient:
         *,
         headers: dict[str, str],
         json: dict[str, Any] | None = None,
+        retry_safe: bool = True,
     ) -> Any:
-        attempts = max(1, settings.waha_request_retry_count + 1)
+        attempts = max(1, settings.waha_request_retry_count + 1) if retry_safe else 1
         last_error: Exception | None = None
 
         for attempt in range(1, attempts + 1):
@@ -232,11 +233,11 @@ class WAHAClient:
                 return response.json() if response.content else {"ok": True}
             except httpx.HTTPStatusError as exc:
                 last_error = exc
-                if not self._should_retry_status(exc.response.status_code) or attempt == attempts:
+                if not retry_safe or not self._should_retry_status(exc.response.status_code) or attempt == attempts:
                     raise
             except httpx.RequestError as exc:
                 last_error = exc
-                if attempt == attempts:
+                if not retry_safe or attempt == attempts:
                     raise
 
             log_event(
