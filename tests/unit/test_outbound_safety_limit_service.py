@@ -9,11 +9,11 @@ from app.services.outbound_safety_limit_service import OutboundSafetyLimitServic
 from app.utils.time import utcnow
 
 
-def _row(*, chat_id: str, status: str, updated_at=None) -> OutboundMessage:
+def _row(*, chat_id: str, status: str, updated_at=None, text: str = "test") -> OutboundMessage:
     instant = updated_at or utcnow()
     return OutboundMessage(
         chat_id=chat_id,
-        message_text="test",
+        message_text=text,
         status=status,
         retry_count=0,
         max_retries=3,
@@ -25,9 +25,14 @@ def _row(*, chat_id: str, status: str, updated_at=None) -> OutboundMessage:
 @pytest.mark.asyncio
 async def test_per_contact_rate_limit_fails_closed(db_session):
     now = utcnow()
-    current = _row(chat_id="222@c.us", status="pending", updated_at=now)
+    current = _row(chat_id="222@c.us", status="pending", updated_at=now, text="current")
     db_session.add(current)
-    db_session.add_all([_row(chat_id="222@c.us", status="sent", updated_at=now) for _ in range(3)])
+    db_session.add_all(
+        [
+            _row(chat_id="222@c.us", status="sent", updated_at=now, text=f"prior-{index}")
+            for index in range(3)
+        ]
+    )
     await db_session.flush()
 
     decision = await OutboundSafetyLimitService(db_session).authorize(current, now=now)
@@ -39,10 +44,18 @@ async def test_per_contact_rate_limit_fails_closed(db_session):
 @pytest.mark.asyncio
 async def test_global_rate_limit_fails_closed(db_session):
     now = utcnow()
-    current = _row(chat_id="222@c.us", status="pending", updated_at=now)
+    current = _row(chat_id="222@c.us", status="pending", updated_at=now, text="current")
     db_session.add(current)
     db_session.add_all(
-        [_row(chat_id=f"{300 + index}@c.us", status="sent", updated_at=now) for index in range(20)]
+        [
+            _row(
+                chat_id=f"{300 + index}@c.us",
+                status="sent",
+                updated_at=now,
+                text=f"global-prior-{index}",
+            )
+            for index in range(20)
+        ]
     )
     await db_session.flush()
 
@@ -55,9 +68,14 @@ async def test_global_rate_limit_fails_closed(db_session):
 @pytest.mark.asyncio
 async def test_sending_rows_reserve_rate_capacity(db_session):
     now = utcnow()
-    current = _row(chat_id="222@c.us", status="pending", updated_at=now)
+    current = _row(chat_id="222@c.us", status="pending", updated_at=now, text="current")
     db_session.add(current)
-    db_session.add_all([_row(chat_id="222@c.us", status="sending", updated_at=now) for _ in range(3)])
+    db_session.add_all(
+        [
+            _row(chat_id="222@c.us", status="sending", updated_at=now, text=f"reserved-{index}")
+            for index in range(3)
+        ]
+    )
     await db_session.flush()
 
     decision = await OutboundSafetyLimitService(db_session).authorize(current, now=now)
@@ -68,10 +86,15 @@ async def test_sending_rows_reserve_rate_capacity(db_session):
 
 @pytest.mark.asyncio
 async def test_per_contact_active_backlog_overflow_fails_closed(db_session):
-    now = utcnow() - timedelta(minutes=5)
-    current = _row(chat_id="222@c.us", status="pending", updated_at=now)
+    old = utcnow() - timedelta(minutes=5)
+    current = _row(chat_id="222@c.us", status="pending", updated_at=old, text="current")
     db_session.add(current)
-    db_session.add_all([_row(chat_id="222@c.us", status="pending", updated_at=now) for _ in range(10)])
+    db_session.add_all(
+        [
+            _row(chat_id="222@c.us", status="pending", updated_at=old, text=f"backlog-{index}")
+            for index in range(10)
+        ]
+    )
     await db_session.flush()
 
     decision = await OutboundSafetyLimitService(db_session).authorize(current, now=utcnow())
@@ -83,10 +106,18 @@ async def test_per_contact_active_backlog_overflow_fails_closed(db_session):
 @pytest.mark.asyncio
 async def test_global_active_backlog_overflow_fails_closed(db_session):
     old = utcnow() - timedelta(minutes=5)
-    current = _row(chat_id="222@c.us", status="pending", updated_at=old)
+    current = _row(chat_id="222@c.us", status="pending", updated_at=old, text="current")
     db_session.add(current)
     db_session.add_all(
-        [_row(chat_id=f"{400 + index}@c.us", status="pending", updated_at=old) for index in range(50)]
+        [
+            _row(
+                chat_id=f"{400 + index}@c.us",
+                status="pending",
+                updated_at=old,
+                text=f"global-backlog-{index}",
+            )
+            for index in range(50)
+        ]
     )
     await db_session.flush()
 
@@ -99,9 +130,14 @@ async def test_global_active_backlog_overflow_fails_closed(db_session):
 @pytest.mark.asyncio
 async def test_below_limits_allows_exact_queue_row(db_session):
     now = utcnow()
-    current = _row(chat_id="222@c.us", status="pending", updated_at=now)
+    current = _row(chat_id="222@c.us", status="pending", updated_at=now, text="current")
     db_session.add(current)
-    db_session.add_all([_row(chat_id="222@c.us", status="sent", updated_at=now) for _ in range(2)])
+    db_session.add_all(
+        [
+            _row(chat_id="222@c.us", status="sent", updated_at=now, text=f"prior-{index}")
+            for index in range(2)
+        ]
+    )
     await db_session.flush()
 
     decision = await OutboundSafetyLimitService(db_session).authorize(current, now=now)
