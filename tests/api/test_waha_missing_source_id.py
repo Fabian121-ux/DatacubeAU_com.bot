@@ -100,3 +100,43 @@ async def test_message_with_durable_source_id_still_delegates_to_established_inb
     assert response.status_code == 202
     assert response.json()["status"] == "accepted"
     assert delegated is True
+
+
+def test_historical_quote_snapshots_never_replace_current_source_identity():
+    """A quoted historical snapshot is context, never a new inbound source event.
+
+    WAHA engines can expose reply/quoted snapshots in engine-specific nested fields.
+    P0 source identity must remain bound to the current top-level message ID so a
+    historical quoted object cannot become the idempotency key or independently
+    re-enter response consideration.
+    """
+    chat_id = "2348000000002@c.us"
+    event = {
+        "event": "message",
+        "session": "test",
+        "payload": {
+            "id": "MSG-CURRENT-2",
+            "chatId": chat_id,
+            "from": chat_id,
+            "fromMe": False,
+            "type": "chat",
+            "body": "replying to the old message",
+            "replyTo": {
+                "id": "MSG-HISTORICAL-1",
+                "body": "old quoted text",
+            },
+            "_data": {
+                "quotedMsg": {
+                    "id": {"_serialized": "MSG-HISTORICAL-1"},
+                    "body": "old quoted text",
+                }
+            },
+        },
+    }
+    payload = waha_events.inbound._resolve_payload(event)
+
+    assert waha_events.inbound._resolve_message_id(payload) == "MSG-CURRENT-2"
+    assert waha_events.inbound._build_idempotency_key(event, payload) == (
+        f"test:{chat_id}:MSG-CURRENT-2"
+    )
+    assert "MSG-HISTORICAL-1" not in waha_events.inbound._build_idempotency_key(event, payload)
