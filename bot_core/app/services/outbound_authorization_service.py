@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -196,7 +197,8 @@ class OutboundAuthorizationService:
         policy = await self.session.execute(
             text(
                 """
-                SELECT id, allowed_categories, prohibited_categories, approval_required_categories
+                SELECT id, allowed_categories, prohibited_categories,
+                       approval_required_categories, quiet_hours_json
                 FROM contact_automation_policies
                 WHERE contact_id = :contact_id
                   AND exact_chat_id = :target_chat_id
@@ -216,17 +218,63 @@ class OutboundAuthorizationService:
         if row is None:
             return AuthorizationDecision(False, "none", "no exact active owner approval or contact automation policy")
 
+        policy_id = int(row["id"])
+        quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
+        if quiet_active is None:
+            return AuthorizationDecision(False, "contact_policy", "contact policy quiet-hours configuration invalid", policy_id=policy_id)
+        if quiet_active:
+            return AuthorizationDecision(False, "contact_policy", "contact policy quiet hours active", policy_id=policy_id)
+
         allowed = {str(value).strip().lower() for value in (row["allowed_categories"] or [])}
         prohibited = {str(value).strip().lower() for value in (row["prohibited_categories"] or [])}
         approval_required = {str(value).strip().lower() for value in (row["approval_required_categories"] or [])}
         category = context.response_category
         if category in prohibited:
-            return AuthorizationDecision(False, "contact_policy", "response category prohibited by contact policy", policy_id=int(row["id"]))
+            return AuthorizationDecision(False, "contact_policy", "response category prohibited by contact policy", policy_id=policy_id)
         if category in approval_required:
-            return AuthorizationDecision(False, "contact_policy", "response category requires owner approval", policy_id=int(row["id"]))
+            return AuthorizationDecision(False, "contact_policy", "response category requires owner approval", policy_id=policy_id)
         if category not in allowed:
-            return AuthorizationDecision(False, "contact_policy", "response category not explicitly allowed", policy_id=int(row["id"]))
-        return AuthorizationDecision(True, "contact_policy", "exact contact policy permits response category", policy_id=int(row["id"]))
+            return AuthorizationDecision(False, "contact_policy", "response category not explicitly allowed", policy_id=policy_id)
+        return AuthorizationDecision(True, "contact_policy", "exact contact policy permits response category", policy_id=policy_id)
+
+    @classmethod
+    def _quiet_hours_active(cls, config: Any, instant: datetime) -> bool | None:
+        if config is None:
+            return False
+        if not isinstance(config, dict) or instant.tzinfo is None or instant.utcoffset() is None:
+            return None
+
+        start = cls._clock_minutes(config.get("start"))
+        end = cls._clock_minutes(config.get("end"))
+        timezone_name = str(config.get("timezone") or "").strip()
+        if start is None or end is None or not timezone_name:
+            return None
+        try:
+            local = instant.astimezone(ZoneInfo(timezone_name))
+        except ZoneInfoNotFoundError:
+            return None
+
+        current = local.hour * 60 + local.minute
+        if start == end:
+            return True
+        if start < end:
+            return start <= current < end
+        return current >= start or current < end
+
+    @staticmethod
+    def _clock_minutes(value: Any) -> int | None:
+        raw = str(value or "").strip()
+        parts = raw.split(":")
+        if len(parts) != 2 or len(parts[0]) != 2 or len(parts[1]) != 2:
+            return None
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError:
+            return None
+        if hour not in range(24) or minute not in range(60):
+            return None
+        return hour * 60 + minute
 
     async def consume_approval(self, approval_id: int, *, now: datetime | None = None) -> bool:
         instant = now or utcnow()
