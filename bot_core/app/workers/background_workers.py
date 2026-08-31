@@ -14,6 +14,7 @@ from app.services.conversation_open_loop_service import ConversationOpenLoopServ
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.outbound_safety_limit_service import OutboundSafetyLimitService
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
@@ -148,6 +149,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         due_messages: list[OutboundMessage] = []
         approval_ids: dict[int, int] = {}
         authority = OutboundAuthorizationService(session)
+        safety = OutboundSafetyLimitService(session)
         for message in messages:
             if message.status == "sending" and message.updated_at and message.updated_at > now - timedelta(minutes=5):
                 continue
@@ -155,6 +157,11 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             if not allowed:
                 await _mark_delivery_blocked(session, message, reason=reason)
                 continue
+            if not _is_owner_chat_id(message.chat_id):
+                safety_decision = await safety.authorize(message, now=now)
+                if not safety_decision.allowed:
+                    await _mark_delivery_blocked(session, message, reason=safety_decision.reason)
+                    continue
             if approval_id is not None:
                 approval_ids[int(message.id)] = approval_id
             message.status = "sending"
