@@ -177,7 +177,12 @@ class OwnerOutboundApprovalService:
         if validation is not None:
             return validation
 
-        digest = OutboundAuthorizationService.content_hash(new_text)
+        digest = OutboundAuthorizationService.authority_content_hash(
+            new_text,
+            media_url=row.get("media_url"),
+            media_type=row.get("media_type"),
+            media_caption=row.get("media_caption"),
+        )
         formatting = dict(row["formatting_json"] or {})
         formatting["content_sha256"] = digest
 
@@ -297,7 +302,12 @@ class OwnerOutboundApprovalService:
             return "queue contact identity is invalid"
         if str(row["target_chat_id"] or "").strip() != str(row["queue_chat_id"] or "").strip():
             return "approval target does not match queue target"
-        actual_hash = OutboundAuthorizationService.content_hash(str(row["message_text"] or ""))
+        actual_hash = OutboundAuthorizationService.authority_content_hash(
+            str(row["message_text"] or ""),
+            media_url=row.get("media_url"),
+            media_type=row.get("media_type"),
+            media_caption=row.get("media_caption"),
+        )
         if str(row["content_sha256"] or "").lower() != actual_hash:
             return "approval content hash does not match queue content"
         if str(formatting.get("content_sha256") or "").lower() != actual_hash:
@@ -314,6 +324,7 @@ class OwnerOutboundApprovalService:
                 SELECT a.id, a.inbound_message_id, a.outbound_queue_id,
                        a.target_chat_id, a.content_sha256, a.status, a.expires_at,
                        q.chat_id AS queue_chat_id, q.message_text, q.status AS queue_status,
+                       q.media_url, q.media_type, q.media_caption,
                        q.formatting_json
                 FROM outbound_approvals a
                 JOIN outbound_queue q ON q.id = a.outbound_queue_id

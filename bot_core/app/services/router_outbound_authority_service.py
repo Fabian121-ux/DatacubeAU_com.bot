@@ -62,7 +62,7 @@ class RouterOutboundAuthorityService:
         if not source_inbound_message_ids:
             source_inbound_message_ids = [int(inbound_message_id)]
 
-        content_sha256 = self.authorization.content_hash(message_text)
+        content_sha256 = self.authorization.content_hash_for_message(queue_message)
         metadata = dict(queue_message.formatting_json) if isinstance(queue_message.formatting_json, dict) else {}
         metadata.update(
             {

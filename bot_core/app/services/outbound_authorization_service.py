@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
+import json
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -38,12 +39,63 @@ class OutboundAuthorizationService:
     must provide exact durable source/contact/queue identifiers stamped by the router.
     """
 
+    _MEDIA_BINDING_DOMAIN = "zina.outbound.authority.v1.media:"
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
     @staticmethod
     def content_hash(text_value: str) -> str:
+        """Hash exact text-only outbound content.
+
+        Preserved byte-for-byte so already-stamped text-only authority stays valid.
+        """
         return hashlib.sha256((text_value or "").encode("utf-8")).hexdigest()
+
+    @classmethod
+    def authority_content_hash(
+        cls,
+        text_value: str,
+        *,
+        media_url: str | None = None,
+        media_type: str | None = None,
+        media_caption: str | None = None,
+    ) -> str:
+        """Bind exact media identity into the authorized content hash.
+
+        A text-only row keeps the original text digest, so existing durable approvals
+        remain valid. When any media field is present the digest additionally commits
+        to the exact media locator/kind/caption under a domain-separated preimage.
+        Swapping an approved attachment for a different one therefore invalidates the
+        authority instead of silently reusing it.
+
+        Values are committed exactly as stored; no trimming or normalization is applied
+        so WhatsApp formatting and locator identity stay preserved.
+        """
+        if not (media_url or media_type or media_caption):
+            return cls.content_hash(text_value)
+        preimage = json.dumps(
+            {
+                "text": text_value or "",
+                "media_url": media_url or "",
+                "media_type": media_type or "",
+                "media_caption": media_caption or "",
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(f"{cls._MEDIA_BINDING_DOMAIN}{preimage}".encode("utf-8")).hexdigest()
+
+    @classmethod
+    def content_hash_for_message(cls, message: Any) -> str:
+        """Compute the media-aware authority digest for one concrete queue row."""
+        return cls.authority_content_hash(
+            str(getattr(message, "message_text", "") or ""),
+            media_url=getattr(message, "media_url", None),
+            media_type=getattr(message, "media_type", None),
+            media_caption=getattr(message, "media_caption", None),
+        )
 
     @classmethod
     def context_from_queue_message(cls, message: Any) -> AuthorizationContext | None:
@@ -58,7 +110,7 @@ class OutboundAuthorizationService:
         target_chat_id = str(getattr(message, "chat_id", "") or "").strip()
         response_category = str(metadata.get("response_category") or "normal_reply").strip().lower()
         expected_hash = str(metadata.get("content_sha256") or "").strip().lower()
-        actual_hash = cls.content_hash(str(getattr(message, "message_text", "") or ""))
+        actual_hash = cls.content_hash_for_message(message)
         if not target_chat_id or expected_hash != actual_hash:
             return None
 
