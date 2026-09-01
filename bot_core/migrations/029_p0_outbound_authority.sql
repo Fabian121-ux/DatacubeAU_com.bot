@@ -23,6 +23,9 @@ CREATE INDEX IF NOT EXISTS ix_outbound_approvals_pending
     ON outbound_approvals (status, expires_at);
 CREATE INDEX IF NOT EXISTS ix_outbound_approvals_inbound
     ON outbound_approvals (inbound_message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_outbound_approvals_live_inbound
+    ON outbound_approvals (inbound_message_id)
+    WHERE status IN ('pending', 'approved');
 
 CREATE TABLE IF NOT EXISTS contact_automation_policies (
     id BIGSERIAL PRIMARY KEY,
