@@ -1,0 +1,273 @@
+name: Zina Strix Security Scan
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/strix-security.yml"
+      - ".strix/instructions.md"
+  workflow_dispatch:
+    inputs:
+      scan_mode:
+        description: Strix scan mode for the local Zina source tree
+        required: true
+        default: quick
+        type: choice
+        options:
+          - quick
+          - standard
+      max_budget:
+        description: Maximum Strix LLM budget for this authorized local scan
+        required: true
+        default: "10"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zina-strix-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  policy-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Zina
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify fail-closed local-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .strix/instructions.md
+          grep -Fq 'Only the checked-out `Fabian121-ux/DatacubeAU_com.bot` repository content' .strix/instructions.md
+          grep -Fq 'production Zina services' .strix/instructions.md
+          grep -Fq 'real WhatsApp accounts' .strix/instructions.md
+          grep -Fq 'Do not perform destructive data deletion' .strix/instructions.md
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          workflow = Path('.github/workflows/strix-security.yml').read_text(encoding='utf-8')
+          marker = '  local-repo-security-scan:\n'
+          if marker not in workflow:
+              raise SystemExit('Strix workflow is missing the manual local security scan job.')
+          scan_job = workflow.split(marker, 1)[1]
+
+          # Inspect every target argument in the operational scan job, including
+          # conventional one-line `strix ... --target ...` invocations. A later
+          # edit cannot hide an alternate/network target merely by changing line
+          # wrapping or using --target=<value> syntax.
+          target_values = re.findall(
+              r'--target(?:=|\s+)("[^"]*"|\'[^\']*\'|[^\s\\]+)',
+              scan_job,
+          )
+          expected_target = '"$STRIX_SCAN_ROOT"'
+          if target_values != [expected_target]:
+              raise SystemExit(
+                  'Strix workflow must contain exactly one sanitized local repository target: '
+                  '--target "$STRIX_SCAN_ROOT". Network or alternate targets require '
+                  'separate explicit staging authorization.'
+              )
+
+          required_operational_lines = (
+              "python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.5.3'",
+              'fetch-depth: 1',
+              "rsync -a --delete --exclude='.git/' --exclude='strix_runs/' \"$GITHUB_WORKSPACE/\" \"$scan_root/\"",
+              'test ! -e "$scan_root/.git"',
+              'echo "STRIX_SCAN_ROOT=$scan_root" >> "$GITHUB_ENV"',
+              'docker network create --driver bridge --internal "$network" >/dev/null',
+              'echo "STRIX_DOCKER_SANDBOX_NETWORK=$network" >> "$GITHUB_ENV"',
+              'STRIX_TELEMETRY: "false"',
+              'STRIX_SANDBOX_MEM_LIMIT: "2g"',
+              'STRIX_SANDBOX_CPUS: "2"',
+              'STRIX_SANDBOX_PIDS_LIMIT: "512"',
+              'STRIX_SANDBOX_LOG_MAX_SIZE: "25m"',
+              'STRIX_SANDBOX_LOG_MAX_FILE: "2"',
+              'uses: actions/upload-artifact@v4',
+              'path: strix_runs/',
+              'persist-credentials: false',
+          )
+          missing = [
+              token for token in required_operational_lines
+              if token not in scan_job
+          ]
+          if missing:
+              raise SystemExit(
+                  'Strix workflow is missing required operational security/evidence controls: '
+                  + ', '.join(missing)
+              )
+          PY
+
+  local-repo-security-scan:
+    if: github.event_name == 'workflow_dispatch'
+    needs: policy-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out Zina
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate authorized scope and scan controls
+        shell: bash
+        env:
+          SCAN_MODE: ${{ inputs.scan_mode }}
+          MAX_BUDGET: ${{ inputs.max_budget }}
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "Fabian121-ux/DatacubeAU_com.bot"
+
+          case "$SCAN_MODE" in
+            quick|standard) ;;
+            *) echo "Unsupported scan mode" >&2; exit 2 ;;
+          esac
+
+          # Reject overlong numeric strings before Bash integer arithmetic. The
+          # authorized range is 1-25, so more than two digits can never be valid.
+          if ! [[ "$MAX_BUDGET" =~ ^[0-9]{1,2}$ ]]; then
+            echo "max_budget must be an integer from 1 to 25" >&2
+            exit 2
+          fi
+          if [ "$MAX_BUDGET" -lt 1 ] || [ "$MAX_BUDGET" -gt 25 ]; then
+            echo "max_budget must be an integer from 1 to 25" >&2
+            exit 2
+          fi
+
+          if [ -z "${STRIX_LLM:-}" ] || [ -z "${LLM_API_KEY:-}" ]; then
+            echo "Strix requires repository secrets STRIX_LLM and LLM_API_KEY." >&2
+            exit 2
+          fi
+
+          test -f .strix/instructions.md
+          test -d bot_core
+          test -f requirements.txt
+          test -f pyproject.toml
+          test -f Dockerfile
+          test -f docker-compose.yml
+          docker info >/dev/null
+
+      - name: Prepare sanitized repository scan target
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_root="$RUNNER_TEMP/zina-strix-scan-target"
+          rm -rf -- "$scan_root"
+          mkdir -p "$scan_root"
+          rsync -a --delete --exclude='.git/' --exclude='strix_runs/' "$GITHUB_WORKSPACE/" "$scan_root/"
+          test -f "$scan_root/pyproject.toml"
+          test -d "$scan_root/bot_core"
+          test ! -e "$scan_root/.git"
+          echo "STRIX_SCAN_ROOT=$scan_root" >> "$GITHUB_ENV"
+
+      - name: Install pinned Strix CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir 'strix-agent==1.5.3'
+          strix --version
+
+      - name: Create isolated Strix sandbox network
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="zina-strix-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker network create --driver bridge --internal "$network" >/dev/null
+          internal=$(docker network inspect -f '{{.Internal}}' "$network")
+          if [ "$internal" != "true" ]; then
+            echo "Strix sandbox network is not internal; refusing to scan." >&2
+            docker network rm "$network" >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "STRIX_DOCKER_SANDBOX_NETWORK=$network" >> "$GITHUB_ENV"
+
+      - name: Run bounded local-code pentest
+        shell: bash
+        env:
+          SCAN_MODE: ${{ inputs.scan_mode }}
+          MAX_BUDGET: ${{ inputs.max_budget }}
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          STRIX_TELEMETRY: "false"
+          STRIX_SANDBOX_MEM_LIMIT: "2g"
+          STRIX_SANDBOX_CPUS: "2"
+          STRIX_SANDBOX_PIDS_LIMIT: "512"
+          STRIX_SANDBOX_LOG_MAX_SIZE: "25m"
+          STRIX_SANDBOX_LOG_MAX_FILE: "2"
+        run: |
+          set -euo pipefail
+          test -n "${STRIX_SCAN_ROOT:-}"
+          test -d "$STRIX_SCAN_ROOT"
+          test ! -e "$STRIX_SCAN_ROOT/.git"
+          test -n "${STRIX_DOCKER_SANDBOX_NETWORK:-}"
+          test "$(docker network inspect -f '{{.Internal}}' "$STRIX_DOCKER_SANDBOX_NETWORK")" = "true"
+
+          # Strix 1.5.3 supports the dedicated sandbox network plus resource
+          # caps consumed by its Docker client. Autonomous tool containers are
+          # isolated from external networks and bounded for memory/CPU/PIDs;
+          # only the host-side Strix process retains the LLM-provider channel.
+          strix \
+            --non-interactive \
+            --target "$STRIX_SCAN_ROOT" \
+            --scan-mode "$SCAN_MODE" \
+            --max-budget "$MAX_BUDGET" \
+            --instruction-file "$STRIX_SCAN_ROOT/.strix/instructions.md"
+
+      - name: Verify Strix completed normally
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_json=$(find strix_runs -mindepth 2 -maxdepth 2 -name run.json -type f -print 2>/dev/null | xargs -r ls -1t | head -1)
+          if [ -z "${run_json:-}" ]; then
+            echo "No Strix run.json was produced." >&2
+            exit 1
+          fi
+
+          status=$(python - "$run_json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding='utf-8') as f:
+              print(json.load(f).get('status', 'unknown'))
+          PY
+          )
+          echo "Strix run status: $status"
+          if [ "$status" != "completed" ]; then
+            echo "Strix did not complete normally." >&2
+            exit 1
+          fi
+
+      - name: Preserve Strix scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zina-strix-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: strix_runs/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+      - name: Tear down isolated Strix sandbox network
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="${STRIX_DOCKER_SANDBOX_NETWORK:-}"
+          if [ -z "$network" ]; then
+            exit 0
+          fi
+
+          # Remove only containers attached to this run-unique network before
+          # deleting it. This cannot match unrelated Zina/WAHA containers.
+          container_ids=$(docker ps -aq --filter "network=$network")
+          if [ -n "$container_ids" ]; then
+            docker rm -f $container_ids >/dev/null
+          fi
+          docker network rm "$network" >/dev/null 2>&1 || true
