@@ -64,6 +64,27 @@ def test_content_hash_is_deterministic_and_content_bound():
     assert OutboundAuthorizationService.content_hash("same") != OutboundAuthorizationService.content_hash("different")
 
 
+def test_authority_context_preserves_whatsapp_safe_formatting_exactly():
+    text = "> quoted line\n\n*Important* uses `inline code`.\n\nFinal paragraph."
+    digest = OutboundAuthorizationService.content_hash(text)
+    message = _message(
+        text=text,
+        metadata={
+            "inbound_message_id": 5,
+            "contact_id": 7,
+            "content_sha256": digest,
+            "response_category": "normal_reply",
+        },
+    )
+
+    context = OutboundAuthorizationService.context_from_queue_message(message)
+
+    assert context is not None
+    assert message.message_text == text
+    assert context.content_sha256 == digest
+    assert OutboundAuthorizationService.content_hash(text.replace("\n\n", "\n")) != digest
+
+
 @pytest.mark.asyncio
 async def test_authorize_queue_message_fails_closed_before_database_lookup_when_context_missing(monkeypatch):
     service = OutboundAuthorizationService(SimpleNamespace())
