@@ -86,7 +86,6 @@ CLEANUP_RAW_TABLES = (
     "outbound_approvals",
     "outbound_authorization_audit",
     "contact_automation_policies",
-    "view_once_media_metadata",
 )
 
 
