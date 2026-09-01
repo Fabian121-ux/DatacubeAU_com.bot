@@ -6,6 +6,8 @@ import pytest
 
 from app.models.scheduled_action import ScheduledAction
 from app.models.schema import OutboundMessage
+from app.services.outbound_authorization_service import AuthorizationDecision, OutboundAuthorizationService
+from app.services.outbound_safety_limit_service import OutboundSafetyDecision
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WahaClientError
 from app.utils.time import utcnow
@@ -47,6 +49,18 @@ class _UncertainClient:
     async def send_media(self, **kwargs):
         self.calls += 1
         raise WahaClientError("connection closed before response")
+
+
+class _RecordingClient:
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    async def send_text(self, *, chat_id, text):
+        self.calls.append((chat_id, text))
+        return {"id": "mock-waha-message-id"}
+
+    async def send_media(self, **kwargs):
+        raise AssertionError("formatted text regression must use the text send path")
 
 
 @pytest.mark.asyncio
@@ -108,6 +122,52 @@ async def test_waha_send_error_is_delivery_uncertain_not_retrying(db_session, mo
     assert row.status == "deferred"
     assert row.retry_count == 0
     assert "automatic replay blocked" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(db_session, monkeypatch):
+    now = utcnow()
+    text = "> quoted line\n\n*Important* uses `inline code`.\n\nFinal paragraph."
+    row = OutboundMessage(
+        chat_id="222@c.us",
+        message_text=text,
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": 41,
+            "contact_id": 42,
+            "content_sha256": OutboundAuthorizationService.content_hash(text),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(row)
+    await db_session.commit()
+
+    async def _authorized(self, message):
+        context = self.context_from_queue_message(message)
+        assert context is not None
+        return context, AuthorizationDecision(True, "contact_policy", "exact active contact policy")
+
+    async def _safe(self, message, *, now=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+    client = _RecordingClient()
+
+    processed = await background_workers._deliver_due_outbound_messages(client)
+
+    await db_session.refresh(row)
+    assert processed == 1
+    assert client.calls == [("222@c.us", text)]
+    assert row.message_text == text
+    assert row.status == "sent"
 
 
 @pytest.mark.asyncio
