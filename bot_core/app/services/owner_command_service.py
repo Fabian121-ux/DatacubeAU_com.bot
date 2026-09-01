@@ -1344,12 +1344,24 @@ class OwnerCommandService:
         return [row for row in rows if not (self._identity_keys(row) & exclude)]
 
     async def _queue_broadcast(self, targets: list[str], text_value: str) -> int:
+        """Queue one row per explicitly resolved broadcast target.
+
+        These rows carry no durable per-recipient outbound authority, so the final
+        Outbound Queue fence blocks every non-owner target. The policy below states
+        that intent explicitly instead of relying on absent metadata, so a future
+        change to the fence cannot silently turn this into a live mass-send path.
+        """
         unique_targets = list(dict.fromkeys(target for target in targets if target))
         for chat_id in unique_targets:
             self.session.add(
                 OutboundMessage(
                     chat_id=chat_id,
                     message_text=text_value,
+                    formatting_json={
+                        "delivery_policy": "unauthorized_broadcast",
+                        "source": "owner_command:broadcast",
+                        "requires_exact_recipient_authority": True,
+                    },
                     status="pending",
                     retry_count=0,
                     max_retries=3,
