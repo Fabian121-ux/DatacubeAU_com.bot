@@ -2,6 +2,92 @@
 
 Status: design/continuity contract for the successor to PR #38 after P0 outbound containment landed on `main`.
 
+## Current proven state
+
+This section describes what is implemented and covered by tests on this branch. Everything
+outside it remains design intent. "Proven" here means local regressions exercise the
+behaviour with mocked transports; no claim is made about live WhatsApp traffic, because no
+real WAHA send or session reconnect has been performed in this track.
+
+### Implemented and tested
+
+- **Media identity is bound into outbound authority.** `OutboundAuthorizationService.authority_content_hash()`
+  commits to the exact media locator, kind, and caption in addition to the message text.
+  Changing any of them after approval invalidates the existing authority. Text-only rows
+  keep their original digest byte-for-byte, so approvals stamped before this change stay
+  valid.
+- **One canonical outbound media boundary.** `OutboundMediaMetadataService` validates the
+  locator scheme/length/traversal, canonicalizes producer kind aliases, derives a MIME when
+  the producer omits one, and rejects kind/MIME conflicts and unsafe filenames. The router
+  applies it before the queue row is created, so the hidden `__media_*` producer keys never
+  reach the queue as a parallel media protocol. Rejecting media only drops the attachment;
+  the text reply still passes the unchanged approval fence.
+- **Typed WAHA transport adapters.** `send_image`, `send_video`, `send_voice`, and
+  `send_file` post to their exact endpoints with a validated MIME, and are single-attempt
+  (`retry_safe=False`). Request contracts are covered by mocked tests.
+- **Media-type-aware worker dispatch after P0 authorization.** `OutboundMediaDispatchService`
+  runs only after the final authorization fence and the outbound safety limits have already
+  allowed a row. It selects one exact operation (`image -> send_image`, `video -> send_video`,
+  `voice/PTT -> send_voice`, `audio/document/file -> send_file`) or fails closed with zero
+  WAHA calls. It can only narrow behaviour and is never an authorization mechanism.
+- **Status, channel, and broadcast ingress rejection.** `status@broadcast`, `*@newsletter`,
+  and `*@broadcast` surfaces are rejected at the canonical webhook before the durable
+  idempotency claim and before any routing side effect, so they can never become a reply
+  candidate.
+- **Exact WAHA session binding at ingress.** Every message event must belong to the
+  configured session (see the operational invariant below).
+- **Broadcast rows are explicitly non-authoritative.** `_queue_broadcast` stamps
+  `delivery_policy: unauthorized_broadcast`, which the final fence rejects by name for every
+  non-owner recipient, instead of relying on absent metadata.
+- **Durable duplicate, burst, and final-fence protections.** A PostgreSQL
+  `inbound_webhook_receipts` claim keyed on `session:chat:message_id` collapses `message` and
+  `message.any` for one source into a single routing path and survives webhook retries and
+  restarts. Per-contact burst coalescing, per-contact and global rate/backlog ceilings, and
+  duplicate-content suppression bound outbound volume. The Outbound Queue worker independently
+  re-authorizes every row immediately before any WAHA call and quarantines uncertain delivery
+  outcomes instead of replaying them.
+
+### Not yet production-complete
+
+These are explicitly unfinished. Do not describe them as working.
+
+- **`.vv` / `.vvopen` end-to-end command handler.** View-once *classification* is implemented
+  and tested (`ViewOnceCapabilityService`), and migration 031 registers the command in the
+  Command Center catalog, but the handler that resolves a quoted source message, fetches the
+  capability, and returns media to the OWNER self-DM is not implemented.
+- **`PrivateMediaArtifact` byte storage.** No private byte store, no artifact metadata table
+  beyond the capability-truthful `view_once_media_metadata` record, no integrity hashing, no
+  quotas, no TTL, and no expiry cleanup.
+- **Persistent view-once retention.** Not implemented.
+- **`.vvretain on`.** Unavailable, and it must remain unavailable until the storage,
+  quota, TTL, deletion, disable, audit, and restart-safety requirements below are met.
+- **AI image/audio/video processing.** No vision, transcription, frame sampling, or
+  `DerivedArtifact` pipeline exists.
+- **End-to-end real image/video/audio proof.** Transport contracts and worker dispatch are
+  proven only against mocks. No media type has been verified end-to-end against the live
+  WAHA engine or a real WhatsApp account.
+
+**Retention remains OFF.** Nothing in this track stores media bytes, and no view-once or
+ephemeral media is archived. No claim is made that Zina can recover view-once or deleted
+media; only bounded metadata that WAHA actually exposed is retained.
+
+## Operational invariant: WAHA session binding
+
+`payload.session` must equal the configured `WAHA_SESSION_NAME`. Surrounding whitespace from
+the transport is trimmed, but the comparison is **case-sensitive**: `DEFAULT` does not match
+`default`. A missing session also fails closed, because the active WAHA build populates
+`session` on every webhook (`populateSessionInfo()` in `core/abc/manager.abc.js`) and the
+`WAHAWebhook` DTO marks it `required: true`.
+
+Webhook authentication and session binding answer different questions. Authentication proves
+the caller knows the shared secret; session binding proves the event belongs to this Zina WAHA
+session. Both are required.
+
+Operational consequence: if the deployed WAHA session is renamed without updating
+`WAHA_SESSION_NAME`, **all inbound events fail closed** and are logged as `unexpected_session`.
+This is intentional for a security boundary, but it means the two values must be changed
+together.
+
 ## Non-negotiable ownership
 
 - WAHA remains the only current production WhatsApp transport.
@@ -54,9 +140,9 @@ Any later private-artifact migration starts after 031. Migration numbers are nev
 
 ## Transport capability truth
 
-Zina's current WAHA client only has a generic `send_media()` implementation wired to `/api/sendImage`, so it is currently image-only in practice. Video/audio must not be routed through that method.
+The legacy generic `send_media()` helper is wired to `/api/sendImage` and is therefore image-only. It is now reached only by legacy untyped rows, which keep their original image-only behaviour and caption fallback. Video and audio are never routed through it.
 
-Current upstream WAHA source exposes separate REST operations for `sendImage`, `sendVideo`, `sendVoice`, and `sendFile`. This is sufficient evidence to add explicit Zina transport adapter methods behind the existing WAHA client boundary and test their request contracts with mocks. It is not evidence that the currently deployed WAHA image/tag/engine has been live-verified for every media mode, and this track will not exercise the restricted real WhatsApp account.
+Current upstream WAHA source exposes separate REST operations for `sendImage`, `sendVideo`, `sendVoice`, and `sendFile`. Explicit typed adapter methods for all four now exist behind the existing WAHA client boundary, and their request contracts are covered by mocked tests. This is **not** evidence that the deployed WAHA image/tag/engine has been live-verified for every media mode: no media type has been exercised end to end against the live engine or the restricted real WhatsApp account.
 
 Media semantics must stay explicit:
 
@@ -110,17 +196,17 @@ No second AI router is introduced. Existing AI/reply-planner/tool-dispatch paths
 
 Media response generation does not weaken outbound authority. Ordinary external contacts remain approval-first unless an exact active OWNER contact automation policy permits the exact response category. OWNER media inspection commands return only to the exact OWNER control chat.
 
-Content/media binding must eventually cover the exact artifact/capability identity in the same spirit as the existing exact text hash binding, so a queued authorization cannot be reused for different media.
+Content/media binding now covers the exact media locator, kind, and caption alongside the existing text hash, so a queued authorization cannot be reused for different media. Binding to a durable private artifact identity remains future work and arrives with the Private Media Artifact service.
 
 ## Safe implementation phases
 
-1. Rebase/port PR #38 onto P0 `main`, renumbering migrations and preserving the P0 worker/Command Center changes.
-2. Add explicit WAHA image/video/voice/file adapter methods and mock-only request-contract tests; do not change live routing yet.
-3. Add media-type-aware Outbound Queue dispatch after final P0 authorization, with fail-closed unknown/conflicting types and no automatic replay on uncertain sends.
-4. Restore/validate `.vv` image behavior on the new main and add truthful video/audio handling only when exact capability evidence is available.
-5. Introduce the single Private Media Artifact service and PostgreSQL metadata only after storage/retention policy tests are defined; default retention OFF.
-6. Add bounded image/video/audio AI-derived-artifact processing through existing Tool Registry/AI boundaries. No automatic Memory/KB promotion.
-7. Inspect active WAHA engine payloads for view-once/revocation metadata using fixtures/source/docs. If a required capability is absent, document the exact gap before considering an isolated Baileys prototype. Never run WAHA and Baileys simultaneously in production.
+1. **Done.** Rebase/port PR #38 onto P0 `main`, renumbering migrations and preserving the P0 worker/Command Center changes.
+2. **Done.** Add explicit WAHA image/video/voice/file adapter methods and mock-only request-contract tests; do not change live routing yet.
+3. **Done.** Add media-type-aware Outbound Queue dispatch after final P0 authorization, with fail-closed unknown/conflicting types and no automatic replay on uncertain sends. Producer-side media is canonicalized at one boundary before the queue row is created.
+4. **Not started.** Restore/validate `.vv` image behavior on the new main and add truthful video/audio handling only when exact capability evidence is available. Classification exists; the command handler does not.
+5. **Not started.** Introduce the single Private Media Artifact service and PostgreSQL metadata only after storage/retention policy tests are defined; default retention OFF.
+6. **Not started.** Add bounded image/video/audio AI-derived-artifact processing through existing Tool Registry/AI boundaries. No automatic Memory/KB promotion.
+7. **Partially done.** The active WAHA build was inspected for the webhook session contract (`populateSessionInfo`, `WAHAWebhook` DTO). View-once/revocation payload metadata has not been re-inspected against the deployed engine beyond the existing classification fixtures. If a required capability is absent, document the exact gap before considering an isolated Baileys prototype. Never run WAHA and Baileys simultaneously in production.
 
 ## Required validation before review-ready
 
