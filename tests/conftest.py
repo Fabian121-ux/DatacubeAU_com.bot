@@ -48,9 +48,6 @@ from app.db import Base
 # into later tests and across repeated local runs against the same database. That is
 # how committed `admin_accounts` rows survived teardown and made unrelated
 # command-control tests fail on `admin_accounts_normalized_whatsapp_id_key`.
-#
-# Tables owned only by raw SQL migrations (for example `outbound_approvals`) are
-# removed transitively by their `ON DELETE CASCADE` parents already listed here.
 CLEANUP_MODELS = (
     ScheduledAction,
     OutboundMessage,
@@ -79,10 +76,38 @@ CLEANUP_MODELS = (
 )
 
 
+# Tables created by raw SQL migrations have no ORM model, so the model-based cleanup
+# above cannot reach them. `outbound_approvals` and `outbound_authorization_audit` are
+# removed transitively by their cascading parents, but the rest survive teardown.
+# A leaked `inbound_webhook_receipts` row makes a later test's webhook look like a
+# duplicate delivery, which silently suppresses routing.
+CLEANUP_RAW_TABLES = (
+    "inbound_webhook_receipts",
+    "outbound_approvals",
+    "outbound_authorization_audit",
+    "contact_automation_policies",
+    "view_once_media_metadata",
+)
+
+
 async def _purge_database_state(session) -> None:
     """Remove every row this suite may have committed, in dependency-safe order."""
     for model in CLEANUP_MODELS:
         await session.execute(delete(model))
+    if CLEANUP_RAW_TABLES:
+        # Skip tables that do not exist yet, so a database predating a migration does
+        # not fail the fixture. Names are internal constants, never test input.
+        present = (
+            await session.execute(
+                text(
+                    "SELECT tablename FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tablename = ANY(:names)"
+                ),
+                {"names": list(CLEANUP_RAW_TABLES)},
+            )
+        ).scalars().all()
+        for table in present:
+            await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
     await session.commit()
 
 
