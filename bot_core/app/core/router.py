@@ -16,6 +16,7 @@ from app.models.schema import AuditLog, Contact, Message, OutboundMessage, Route
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
+from app.services.outbound_media_metadata_service import OutboundMediaMetadataService
 from app.services.owner_command_service import OwnerCommandService
 from app.services.router_outbound_authority_service import RouterOutboundAuthorityService
 from app.services.waha_client import WAHAClient, WahaClientError
@@ -174,12 +175,40 @@ class InboundRouter:
             else "immediate"
         )
         formatting_metadata["reply_deferred"] = reply_deferred
+
+        # One canonical media contract for every producer that can reach this queue.
+        # Normalization happens before the row is created so the authority hash binds a
+        # validated locator/kind/caption. Rejected media only drops the attachment; the
+        # text reply still goes through the unchanged approval fence.
+        canonical_media = None
+        if planned.media_url:
+            decision = OutboundMediaMetadataService.normalize(
+                media_url=planned.media_url,
+                media_kind=planned.media_type,
+                media_caption=planned.media_caption,
+                provenance=str(planned.source_diagnostics.get("source") or "reply_planner"),
+            )
+            if decision.accepted:
+                canonical_media = decision.media
+                formatting_metadata.update(canonical_media.queue_metadata())
+            else:
+                planned.source_diagnostics.setdefault("outbound_media", {}).update(
+                    {"accepted": False, "reason": decision.reason}
+                )
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "outbound_media_rejected",
+                    chat_id=normalized.chat_id,
+                    reason=decision.reason,
+                )
+
         queued = await self._queue_outbound_message(
             normalized.chat_id,
             planned.reply_text,
-            media_url=planned.media_url,
-            media_type=planned.media_type,
-            media_caption=planned.media_caption,
+            media_url=canonical_media.media_url if canonical_media else None,
+            media_type=canonical_media.media_kind if canonical_media else None,
+            media_caption=canonical_media.media_caption if canonical_media else None,
             formatting_json=formatting_metadata,
             delivery_status="deferred" if reply_deferred else "pending",
         )
