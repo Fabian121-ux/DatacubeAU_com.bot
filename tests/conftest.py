@@ -13,9 +13,12 @@ from app.core.message_normalizer import NormalizedMessage
 from app.models.enums import ChatType
 from app.models.scheduled_action import ScheduledAction
 from app.models.schema import (
+    AdminAccount,
     AICall,
     AIUsageEvent,
     AIUsageQuota,
+    AuditLog,
+    BotConfig,
     Contact,
     ConversationSummary,
     ConversationTimeline,
@@ -37,6 +40,50 @@ from app.models.schema import (
 from app.services.memory_service import MemoryContextPackage
 from app.utils.text import normalize_text
 from app.db import Base
+
+
+# Single source of truth for per-test database cleanup, ordered child-before-parent.
+#
+# A table missing from this tuple keeps any row a test committed, which leaks state
+# into later tests and across repeated local runs against the same database. That is
+# how committed `admin_accounts` rows survived teardown and made unrelated
+# command-control tests fail on `admin_accounts_normalized_whatsapp_id_key`.
+#
+# Tables owned only by raw SQL migrations (for example `outbound_approvals`) are
+# removed transitively by their `ON DELETE CASCADE` parents already listed here.
+CLEANUP_MODELS = (
+    ScheduledAction,
+    OutboundMessage,
+    AIUsageEvent,
+    InternetUsageEvent,
+    InternetCache,
+    AIUsageQuota,
+    AICall,
+    Message,
+    GroupMetadata,
+    ConversationSummary,
+    ConversationTimeline,
+    FeedbackReview,
+    ForcedReplyTarget,
+    UserTrigger,
+    UserMemoryTimeline,
+    UserMemory,
+    FAQImportCandidate,
+    FAQEntry,
+    IdentityRegistryEntry,
+    CommandCatalogEntry,
+    Contact,
+    AdminAccount,
+    AuditLog,
+    BotConfig,
+)
+
+
+async def _purge_database_state(session) -> None:
+    """Remove every row this suite may have committed, in dependency-safe order."""
+    for model in CLEANUP_MODELS:
+        await session.execute(delete(model))
+    await session.commit()
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
@@ -67,58 +114,10 @@ async def db_session():
 
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with Session() as session:
-        for model in (
-            ScheduledAction,
-            OutboundMessage,
-            AIUsageEvent,
-            InternetUsageEvent,
-            InternetCache,
-            AIUsageQuota,
-            AICall,
-            Message,
-            GroupMetadata,
-            ConversationSummary,
-            ConversationTimeline,
-            FeedbackReview,
-            ForcedReplyTarget,
-            UserTrigger,
-            UserMemoryTimeline,
-            UserMemory,
-            FAQImportCandidate,
-            FAQEntry,
-            IdentityRegistryEntry,
-            CommandCatalogEntry,
-            Contact,
-        ):
-            await session.execute(delete(model))
-        await session.commit()
+        await _purge_database_state(session)
         yield session
         await session.rollback()
-        for model in (
-            ScheduledAction,
-            OutboundMessage,
-            AIUsageEvent,
-            InternetUsageEvent,
-            InternetCache,
-            AIUsageQuota,
-            AICall,
-            Message,
-            GroupMetadata,
-            ConversationSummary,
-            ConversationTimeline,
-            FeedbackReview,
-            ForcedReplyTarget,
-            UserTrigger,
-            UserMemoryTimeline,
-            UserMemory,
-            FAQImportCandidate,
-            FAQEntry,
-            IdentityRegistryEntry,
-            CommandCatalogEntry,
-            Contact,
-        ):
-            await session.execute(delete(model))
-        await session.commit()
+        await _purge_database_state(session)
     await engine.dispose()
 
 
