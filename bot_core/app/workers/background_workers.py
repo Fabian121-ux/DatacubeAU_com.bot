@@ -7,11 +7,15 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
+from app.config import settings
 from app.db import SessionLocal
+from app.models.scheduled_action import ScheduledAction
 from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.outbound_safety_limit_service import OutboundSafetyLimitService
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.time import utcnow
@@ -144,9 +148,31 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         )
         messages = (await session.execute(stmt)).scalars().all()
         due_messages: list[OutboundMessage] = []
+        approval_ids: dict[int, int] = {}
+        authority = OutboundAuthorizationService(session)
+        safety = OutboundSafetyLimitService(session)
         for message in messages:
-            if message.status == "sending" and message.updated_at and message.updated_at > now - timedelta(minutes=5):
+            if message.status == "sending":
+                if message.updated_at and message.updated_at > now - timedelta(minutes=5):
+                    continue
+                await _mark_delivery_uncertain(
+                    session,
+                    message,
+                    reason="delivery state uncertain after interrupted send; automatic replay blocked",
+                    commit=False,
+                )
                 continue
+            allowed, reason, approval_id = await _delivery_authorized(session, authority, message)
+            if not allowed:
+                await _mark_delivery_blocked(session, message, reason=reason)
+                continue
+            if not _is_owner_chat_id(message.chat_id):
+                safety_decision = await safety.authorize(message, now=now)
+                if not safety_decision.allowed:
+                    await _mark_delivery_blocked(session, message, reason=safety_decision.reason)
+                    continue
+            if approval_id is not None:
+                approval_ids[int(message.id)] = approval_id
             message.status = "sending"
             message.updated_at = now
             due_messages.append(message)
@@ -165,8 +191,34 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 else:
                     response = await client.send_text(chat_id=message.chat_id, text=message.message_text)
             except WahaClientError as exc:
-                await _mark_delivery_failed(session, message, str(exc))
+                await _mark_delivery_uncertain(
+                    session,
+                    message,
+                    reason=f"WAHA delivery outcome uncertain; automatic replay blocked: {exc}",
+                )
             else:
+                approval_id = approval_ids.get(int(message.id))
+                if approval_id is not None:
+                    consumed = await OutboundAuthorizationService(session).consume_approval(approval_id)
+                    if not consumed:
+                        session.add(
+                            AuditLog(
+                                action="outbound_approval_consumption_invariant_failed",
+                                entity_type="outbound_queue",
+                                entity_id=str(message.id),
+                                details_json={
+                                    "chat_id": message.chat_id,
+                                    "approval_id": approval_id,
+                                },
+                            )
+                        )
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "outbound_approval_consumption_invariant_failed",
+                            queue_id=message.id,
+                            approval_id=approval_id,
+                        )
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
@@ -180,12 +232,158 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                             "chat_id": message.chat_id,
                             "delivery_snapshot": _delivery_snapshot(message),
                             "waha_response": response,
+                            "approval_id": approval_id,
                         },
                     )
                 )
                 await session.commit()
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
+
+
+async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:
+    """Apply the final outbound authorization fence against exact durable authority.
+
+    Exact configured OWNER self-DM remains allowed. Router-generated external replies
+    must pass OutboundAuthorizationService. A ScheduledAction may cross the fence only
+    when its queue row proves the exact durable action/queue/target/content binding and
+    the action is still enabled and queued. Missing metadata is never itself authority.
+    """
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
+
+    if _is_owner_chat_id(message.chat_id):
+        return True, "exact configured owner chat", None
+
+    if not delivery_policy:
+        if await _is_exact_scheduled_action_binding(session, message, metadata):
+            return True, "exact durable scheduled action binding", None
+        return False, "external queue row missing explicit durable outbound authority", None
+
+    if delivery_policy == "immediate":
+        return False, "legacy external immediate router reply is not durably authorized", None
+    if delivery_policy not in {"approval_required", "authorized_external"}:
+        return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None
+
+    _context, decision = await authority.authorize_queue_message(message)
+    if not decision.allowed:
+        return False, decision.reason, None
+    return True, decision.reason, decision.approval_id
+
+
+async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, metadata: dict[str, Any]) -> bool:
+    """Prove one ScheduledAction queue row without trusting queue metadata or content alone."""
+    try:
+        scheduled_action_id = int(metadata.get("scheduled_action_id"))
+        outbound_queue_id = int(message.id)
+    except (TypeError, ValueError):
+        return False
+    if scheduled_action_id <= 0 or outbound_queue_id <= 0 or session is None:
+        return False
+
+    row = (
+        await session.execute(
+            select(ScheduledAction)
+            .where(ScheduledAction.id == scheduled_action_id)
+            .where(ScheduledAction.outbound_queue_id == outbound_queue_id)
+            .where(ScheduledAction.target_chat_id == message.chat_id)
+            .where(ScheduledAction.action_type == "whatsapp.send_message")
+            .where(ScheduledAction.status == "queued")
+            .where(ScheduledAction.is_enabled.is_(True))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+
+    scheduled_text = (row.payload_json or {}).get("text")
+    return isinstance(scheduled_text, str) and bool(scheduled_text) and message.message_text == scheduled_text
+
+
+def _is_owner_chat_id(chat_id: str) -> bool:
+    wanted = (chat_id or "").strip().lower()
+    if not wanted:
+        return False
+    owner_ids = {
+        item.strip().lower()
+        for item in str(settings.owner_whatsapp_ids or "").replace(";", ",").split(",")
+        if item.strip()
+    }
+    return wanted in owner_ids
+
+
+async def _mark_delivery_blocked(session, message: OutboundMessage, *, reason: str) -> None:
+    message.status = "deferred"
+    message.error_message = reason[:2000]
+    message.updated_at = utcnow()
+    await ScheduledActionService(session).reconcile_outbound_delivery(message)
+    session.add(
+        AuditLog(
+            action="outbound_queue_authorization_blocked",
+            entity_type="outbound_queue",
+            entity_id=str(message.id),
+            details_json={
+                "chat_id": message.chat_id,
+                "status": message.status,
+                "reason": message.error_message,
+                "delivery_policy": (
+                    message.formatting_json.get("delivery_policy")
+                    if isinstance(message.formatting_json, dict)
+                    else None
+                ),
+            },
+        )
+    )
+    log_event(
+        logger,
+        logging.WARNING,
+        "outbound_queue_authorization_blocked",
+        queue_id=message.id,
+        chat_id=message.chat_id,
+        reason=reason,
+    )
+
+
+async def _mark_delivery_uncertain(
+    session,
+    message: OutboundMessage,
+    *,
+    reason: str,
+    commit: bool = True,
+) -> None:
+    """Quarantine a row whose external send outcome cannot be proven.
+
+    Replaying an uncertain row risks a duplicate real-world message. PostgreSQL keeps
+    the row and evidence for OWNER reconciliation; no retry is scheduled automatically.
+    """
+    message.status = "deferred"
+    message.error_message = reason[:2000]
+    message.updated_at = utcnow()
+    await ScheduledActionService(session).reconcile_outbound_delivery(message)
+    session.add(
+        AuditLog(
+            action="outbound_queue_delivery_uncertain",
+            entity_type="outbound_queue",
+            entity_id=str(message.id),
+            details_json={
+                "chat_id": message.chat_id,
+                "status": message.status,
+                "reason": message.error_message,
+                "retry_count": message.retry_count,
+                "automatic_replay": False,
+            },
+        )
+    )
+    if commit:
+        await session.commit()
+    log_event(
+        logger,
+        logging.WARNING,
+        "outbound_queue_delivery_uncertain",
+        queue_id=message.id,
+        chat_id=message.chat_id,
+        automatic_replay=False,
+    )
 
 
 def _delivery_snapshot(message: OutboundMessage) -> dict[str, str]:

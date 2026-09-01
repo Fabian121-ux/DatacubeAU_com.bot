@@ -36,6 +36,29 @@ async def waha_events_webhook(
         return await inbound.waha_webhook(request, background_tasks)
 
     event_name = inbound._resolve_event_name(event)
+    if not event_name or event_name in {"message", "message.any"}:
+        payload = inbound._resolve_payload(event)
+        source_message_id = inbound._resolve_message_id(payload)
+        if not source_message_id:
+            request_id = (
+                request.headers.get("x-webhook-request-id")
+                or request.headers.get("x-request-id")
+                or "waha-webhook"
+            )
+            log_event(
+                logger,
+                logging.WARNING,
+                "webhook_ignored",
+                request_id=request_id,
+                event_name=event_name or "message",
+                reason="missing_source_message_id",
+            )
+            return {
+                "status": "ignored",
+                "reason": "missing_source_message_id",
+                "event_name": event_name or "message",
+            }
+
     if event_name != "message.revoked":
         response = await inbound.waha_webhook(request, background_tasks)
         if (not event_name or event_name in {"message", "message.any"}) and response.get("status") == "accepted":

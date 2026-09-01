@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks
 from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.inbound import waha_webhook
 from app.core.message_normalizer import MessageNormalizer
-from app.db import SessionLocal
 from app.models.schema import AdminAccount, OutboundMessage
 from app.services.command_control_service import CommandControlService
 
@@ -174,10 +175,22 @@ async def test_duplicate_from_me_webhook_executes_owner_command_once(monkeypatch
     monkeypatch.setattr(inbound_module.settings, "waha_api_key", "")
     monkeypatch.setattr(inbound_module.settings, "environment", "test")
 
-    # Exercise the real webhook and its global SessionLocal in this pytest event loop.
-    # Explicit cleanup keeps this committed idempotency test isolated from the rest
-    # of the suite (the ordinary db_session fixture intentionally rolls back inserts).
-    async with SessionLocal() as db:
+    # The production module-level SessionLocal can retain pooled asyncpg connections
+    # created by earlier pytest event loops. Give this committed idempotency regression
+    # an engine/sessionmaker owned entirely by the current loop, and route the real
+    # webhook through it. This preserves production behavior while preventing the test
+    # harness from reusing a Future bound to a closed/different loop.
+    test_engine = create_async_engine(
+        os.environ.get(
+            "DATABASE_URL",
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+        ),
+        pool_pre_ping=True,
+    )
+    TestSessionLocal = async_sessionmaker(bind=test_engine, expire_on_commit=False)
+    monkeypatch.setattr(inbound_module, "SessionLocal", TestSessionLocal)
+
+    async with TestSessionLocal() as db:
         await db.execute(delete(OutboundMessage))
         await db.execute(delete(AdminAccount))
         await db.execute(text("DELETE FROM inbound_webhook_receipts"))
@@ -205,7 +218,7 @@ async def test_duplicate_from_me_webhook_executes_owner_command_once(monkeypatch
         assert first["command_consumed"] is True
         assert second["status"] == "duplicate"
 
-        async with SessionLocal() as db:
+        async with TestSessionLocal() as db:
             queued = (await db.execute(select(OutboundMessage))).scalars().all()
             assert len(queued) == 1
             assert queued[0].formatting_json["source"] == "command_control"
@@ -220,8 +233,9 @@ async def test_duplicate_from_me_webhook_executes_owner_command_once(monkeypatch
             ).scalar_one()
             assert receipt_status == "completed"
     finally:
-        async with SessionLocal() as db:
+        async with TestSessionLocal() as db:
             await db.execute(delete(OutboundMessage))
             await db.execute(delete(AdminAccount))
             await db.execute(text("DELETE FROM inbound_webhook_receipts"))
             await db.commit()
+        await test_engine.dispose()

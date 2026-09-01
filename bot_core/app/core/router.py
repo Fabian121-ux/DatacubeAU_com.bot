@@ -17,6 +17,7 @@ from app.services.conversation_takeover_service import ConversationTakeoverServi
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
 from app.services.owner_command_service import OwnerCommandService
+from app.services.router_outbound_authority_service import RouterOutboundAuthorityService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
@@ -81,6 +82,7 @@ class InboundRouter:
         )
 
         owner_command = await OwnerCommandService(self.session).handle(normalized, contact)
+        owner_chat = self._is_owner_chat_id(normalized.chat_id)
         if owner_command:
             wait_for_fabian_first = False
             planned = await self.reply_planner._apply_identity_guard(
@@ -105,12 +107,12 @@ class InboundRouter:
                     details_json={"facts": profile_facts},
                 )
 
-            typing_started = False
-            if not wait_for_fabian_first:
-                typing_started = await self._maybe_start_typing(normalized.chat_id)
-            planned = await self.reply_planner.plan(normalized, contact.id)
-            if typing_started:
-                await self._maybe_stop_typing(normalized.chat_id)
+            planned = await self._plan_with_owner_typing(
+                normalized,
+                contact.id,
+                owner_chat=owner_chat,
+                wait_for_fabian_first=wait_for_fabian_first,
+            )
         self._attach_thinking_diagnostics(planned)
         decision = await self._save_router_decision(
             message_id=inbound.id,
@@ -159,12 +161,17 @@ class InboundRouter:
                 outbound_message_id=None,
             ))
 
-        reply_deferred = wait_for_fabian_first
+        requires_owner_approval = owner_command is None and not owner_chat
+        reply_deferred = wait_for_fabian_first or requires_owner_approval
         if not reply_deferred:
             await self._maybe_typing_delay(normalized, planned)
         formatting_metadata = self._reply_formatting_metadata(planned)
         formatting_metadata["delivery_policy"] = (
-            "wait_for_fabian_first" if reply_deferred else "immediate"
+            "approval_required"
+            if requires_owner_approval
+            else "wait_for_fabian_first"
+            if reply_deferred
+            else "immediate"
         )
         formatting_metadata["reply_deferred"] = reply_deferred
         queued = await self._queue_outbound_message(
@@ -176,6 +183,23 @@ class InboundRouter:
             formatting_json=formatting_metadata,
             delivery_status="deferred" if reply_deferred else "pending",
         )
+        approval_id: int | None = None
+        if requires_owner_approval:
+            prepared = await RouterOutboundAuthorityService(self.session).prepare_external_reply(
+                queued,
+                inbound_message_id=inbound.id,
+                contact_id=contact.id,
+                response_category="normal_reply",
+            )
+            approval_id = prepared.approval_id
+            formatting_metadata = dict(queued.formatting_json or {})
+            planned.source_diagnostics.setdefault("outbound_authority", {}).update(
+                {
+                    "approval_required": True,
+                    "approval_id": approval_id,
+                    "response_category": prepared.context.response_category,
+                }
+            )
         outbound = await self._save_outbound_message(
             normalized,
             contact.id,
@@ -263,6 +287,7 @@ class InboundRouter:
             details_json={
                 "inbound_message_id": inbound.id,
                 "outbound_queue_id": queued.id,
+                "approval_id": approval_id,
                 "decision_type": planned.decision_type.value,
                 "chat_id": normalized.chat_id,
                 "media_url": planned.media_url,
@@ -281,6 +306,7 @@ class InboundRouter:
             inbound_message_id=inbound.id,
             outbound_message_id=outbound.id,
             outbound_queue_id=queued.id,
+            approval_id=approval_id,
             decision_type=planned.decision_type.value,
             reply_deferred=reply_deferred,
         )
@@ -304,14 +330,54 @@ class InboundRouter:
     async def close(self) -> None:
         return None
 
+    @staticmethod
+    def _is_owner_chat_id(chat_id: str) -> bool:
+        wanted = (chat_id or "").strip().lower()
+        if not wanted:
+            return False
+        owner_ids = {
+            item.strip().lower()
+            for item in str(settings.owner_whatsapp_ids or "").replace(";", ",").split(",")
+            if item.strip()
+        }
+        return wanted in owner_ids
+
+    async def _plan_with_owner_typing(
+        self,
+        normalized: NormalizedMessage,
+        contact_id: int,
+        *,
+        owner_chat: bool,
+        wait_for_fabian_first: bool,
+    ) -> PlannedReply:
+        typing_started = False
+        planner_error: BaseException | None = None
+        try:
+            if owner_chat and not wait_for_fabian_first:
+                typing_started = await self._maybe_start_typing(normalized.chat_id)
+            return await self.reply_planner.plan(normalized, contact_id)
+        except BaseException as exc:
+            planner_error = exc
+            raise
+        finally:
+            if typing_started:
+                try:
+                    await self._maybe_stop_typing(normalized.chat_id)
+                except BaseException as cleanup_exc:
+                    if planner_error is None:
+                        raise
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "waha_typing_cleanup_failed",
+                        chat_id=normalized.chat_id,
+                        error=str(cleanup_exc),
+                    )
+
     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
         whatsapp_id = normalized.sender_id
         identity = normalized.sender_identity or {}
         display_name = self._resolved_display_name(identity, normalized.sender_name)
-        # Serialize inbound identity refreshes with WAHA contact-sync mutations so an
-        # inbound transaction can never overwrite newer saved-address-book provenance.
-        # Under PostgreSQL READ COMMITTED, a SELECT ... FOR UPDATE that waits for a
-        # contact-sync transaction observes the committed row version before merging.
         stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1).with_for_update()
         model = (await self.session.execute(stmt)).scalar_one_or_none()
         if model:
@@ -357,10 +423,6 @@ class InboundRouter:
         )
         previous_identity = dict(model.identity_json) if isinstance(model.identity_json, dict) else {}
         merged_identity = dict(identity) if isinstance(identity, dict) else {}
-        # Saved-address-book provenance belongs to Contact Intelligence, not to an
-        # individual inbound message. Preserve the latest explicit true/false marker,
-        # sync timestamp and reconciliation reason when normal sender identity refreshes
-        # do not carry those fields.
         for key in (
             "is_saved_contact",
             "saved_contact_synced_at",
