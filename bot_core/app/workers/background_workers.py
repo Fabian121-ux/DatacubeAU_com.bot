@@ -15,6 +15,11 @@ from app.services.conversation_open_loop_service import ConversationOpenLoopServ
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.outbound_media_dispatch_service import (
+    MediaDispatchDecision,
+    MediaDispatchPlan,
+    OutboundMediaDispatchService,
+)
 from app.services.outbound_safety_limit_service import OutboundSafetyLimitService
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WAHAClient, WahaClientError
@@ -181,13 +186,19 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
+            dispatch: MediaDispatchDecision | None = None
+            if message.media_url:
+                # Runs only after the final authorization fence and safety limits have
+                # already allowed this exact row. Dispatch can narrow behaviour or fail
+                # closed; it can never authorize a row the fence rejected.
+                dispatch = OutboundMediaDispatchService.plan(message)
+                if not dispatch.allowed:
+                    await _mark_delivery_blocked(session, message, reason=dispatch.reason)
+                    await session.commit()
+                    continue
             try:
-                if message.media_url:
-                    response = await client.send_media(
-                        chat_id=message.chat_id,
-                        media_url=message.media_url,
-                        caption=message.media_caption or message.message_text,
-                    )
+                if dispatch is not None:
+                    response = await _send_authorized_media(client, message, dispatch.plan)
                 else:
                     response = await client.send_text(chat_id=message.chat_id, text=message.message_text)
             except WahaClientError as exc:
@@ -239,6 +250,53 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 await session.commit()
                 log_event(logger, logging.INFO, "outbound_queue_sent", queue_id=message.id, chat_id=message.chat_id)
         return processed
+
+
+async def _send_authorized_media(client: WAHAClient, message: OutboundMessage, plan: MediaDispatchPlan) -> dict[str, Any]:
+    """Issue exactly one typed WAHA media call for an already-authorized row.
+
+    Each branch performs a single POST. The WAHA client marks media sends as
+    non-retry-safe, so an ambiguous transport outcome propagates to the caller and is
+    quarantined for reconciliation instead of being blindly resent.
+    """
+    if plan.operation == "send_media":
+        return await client.send_media(
+            chat_id=message.chat_id,
+            media_url=message.media_url,
+            caption=plan.caption,
+        )
+    if plan.operation == "send_image":
+        return await client.send_image(
+            message.chat_id,
+            media_url=message.media_url,
+            mimetype=plan.mimetype,
+            caption=plan.caption,
+            filename=plan.filename,
+        )
+    if plan.operation == "send_video":
+        return await client.send_video(
+            message.chat_id,
+            media_url=message.media_url,
+            mimetype=plan.mimetype,
+            caption=plan.caption,
+            filename=plan.filename,
+        )
+    if plan.operation == "send_voice":
+        return await client.send_voice(
+            message.chat_id,
+            media_url=message.media_url,
+            mimetype=plan.mimetype,
+            filename=plan.filename,
+        )
+    if plan.operation == "send_file":
+        return await client.send_file(
+            message.chat_id,
+            media_url=message.media_url,
+            mimetype=plan.mimetype,
+            caption=plan.caption,
+            filename=plan.filename,
+        )
+    raise WahaClientError(f"unsupported outbound media operation: {plan.operation}")
 
 
 async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:

@@ -48,6 +48,12 @@ class WAHAClient:
         caption: str | None = None,
         session_name: str | None = None,
     ) -> dict[str, Any]:
+        """Backward-compatible image-only media send.
+
+        Existing callers rely on this method being wired to the configured image path.
+        New media code should use the explicit typed methods below so video/audio/file
+        payloads cannot accidentally pass through the image endpoint.
+        """
         url = f"{settings.waha_service_url}{settings.waha_send_image_path}"
         payload = {
             "session": session_name or settings.waha_session_name,
@@ -65,6 +71,96 @@ class WAHAClient:
         except (httpx.HTTPError, RuntimeError) as exc:
             log_event(logger, logging.ERROR, "waha_media_send_failure", chat_id=chat_id, error=str(exc))
             raise WahaClientError(f"WAHA media send failed for {chat_id}: {exc}") from exc
+
+    async def send_image(
+        self,
+        chat_id: str,
+        *,
+        media_url: str,
+        mimetype: str,
+        caption: str | None = None,
+        filename: str | None = None,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_typed_media(
+            "/api/sendImage",
+            chat_id,
+            media_url=media_url,
+            mimetype=mimetype,
+            filename=filename,
+            session_name=session_name,
+            extra_payload={"caption": caption or ""},
+            media_kind="image",
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        *,
+        media_url: str,
+        mimetype: str,
+        caption: str | None = None,
+        filename: str | None = None,
+        convert: bool = False,
+        as_note: bool = False,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_typed_media(
+            "/api/sendVideo",
+            chat_id,
+            media_url=media_url,
+            mimetype=mimetype,
+            filename=filename,
+            session_name=session_name,
+            extra_payload={
+                "caption": caption or "",
+                "convert": bool(convert),
+                "asNote": bool(as_note),
+            },
+            media_kind="video",
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        *,
+        media_url: str,
+        mimetype: str,
+        filename: str | None = None,
+        convert: bool = False,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_typed_media(
+            "/api/sendVoice",
+            chat_id,
+            media_url=media_url,
+            mimetype=mimetype,
+            filename=filename,
+            session_name=session_name,
+            extra_payload={"convert": bool(convert)},
+            media_kind="voice",
+        )
+
+    async def send_file(
+        self,
+        chat_id: str,
+        *,
+        media_url: str,
+        mimetype: str,
+        filename: str | None = None,
+        caption: str | None = None,
+        session_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_typed_media(
+            "/api/sendFile",
+            chat_id,
+            media_url=media_url,
+            mimetype=mimetype,
+            filename=filename,
+            session_name=session_name,
+            extra_payload={"caption": caption or ""},
+            media_kind="file",
+        )
 
     async def get_session_status(self, session_name: str | None = None) -> dict[str, Any]:
         name = session_name or settings.waha_session_name
@@ -253,6 +349,65 @@ class WAHAClient:
             await asyncio.sleep(settings.waha_request_retry_backoff_seconds * attempt)
 
         raise RuntimeError(f"WAHA request exhausted retries for {method} {url}: {last_error}")
+
+    async def _send_typed_media(
+        self,
+        path: str,
+        chat_id: str,
+        *,
+        media_url: str,
+        mimetype: str,
+        filename: str | None,
+        session_name: str | None,
+        extra_payload: dict[str, Any],
+        media_kind: str,
+    ) -> dict[str, Any]:
+        normalized_url = str(media_url or "").strip()
+        normalized_mimetype = str(mimetype or "").strip().lower()
+        if not normalized_url:
+            raise WahaClientError(f"WAHA {media_kind} send requires a media URL")
+        if not normalized_mimetype or "/" not in normalized_mimetype:
+            raise WahaClientError(f"WAHA {media_kind} send requires a valid MIME type")
+
+        file_payload: dict[str, Any] = {
+            "url": normalized_url,
+            "mimetype": normalized_mimetype,
+        }
+        normalized_filename = str(filename or "").strip()
+        if normalized_filename:
+            file_payload["filename"] = normalized_filename
+
+        payload: dict[str, Any] = {
+            "session": session_name or settings.waha_session_name,
+            "chatId": chat_id,
+            "file": file_payload,
+            **extra_payload,
+        }
+        url = f"{settings.waha_service_url}{path}"
+        headers = {"Content-Type": "application/json"}
+        if settings.waha_api_key:
+            headers["X-Api-Key"] = settings.waha_api_key
+        try:
+            body = await self._request("POST", url, headers=headers, json=payload, retry_safe=False)
+            log_event(
+                logger,
+                logging.INFO,
+                "waha_typed_media_send_success",
+                chat_id=chat_id,
+                session=payload["session"],
+                media_kind=media_kind,
+            )
+            return body
+        except (httpx.HTTPError, RuntimeError) as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "waha_typed_media_send_failure",
+                chat_id=chat_id,
+                media_kind=media_kind,
+                error=str(exc),
+            )
+            raise WahaClientError(f"WAHA {media_kind} send failed for {chat_id}: {exc}") from exc
 
     async def _typing_request(
         self,

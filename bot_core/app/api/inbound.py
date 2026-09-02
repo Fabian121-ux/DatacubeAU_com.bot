@@ -69,9 +69,38 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
-    # Bind privileged owner-authored events to the configured WAHA session. A valid
-    # shared secret from another/old session is not enough to execute owner commands.
-    if _is_from_me(payload) and not _session_matches_config(event, payload):
+    # Status posts, channels/newsletters, and broadcast lists are not conversations.
+    # Reject them before the idempotency claim and before any routing side effect so
+    # they can never become a reply candidate.
+    if _is_non_conversational_chat(_resolve_chat_id(payload)):
+        log_event(
+            logger,
+            logging.INFO,
+            "webhook_ignored",
+            request_id=request_id,
+            event_name=event_name or "message",
+            message_id=message_id,
+            reason="non_conversational_chat",
+        )
+        return {
+            "status": "ignored",
+            "reason": "non_conversational_chat",
+            "event_name": event_name or "message",
+        }
+
+    # Bind every message event to the configured WAHA session, not just owner-authored
+    # ones. Webhook authentication only proves the caller knows the shared secret;
+    # session binding proves the event belongs to this Zina WAHA session. A stale or
+    # foreign session must not be able to create conversations, contacts, or replies.
+    #
+    # This runs before the durable idempotency claim, so a rejected event also leaves
+    # no receipt and cannot suppress a later legitimate delivery of the same ID.
+    #
+    # Absent session fails closed: the active WAHA build populates `session` on every
+    # webhook via populateSessionInfo() in core/abc/manager.abc.js, and the WAHAWebhook
+    # DTO marks it `required: true`. There is therefore no legitimate message event
+    # without a session on this transport.
+    if not _session_matches_config(event, payload):
         log_event(
             logger,
             logging.WARNING,
@@ -479,6 +508,24 @@ def _build_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> st
 def _owner_action_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
     base = _build_idempotency_key(event, payload)
     return f"owner-natural-action:{base}" if base else None
+
+
+def _is_non_conversational_chat(chat_id: str | None) -> bool:
+    """Identify WhatsApp surfaces that are broadcasts, not real conversations.
+
+    Status updates, channels/newsletters, and broadcast lists arrive as ordinary
+    `message` events, and the normalizer classifies any non-`@g.us` chat as a DM. Left
+    unguarded they would enter reply planning and could produce an outbound reply to a
+    status post. These surfaces are never a legitimate reply target for Zina.
+    """
+    normalized = str(chat_id or "").strip().lower()
+    if not normalized:
+        return False
+    return (
+        normalized == "status@broadcast"
+        or normalized.endswith("@broadcast")
+        or normalized.endswith("@newsletter")
+    )
 
 
 def _is_from_me(payload: dict[str, Any]) -> bool:
