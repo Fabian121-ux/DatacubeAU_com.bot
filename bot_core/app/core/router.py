@@ -182,25 +182,27 @@ class InboundRouter:
         # text reply still goes through the unchanged approval fence.
         canonical_media = None
         if planned.media_url:
-            decision = OutboundMediaMetadataService.normalize(
+            # Named distinctly from the persisted RouterDecision above, which is mutated
+            # further down; reusing `decision` here would overwrite that durable row.
+            media_decision = OutboundMediaMetadataService.normalize(
                 media_url=planned.media_url,
                 media_kind=planned.media_type,
                 media_caption=planned.media_caption,
                 provenance=str(planned.source_diagnostics.get("source") or "reply_planner"),
             )
-            if decision.accepted:
-                canonical_media = decision.media
+            if media_decision.accepted:
+                canonical_media = media_decision.media
                 formatting_metadata.update(canonical_media.queue_metadata())
             else:
                 planned.source_diagnostics.setdefault("outbound_media", {}).update(
-                    {"accepted": False, "reason": decision.reason}
+                    {"accepted": False, "reason": media_decision.reason}
                 )
                 log_event(
                     logger,
                     logging.WARNING,
                     "outbound_media_rejected",
                     chat_id=normalized.chat_id,
-                    reason=decision.reason,
+                    reason=media_decision.reason,
                 )
 
         queued = await self._queue_outbound_message(
