@@ -19,6 +19,7 @@ from app.services.owner_contact_automation_policy_command_service import OwnerCo
 from app.services.owner_management_command_service import OwnerManagementCommandService
 from app.services.owner_outbound_approval_command_service import OwnerOutboundApprovalCommandService
 from app.services.push_command_service import PushCommandService
+from app.services.view_once_command_service import ViewOnceCommandService
 from app.utils.time import utcnow
 
 
@@ -68,6 +69,9 @@ class CommandControlService:
         ".automation-set": "set",
         ".automation-disable": "disable",
     }
+    VIEW_ONCE_COMMAND = "/vvopen"
+    # Every alias resolves into one handler; behaviour is never duplicated per alias.
+    _VIEW_ONCE_ALIASES = {".vv", ".vvopen", "/vvopen", ".vvretain"}
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -135,6 +139,72 @@ class CommandControlService:
                 command=self.PUSH_COMMAND,
                 outbound_queue_id=pushed.outbound_queue_id,
                 error=pushed.error,
+            )
+
+        # View-once mirrors `.push`: the OWNER must reply to the target message, which
+        # usually lives in a peer DM. Authority is the configured-session primary owner
+        # established by the authenticated fromMe webhook, and any private media return
+        # is addressed to the OWNER self-DM regardless of where the command was typed.
+        view_once_operation = self._view_once_operation(command, args)
+        if view_once_operation:
+            if primary_owner is None:
+                return None
+            if (primary_owner.permission_level or "").strip().lower() != "owner":
+                await self._audit(
+                    "command_control_denied",
+                    command=command,
+                    request_id=request_id,
+                    transport_message_id=transport_message_id,
+                    details={"reason": "owner_required"},
+                )
+                return CommandControlResult(
+                    consumed=True,
+                    command=self.VIEW_ONCE_COMMAND,
+                    reply_text="Owner command. Access denied.",
+                    error="owner permission required",
+                )
+            if not await self.catalog.is_enabled(self.VIEW_ONCE_COMMAND):
+                return CommandControlResult(
+                    consumed=True,
+                    command=self.VIEW_ONCE_COMMAND,
+                    reply_text="View-once commands are currently disabled.",
+                    error="command disabled",
+                )
+            owner_chat_id = (
+                primary_owner.normalized_whatsapp_id
+                or AdminManagementService.normalize_whatsapp_id(primary_owner.whatsapp_number)
+            )
+            view_once = await ViewOnceCommandService(self.session).handle(
+                view_once_operation,
+                message=message,
+                owner=primary_owner,
+                transport_message_id=transport_message_id,
+                request_id=request_id,
+            )
+            await self.catalog.record_usage(self.VIEW_ONCE_COMMAND)
+            await self._audit(
+                "command_control_view_once",
+                command=command,
+                request_id=request_id,
+                transport_message_id=transport_message_id,
+                entity_id=str(view_once.outbound_queue_id) if view_once.outbound_queue_id else None,
+                details={"operation": view_once_operation, "result": "denied" if view_once.error else "ok"},
+            )
+            if view_once.reply_text and owner_chat_id:
+                return await self._finish(
+                    owner_chat_id,
+                    CommandControlResult(
+                        consumed=True,
+                        command=self.VIEW_ONCE_COMMAND,
+                        reply_text=view_once.reply_text,
+                        error=view_once.error,
+                    ),
+                )
+            return CommandControlResult(
+                consumed=True,
+                command=self.VIEW_ONCE_COMMAND,
+                outbound_queue_id=view_once.outbound_queue_id,
+                error=view_once.error,
             )
 
         admin = await self.admins.resolve_admin_message(message)
@@ -352,6 +422,19 @@ class CommandControlService:
         """
         parsed = cls.parse(text_value)
         return bool(parsed and parsed[0] in {".push", cls.PUSH_COMMAND})
+
+    @classmethod
+    def _view_once_operation(cls, command: str, args: str) -> str | None:
+        """Map every view-once alias onto one authoritative operation name."""
+        if command not in cls._VIEW_ONCE_ALIASES:
+            return None
+        first = (args or "").strip().split(maxsplit=1)
+        keyword = first[0].strip().lower() if first else ""
+        if command == ".vvretain":
+            return "retain_on" if keyword == "on" else "retain_off"
+        if keyword in {"info", "list", "delete"}:
+            return keyword
+        return "open"
 
     @classmethod
     def _outbound_approval_action(cls, command: str, args: str) -> tuple[str | None, str]:

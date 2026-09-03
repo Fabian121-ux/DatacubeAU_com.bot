@@ -311,6 +311,12 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
 
     if _is_owner_chat_id(message.chat_id):
+        # The owner destination is proven, but a row may additionally commit to its exact
+        # payload. When that durable digest is present it must still match, so mutating a
+        # private media locator/kind/caption/text after authority yields zero WAHA calls.
+        stamped = str(metadata.get("authority_content_hash") or "").strip()
+        if stamped and stamped != OutboundAuthorizationService.content_hash_for_message(message):
+            return False, "owner queue row content mutated after authority", None
         return True, "exact configured owner chat", None
 
     if not delivery_policy:
