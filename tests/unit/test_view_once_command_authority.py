@@ -16,10 +16,51 @@ from app.models.schema import AdminAccount, CommandCatalogEntry, OutboundMessage
 from app.services.command_control_service import CommandControlService
 from app.workers import background_workers
 
-from tests.unit.test_outbound_media_production_path import (
-    _RecordingClient,
-    _SessionContext,
-)
+
+
+class _SessionContext:
+    """Hand the worker the test's own session instead of opening a real one."""
+
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _RecordingClient:
+    """Records the exact WAHA operation and payload for each delivery."""
+
+    def __init__(self, *, fail: Exception | None = None):
+        self.calls: list[tuple[str, dict]] = []
+        self.fail = fail
+
+    def _record(self, operation, chat_id, kwargs):
+        self.calls.append((operation, {"chatId": chat_id, **kwargs}))
+        if self.fail is not None:
+            raise self.fail
+        return {"id": f"mock-{operation}"}
+
+    async def send_text(self, *, chat_id, text):
+        return self._record("send_text", chat_id, {"text": text})
+
+    async def send_media(self, *, chat_id, media_url, caption=None):
+        return self._record("send_media", chat_id, {"url": media_url, "caption": caption})
+
+    async def send_image(self, chat_id, *, media_url, mimetype, caption=None, filename=None):
+        return self._record("send_image", chat_id, {"url": media_url, "mimetype": mimetype, "caption": caption})
+
+    async def send_video(self, chat_id, *, media_url, mimetype, caption=None, filename=None):
+        return self._record("send_video", chat_id, {"url": media_url, "mimetype": mimetype, "caption": caption})
+
+    async def send_voice(self, chat_id, *, media_url, mimetype, filename=None):
+        return self._record("send_voice", chat_id, {"url": media_url, "mimetype": mimetype})
+
+    async def send_file(self, chat_id, *, media_url, mimetype, caption=None, filename=None):
+        return self._record("send_file", chat_id, {"url": media_url, "mimetype": mimetype, "caption": caption})
 
 
 OWNER_ID = "2348000000001@c.us"
