@@ -19,6 +19,7 @@ from app.services.memory_compaction_policy import effective_summary_thresholds
 from app.services.outbound_media_metadata_service import OutboundMediaMetadataService
 from app.services.owner_command_service import OwnerCommandService
 from app.services.router_outbound_authority_service import RouterOutboundAuthorityService
+from app.services.view_once_observation_service import ViewOnceObservationService
 from app.services.waha_client import WAHAClient, WahaClientError
 from app.utils.text import normalize_text
 from app.utils.time import utcnow
@@ -52,6 +53,17 @@ class InboundRouter:
         normalized = self.normalizer.normalize(event)
         contact = await self._get_or_create_contact(normalized)
         inbound = await self._save_inbound_message(normalized, contact.id)
+
+        # Bounded capability observation only. This runs after authentication, session
+        # binding, non-conversational rejection, and the durable event claim performed by
+        # ingress, and it records metadata without ever influencing the reply decision.
+        if normalized.media.has_media:
+            await ViewOnceObservationService(self.session).observe(
+                payload=normalized.payload,
+                source_message_id=self._canonical_source_message_id(normalized),
+                source_chat_id=normalized.chat_id,
+                source_contact_id=contact.id,
+            )
         await self.reply_planner.memory_service.ensure_relationship_profile(
             contact.id,
             normalized.sender_name or contact.display_name,
@@ -463,6 +475,18 @@ class InboundRouter:
                 merged_identity[key] = previous_identity[key]
         model.identity_json = merged_identity or model.identity_json
         model.last_active_at = utcnow()
+
+    @staticmethod
+    def _canonical_source_message_id(msg: NormalizedMessage) -> str:
+        """Reuse the exact ingress source-ID resolver.
+
+        Importing the ingress helper keeps one normalization algorithm for source
+        identity. Defining a second one here could let a quoted or nested ID silently
+        become the canonical source.
+        """
+        from app.api.inbound import _resolve_message_id
+
+        return _resolve_message_id(msg.payload) or ""
 
     async def _save_inbound_message(self, msg: NormalizedMessage, contact_id: int) -> Message:
         model = Message(
