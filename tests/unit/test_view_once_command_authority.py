@@ -28,9 +28,17 @@ STRANGER_ID = "2348000000009@c.us"
 TRUSTED_URL = "http://waha:3000/api/files/vv.jpg"
 
 
-async def _seed_catalog(db_session):
-    db_session.add(
-        CommandCatalogEntry(
+async def _seed_catalog(db_session, *, enabled=True):
+    """Migration 031 already ships /vvopen, so this must be an upsert rather than an
+    insert. A fresh migrated database (CI) and a purged one (local) both end up with
+    exactly one row in the intended state."""
+    existing = (
+        await db_session.execute(
+            select(CommandCatalogEntry).where(CommandCatalogEntry.name == "/vvopen").limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = CommandCatalogEntry(
             name="/vvopen",
             trigger_syntax=".vvopen",
             category="owner",
@@ -38,10 +46,11 @@ async def _seed_catalog(db_session):
             example=".vvopen",
             permissions="owner",
             handler_target="command_control:view_once",
-            is_enabled=True,
         )
-    )
+        db_session.add(existing)
+    existing.is_enabled = enabled
     await db_session.flush()
+    return existing
 
 
 async def _seed_owner(db_session, *, permission="owner", chat_id=OWNER_ID, primary=True):
@@ -228,18 +237,7 @@ async def test_no_owner_configured_fails_closed(db_session, monkeypatch):
 @pytest.mark.asyncio
 async def test_disabled_catalog_entry_blocks_the_command(db_session, monkeypatch):
     monkeypatch.setattr("app.services.admin_management_service.settings.owner_whatsapp_ids", OWNER_ID)
-    db_session.add(
-        CommandCatalogEntry(
-            name="/vvopen",
-            trigger_syntax=".vvopen",
-            category="owner",
-            description="Open a view-once message privately.",
-            example=".vvopen",
-            permissions="owner",
-            handler_target="command_control:view_once",
-            is_enabled=False,
-        )
-    )
+    await _seed_catalog(db_session, enabled=False)
     await _seed_owner(db_session)
     await _seed_metadata(db_session)
 
