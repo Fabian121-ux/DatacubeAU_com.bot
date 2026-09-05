@@ -349,3 +349,149 @@ async def test_every_owner_destined_producer_row_is_bound(db_session, monkeypatc
         assert OutboundAuthorizationService.owner_payload_matches(row), (
             "owner-destined producer row is not payload-bound"
         )
+
+
+# --------------------------------------------------------------------------------------
+# Transport-affecting metadata must be bound too.
+#
+# OutboundMediaDispatchService reads formatting_json["media_mime"] and
+# formatting_json["media_filename"] AFTER the authorization fence and passes both to
+# WAHA. Anything the transport sees must therefore be committed to by the authority.
+#
+# The MIME mutations below stay inside the same MIME family, so dispatch validation
+# still accepts them. A block therefore proves an authority-binding failure rather than
+# incidental kind/MIME validation.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_owner_same_family_mime_mutation_makes_zero_waha_calls(db_session, monkeypatch):
+    row = await _queue(
+        db_session,
+        media_url=MEDIA_URL,
+        media_type="image",
+        media_caption="original caption",
+        formatting={"source": "owner_push", "media_mime": "image/jpeg"},
+    )
+
+    # image/png is still a valid image MIME, so dispatch would happily send it.
+    metadata = dict(row.formatting_json)
+    metadata["media_mime"] = "image/png"
+    row.formatting_json = metadata
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_owner_filename_mutation_makes_zero_waha_calls(db_session, monkeypatch):
+    row = await _queue(
+        db_session,
+        media_url=MEDIA_URL,
+        media_type="image",
+        media_caption="original caption",
+        formatting={
+            "source": "owner_push",
+            "media_mime": "image/jpeg",
+            "media_filename": "original.jpg",
+        },
+    )
+
+    metadata = dict(row.formatting_json)
+    metadata["media_filename"] = "changed.jpg"
+    row.formatting_json = metadata
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_owner_authorized_mime_and_filename_still_reach_waha(db_session, monkeypatch):
+    """The binding must not break the legitimate typed send."""
+    await _queue(
+        db_session,
+        media_url=MEDIA_URL,
+        media_type="image",
+        media_caption="original caption",
+        formatting={
+            "source": "owner_push",
+            "media_mime": "image/jpeg",
+            "media_filename": "original.jpg",
+        },
+    )
+    client = _RecordingClient()
+
+    await _deliver(db_session, monkeypatch, client)
+
+    assert [call[0] for call in client.calls] == ["send_image"]
+    assert client.calls[0][1]["mimetype"] == "image/jpeg"
+
+
+# --------------------------------------------------------------------------------------
+# Stamp semantics: owner-destined rows are stamped, external rows are not.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_external_scheduled_action_row_is_not_owner_stamped(db_session, monkeypatch):
+    """External rows keep their own durable authority and must not carry an owner stamp."""
+    from app.models.scheduled_action import ScheduledAction
+    from app.services.scheduled_action_service import ScheduledActionService
+    from app.utils.time import utcnow
+
+    action = ScheduledAction(
+        action_type="whatsapp.send_message",
+        target_chat_id=EXTERNAL_CHAT,
+        payload_json={"text": "scheduled external text"},
+        scheduled_for=utcnow(),
+        status="scheduled",
+        is_enabled=True,
+        idempotency_key="sched-external-1",
+    )
+    db_session.add(action)
+    await db_session.flush()
+
+    await ScheduledActionService(db_session).release_due()
+    await db_session.commit()
+
+    rows = (await db_session.execute(select(OutboundMessage))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].chat_id == EXTERNAL_CHAT
+    metadata = rows[0].formatting_json or {}
+    assert OutboundAuthorizationService.OWNER_PAYLOAD_KEY not in metadata
+    assert metadata.get("scheduled_action_id") == action.id
+
+
+@pytest.mark.asyncio
+async def test_owner_scheduled_action_row_is_owner_stamped(db_session, monkeypatch):
+    from app.models.scheduled_action import ScheduledAction
+    from app.services.scheduled_action_service import ScheduledActionService
+    from app.utils.time import utcnow
+
+    monkeypatch.setattr("app.services.outbound_authorization_service.settings.owner_whatsapp_ids", OWNER_CHAT)
+
+    action = ScheduledAction(
+        action_type="whatsapp.send_message",
+        target_chat_id=OWNER_CHAT,
+        payload_json={"text": "scheduled owner text"},
+        scheduled_for=utcnow(),
+        status="scheduled",
+        is_enabled=True,
+        idempotency_key="sched-owner-1",
+    )
+    db_session.add(action)
+    await db_session.flush()
+
+    await ScheduledActionService(db_session).release_due()
+    await db_session.commit()
+
+    rows = (await db_session.execute(select(OutboundMessage))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].chat_id == OWNER_CHAT
+    assert OutboundAuthorizationService.owner_payload_matches(rows[0])

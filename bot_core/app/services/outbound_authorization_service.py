@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.utils.time import utcnow
 
 
@@ -41,7 +42,10 @@ class OutboundAuthorizationService:
 
     _MEDIA_BINDING_DOMAIN = "zina.outbound.authority.v1.media:"
     _OWNER_BINDING_DOMAIN = "zina.outbound.authority.v1.owner:"
+    _TRANSPORT_BINDING_DOMAIN = "zina.outbound.authority.v2.transport:"
     OWNER_PAYLOAD_KEY = "owner_payload_sha256"
+    # Queue metadata that OutboundMediaDispatchService forwards to WAHA.
+    _TRANSPORT_METADATA_KEYS = ("media_mime", "media_filename")
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -90,14 +94,48 @@ class OutboundAuthorizationService:
         return hashlib.sha256(f"{cls._MEDIA_BINDING_DOMAIN}{preimage}".encode("utf-8")).hexdigest()
 
     @classmethod
+    def transport_metadata_for_message(cls, message: Any) -> dict[str, str]:
+        """Extract the queue metadata that can still change what WAHA receives.
+
+        `OutboundMediaDispatchService` reads these keys from `formatting_json` *after*
+        the authorization fence and passes them to the transport, so authority that does
+        not commit to them leaves a real mutation window. Only fields the transport can
+        actually observe are included; ordinary bookkeeping keys are deliberately not
+        bound so unrelated metadata edits do not invalidate a legitimate approval.
+        """
+        metadata = getattr(message, "formatting_json", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        return {
+            key: str(metadata.get(key) or "")
+            for key in cls._TRANSPORT_METADATA_KEYS
+            if metadata.get(key)
+        }
+
+    @classmethod
     def content_hash_for_message(cls, message: Any) -> str:
-        """Compute the media-aware authority digest for one concrete queue row."""
-        return cls.authority_content_hash(
+        """Compute the media-aware authority digest for one concrete queue row.
+
+        For a row carrying transport-affecting metadata (MIME/filename) the digest
+        additionally commits to those exact values under a versioned domain. Rows
+        without such metadata keep their historical digest byte-for-byte, so existing
+        durable text-only and locator-only approvals stay valid.
+        """
+        base = cls.authority_content_hash(
             str(getattr(message, "message_text", "") or ""),
             media_url=getattr(message, "media_url", None),
             media_type=getattr(message, "media_type", None),
             media_caption=getattr(message, "media_caption", None),
         )
+        transport = cls.transport_metadata_for_message(message)
+        if not transport:
+            return base
+        preimage = json.dumps(
+            {"content": base, "transport": transport},
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(f"{cls._TRANSPORT_BINDING_DOMAIN}{preimage}".encode("utf-8")).hexdigest()
 
     @classmethod
     def owner_payload_digest(cls, message: Any) -> str:
@@ -123,6 +161,24 @@ class OutboundAuthorizationService:
             ensure_ascii=False,
         )
         return hashlib.sha256(f"{cls._OWNER_BINDING_DOMAIN}{preimage}".encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def is_owner_destination(chat_id: str | None) -> bool:
+        """Exact configured OWNER destination, matching the delivery fence's rule.
+
+        Producers that can target either the owner or an external contact use this so
+        only owner-destined rows carry an owner payload stamp. External rows keep their
+        existing durable approval authority instead.
+        """
+        wanted = str(chat_id or "").strip().lower()
+        if not wanted:
+            return False
+        configured = {
+            item.strip().lower()
+            for item in str(settings.owner_whatsapp_ids or "").replace(";", ",").split(",")
+            if item.strip()
+        }
+        return wanted in configured
 
     @classmethod
     def stamp_owner_payload(cls, message: Any) -> dict[str, Any]:

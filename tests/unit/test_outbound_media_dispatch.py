@@ -300,6 +300,63 @@ async def test_expired_authority_makes_zero_waha_calls(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("media_mime", "image/png"), ("media_filename", "changed.jpg")],
+)
+async def test_external_transport_metadata_mutation_after_approval_makes_zero_waha_calls(
+    db_session, monkeypatch, field, value
+):
+    """MIME and filename are forwarded to WAHA after the fence, so authority must bind them.
+
+    The MIME mutation stays inside the image family, so dispatch validation would still
+    accept it. A block therefore proves the authority binding, not incidental validation.
+    """
+    now = utcnow()
+    row = OutboundMessage(
+        chat_id="222@c.us",
+        message_text="caption",
+        media_url="https://waha.invalid/files/approved.jpg",
+        media_type="image",
+        media_caption="caption",
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": 41,
+            "contact_id": 42,
+            "media_mime": "image/jpeg",
+            "media_filename": "original.jpg",
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    row.formatting_json["content_sha256"] = OutboundAuthorizationService.content_hash_for_message(row)
+    db_session.add(row)
+    await db_session.commit()
+
+    metadata = dict(row.formatting_json)
+    metadata[field] = value
+    row.formatting_json = metadata
+    await db_session.commit()
+
+    async def _would_allow(self, context, *, now=None):
+        return AuthorizationDecision(True, "owner_approval", "should never be consulted")
+
+    monkeypatch.setattr(OutboundAuthorizationService, "authorize", _would_allow)
+    _use_session(monkeypatch, db_session)
+    client = _RecordingClient()
+
+    await background_workers._deliver_due_outbound_messages(client)
+
+    await db_session.refresh(row)
+    assert client.calls == []
+    assert row.status == "deferred"
+
+
+@pytest.mark.asyncio
 async def test_media_swapped_after_approval_makes_zero_waha_calls(db_session, monkeypatch):
     """The media-binding hash must still invalidate authority at the worker."""
     now = utcnow()

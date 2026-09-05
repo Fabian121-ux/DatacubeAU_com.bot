@@ -281,7 +281,10 @@ class ConversationTakeoverService:
             )
             self.session.add(outbound)
             await self.session.flush()
-            outbound.formatting_json = OutboundAuthorizationService.stamp_owner_payload(outbound)
+            # A takeover handoff normally targets a peer DM. Stamp only when it is
+            # owner-destined, so external rows do not carry an owner binding.
+            if OutboundAuthorizationService.is_owner_destination(outbound.chat_id):
+                outbound.formatting_json = OutboundAuthorizationService.stamp_owner_payload(outbound)
 
             metadata = dict(row.metadata_json or {})
             deferred_queue_id = metadata.pop("deferred_outbound_queue_id", None)
