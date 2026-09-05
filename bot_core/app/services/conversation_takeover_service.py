@@ -5,6 +5,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.models.conversation_takeover import ConversationTakeover
 from app.models.schema import AuditLog, OutboundMessage
 from app.services.bot_config_service import BotConfigService
@@ -279,6 +280,8 @@ class ConversationTakeoverService:
                 formatting_json={"source": "conversation_takeover", "transparent_assistant_handoff": True},
             )
             self.session.add(outbound)
+            await self.session.flush()
+            outbound.formatting_json = OutboundAuthorizationService.stamp_owner_payload(outbound)
 
             metadata = dict(row.metadata_json or {})
             deferred_queue_id = metadata.pop("deferred_outbound_queue_id", None)

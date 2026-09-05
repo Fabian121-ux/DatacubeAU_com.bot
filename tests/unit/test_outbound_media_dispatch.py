@@ -14,6 +14,7 @@ from datetime import timedelta
 import pytest
 
 from app.models.schema import OutboundMessage
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_authorization_service import (
     AuthorizationDecision,
     OutboundAuthorizationService,
@@ -97,6 +98,10 @@ async def _queue_owner_media_row(db_session, *, media_type, media_mime, media_ur
         updated_at=now - timedelta(seconds=1),
     )
     db_session.add(row)
+    await db_session.flush()
+    # Owner-destined rows are payload-bound at the delivery fence, exactly as their
+    # production producers stamp them. Without this the fence correctly refuses them.
+    row.formatting_json = OutboundAuthorizationService.stamp_owner_payload(row)
     await db_session.commit()
     return row
 
@@ -435,6 +440,8 @@ async def test_text_only_delivery_behaviour_is_unchanged(db_session, monkeypatch
         updated_at=now - timedelta(seconds=1),
     )
     db_session.add(row)
+    await db_session.flush()
+    row.formatting_json = OutboundAuthorizationService.stamp_owner_payload(row)
     await db_session.commit()
     _use_session(monkeypatch, db_session)
     client = _RecordingClient()
