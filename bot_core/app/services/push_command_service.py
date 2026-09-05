@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import AdminAccount, AuditLog, Contact, Message, OutboundMessage
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.admin_management_service import AdminManagementService
 from app.utils.time import utcnow
 
@@ -127,6 +128,8 @@ class PushCommandService:
         )
         self.session.add(queued)
         await self.session.flush()
+        queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
+        await self.session.flush()
 
         self.session.add(
             AuditLog(
@@ -213,6 +216,8 @@ class PushCommandService:
             updated_at=utcnow(),
         )
         self.session.add(queued)
+        await self.session.flush()
+        queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
         await self.session.flush()
         return PushCommandResult(consumed=True, outbound_queue_id=queued.id, error=text)
 

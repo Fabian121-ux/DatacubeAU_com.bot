@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.message_normalizer import MessageNormalizer
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.models.schema import AdminAccount, OutboundMessage
 from app.services.command_control_service import CommandControlService
 
@@ -108,7 +109,12 @@ async def test_owner_self_dm_approval_alias_delegates_exact_action_and_preserves
     assert len(queued) == 1
     assert queued[0].chat_id == owner.normalized_whatsapp_id
     assert queued[0].message_text == "Approval updated."
-    assert queued[0].formatting_json == {"source": "command_control", "command": ".approval"}
+    # The owner payload binding is added by the producer; assert the producer
+    # metadata exactly and that the row is bound to its authorized content.
+    metadata = dict(queued[0].formatting_json)
+    assert metadata.pop(OutboundAuthorizationService.OWNER_PAYLOAD_KEY, None)
+    assert metadata == {"source": "command_control", "command": ".approval"}
+    assert OutboundAuthorizationService.owner_payload_matches(queued[0])
 
 
 @pytest.mark.asyncio
