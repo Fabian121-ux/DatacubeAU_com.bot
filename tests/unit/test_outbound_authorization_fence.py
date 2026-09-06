@@ -4,7 +4,7 @@ import pytest
 
 from app.models.scheduled_action import ScheduledAction
 from app.models.schema import OutboundMessage
-from app.services.outbound_authorization_service import AuthorizationDecision
+from app.services.outbound_authorization_service import AuthorizationDecision, OutboundAuthorizationService
 from app.workers import background_workers
 
 
@@ -72,14 +72,44 @@ async def test_immediate_router_reply_to_exact_owner_chat_remains_authorized(mon
         chat_id="333@c.us",
         formatting_json={"delivery_policy": "immediate"},
     )
+    message.formatting_json = OutboundAuthorizationService.stamp_owner_payload(message)
     authority = _Authority()
 
     allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is True
-    assert reason == "exact configured owner chat"
+    assert reason == "exact configured owner chat with bound payload"
     assert approval_id is None
+    # The owner path still performs no external approval lookup.
     assert authority.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_owner_chat_row_without_payload_binding_fails_closed(monkeypatch):
+    """OWNER destination alone is not authority to send arbitrary content."""
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us,333@c.us")
+    message = _message(chat_id="333@c.us", formatting_json={"delivery_policy": "immediate"})
+    authority = _Authority()
+
+    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+
+    assert allowed is False
+    assert "payload is not bound" in reason
+    assert approval_id is None
+
+
+@pytest.mark.asyncio
+async def test_owner_chat_row_mutated_after_stamp_fails_closed(monkeypatch):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "333@c.us")
+    message = _message(chat_id="333@c.us", formatting_json={"delivery_policy": "immediate"})
+    message.formatting_json = OutboundAuthorizationService.stamp_owner_payload(message)
+    message.message_text = "mutated after authority"
+    authority = _Authority()
+
+    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+
+    assert allowed is False
+    assert "payload is not bound" in reason
 
 
 @pytest.mark.asyncio
@@ -89,12 +119,13 @@ async def test_owner_push_to_exact_owner_chat_remains_authorized(monkeypatch):
         chat_id="111@c.us",
         formatting_json={"source": "owner_push", "command": ".push"},
     )
+    message.formatting_json = OutboundAuthorizationService.stamp_owner_payload(message)
     authority = _Authority()
 
     allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is True
-    assert reason == "exact configured owner chat"
+    assert reason == "exact configured owner chat with bound payload"
     assert approval_id is None
     assert authority.calls == 0
 

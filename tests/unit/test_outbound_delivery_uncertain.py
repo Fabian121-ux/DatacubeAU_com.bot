@@ -6,6 +6,7 @@ import pytest
 
 from app.models.scheduled_action import ScheduledAction
 from app.models.schema import OutboundMessage
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_authorization_service import AuthorizationDecision, OutboundAuthorizationService
 from app.services.outbound_safety_limit_service import OutboundSafetyDecision
 from app.services.scheduled_action_service import ScheduledActionService
@@ -105,6 +106,8 @@ async def test_waha_send_error_is_delivery_uncertain_not_retrying(db_session, mo
         updated_at=now - timedelta(seconds=1),
     )
     db_session.add(row)
+    await db_session.flush()
+    row.formatting_json = OutboundAuthorizationService.stamp_owner_payload(row)
     await db_session.commit()
 
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))

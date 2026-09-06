@@ -188,13 +188,10 @@ class ViewOnceCommandService:
         await self.session.flush()
 
         # Private media crosses the owner fast path in the delivery fence, which proves
-        # the destination but not the payload. Stamp the canonical media-aware authority
-        # digest so any later mutation of the locator, kind, caption or text invalidates
-        # this row at the fence. The shared hash contract is reused, not re-invented.
-        queued.formatting_json = {
-            **metadata,
-            "authority_content_hash": OutboundAuthorizationService.content_hash_for_message(queued),
-        }
+        # the destination but not the payload. Stamp the canonical owner payload binding
+        # so any later mutation of the locator, kind, mime, filename, caption or text
+        # invalidates this row at the fence. The shared binding is reused, not re-invented.
+        queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
         await self.session.flush()
 
         await self.session.execute(

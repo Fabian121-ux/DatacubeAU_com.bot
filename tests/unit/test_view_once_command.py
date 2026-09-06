@@ -16,7 +16,9 @@ from sqlalchemy import select, text
 from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.command_control_service import CommandControlService
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.view_once_command_service import ViewOnceCommandService
+from app.workers import background_workers
 
 
 OWNER_ID = "2348000000001@c.us"
@@ -302,6 +304,39 @@ async def test_available_view_once_media_queues_owner_targeted_row(
     assert row.formatting_json["media_mime"] == mimetype
     assert row.formatting_json["source_message_id"] == "SRC-1"
     assert result.outbound_queue_id == row.id
+
+
+@pytest.mark.asyncio
+async def test_queued_return_row_is_bound_and_clears_the_real_delivery_fence(db_session, monkeypatch):
+    """The row this command queues must pass the actual P0 owner payload fence.
+
+    `_delivery_authorized` proves the destination is OWNER only after `owner_payload_matches`
+    confirms the row's stamp still matches its stored payload. A view-once return that stamped
+    itself some other way (or not at all) would be silently refused at delivery time -- a
+    regression that would only surface as "OWNER never receives their view-once media", never
+    as a failing unit test for this command in isolation.
+    """
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_ID)
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(), owner)
+    rows = await _outbound(db_session)
+    assert len(rows) == 1
+    row = rows[0]
+
+    authority = OutboundAuthorizationService(db_session)
+    allowed, reason, _ = await background_workers._delivery_authorized(db_session, authority, row)
+    assert allowed, reason
+    assert reason == "exact configured owner chat with bound payload"
+
+    # Mutating the stored locator after the stamp must invalidate the binding, exactly like
+    # every other owner producer -- proving this row is bound to the canonical digest and not
+    # some other ad-hoc hash.
+    row.media_url = "http://waha:3000/api/files/swapped.jpg"
+    mutated_allowed, mutated_reason, _ = await background_workers._delivery_authorized(db_session, authority, row)
+    assert not mutated_allowed
+    assert mutated_reason == "owner queue row payload is not bound to its authorized content"
 
 
 @pytest.mark.asyncio
