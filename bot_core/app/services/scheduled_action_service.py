@@ -7,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.models.scheduled_action import ScheduledAction
 from app.models.schema import AuditLog, OutboundMessage
 from app.services.contact_intelligence_service import ContactIntelligenceService
@@ -195,6 +196,13 @@ class ScheduledActionService:
             )
             self.session.add(outbound)
             await self.session.flush()
+            # A scheduled action may target the owner or an external contact. Only the
+            # owner-destined case is authorized by destination at the delivery fence and
+            # therefore needs the payload stamp; external rows keep the existing durable
+            # scheduled-action binding as their authority.
+            if OutboundAuthorizationService.is_owner_destination(outbound.chat_id):
+                outbound.formatting_json = OutboundAuthorizationService.stamp_owner_payload(outbound)
+                await self.session.flush()
             row.outbound_queue_id = outbound.id
             row.status = "queued"
             row.executed_at = now

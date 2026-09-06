@@ -16,6 +16,7 @@ from app.models.schema import AuditLog, Contact, Message, OutboundMessage, Route
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_metadata_service import OutboundMediaMetadataService
 from app.services.owner_command_service import OwnerCommandService
 from app.services.router_outbound_authority_service import RouterOutboundAuthorityService
@@ -537,6 +538,12 @@ class InboundRouter:
         )
         self.session.add(model)
         await self.session.flush()
+        # Owner-destined rows are authorized by exact destination at the delivery fence,
+        # which does not by itself bind the payload. Stamp the canonical payload binding
+        # after flush so the final stored content is what is committed to.
+        if self._is_owner_chat_id(model.chat_id):
+            model.formatting_json = OutboundAuthorizationService.stamp_owner_payload(model)
+            await self.session.flush()
         return model
 
     @staticmethod

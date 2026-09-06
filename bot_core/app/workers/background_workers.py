@@ -311,7 +311,17 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
 
     if _is_owner_chat_id(message.chat_id):
-        return True, "exact configured owner chat", None
+        # The exact configured OWNER destination proves *where* this row may go. It says
+        # nothing about *what* it carries, so the payload binding is still required.
+        # Anything able to write to an owner-destined row between creation and delivery
+        # would otherwise gain full send authority over Fabian's own inbox.
+        #
+        # This is fail-closed by design: an unstamped executable owner row is refused
+        # rather than delivered, so a producer that forgets to stamp fails safe instead
+        # of silently inheriting unbounded authority from the destination alone.
+        if not OutboundAuthorizationService.owner_payload_matches(message):
+            return False, "owner queue row payload is not bound to its authorized content", None
+        return True, "exact configured owner chat with bound payload", None
 
     if not delivery_policy:
         if await _is_exact_scheduled_action_binding(session, message, metadata):

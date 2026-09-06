@@ -14,6 +14,7 @@ from app.services.admin_management_service import AdminManagementService
 from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.natural_action_planner_service import DEFAULT_OWNER_TIMEZONE, NaturalActionPlannerService
+from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.owner_command_service import OwnerCommandService
 from app.services.owner_contact_automation_policy_command_service import OwnerContactAutomationPolicyCommandService
 from app.services.owner_management_command_service import OwnerManagementCommandService
@@ -551,6 +552,8 @@ class CommandControlService:
             updated_at=utcnow(),
         )
         self.session.add(queued)
+        await self.session.flush()
+        queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
         await self.session.flush()
         result.outbound_queue_id = queued.id
         return result
