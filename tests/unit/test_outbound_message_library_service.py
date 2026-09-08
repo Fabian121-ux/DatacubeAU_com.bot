@@ -1166,3 +1166,81 @@ async def test_create_variant_rejects_non_string_tag_elements(db_session):
     )
     assert mixed.ok is False
     assert "tags" in (mixed.error or "")
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 10 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+async def _run_in_second_session(coro_factory):
+    """Run an async callback against a genuinely independent second session on the
+    same database, then commit and dispose -- used to reproduce the
+    expire_on_commit=False staleness a single shared session's identity map can't."""
+    database_url = os.environ.get(
+        "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test"
+    )
+    engine = create_async_engine(database_url)
+    try:
+        session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with session_factory() as session:
+            await coro_factory(session)
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_refreshes_stale_cached_eligibility(db_session):
+    """Regression: record_variant_usage()'s eligibility check read
+    variant.status/is_enabled/disabled_at off whatever session.get() returned --
+    with expire_on_commit=False, session.get() returns the cached object without a
+    fresh query if this session already loaded that row, so a variant disabled by a
+    *different* session/worker after this session first saw it stayed "eligible"
+    here, recording an ineligible selection."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
+    # Load it into this session's identity map first, same as a real caller would.
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+    await db_session.commit()
+
+    async def _disable(other_session):
+        await OutboundMessageLibraryService(other_session).disable_variant(created.id)
+
+    await _run_in_second_session(_disable)
+
+    result = await service.record_variant_usage(message_set_id=set_id, variant_id=created.id)
+    assert result.ok is False
+    assert "not an eligible" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_render_fails_closed_when_variant_is_hard_deleted_concurrently(db_session):
+    """Regression: session.refresh() raises InvalidRequestError ("Could not refresh
+    instance") -- not a normal empty result -- when the row was physically removed
+    by another session -- the
+    maintenance/retention hard-delete these tables' own migration comments say must
+    stay possible. Unhandled, that would crash render() instead of returning the
+    documented fail-closed RenderResult."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+    await db_session.commit()
+
+    async def _hard_delete(other_session):
+        row = await other_session.get(OutboundMessageVariant, created.id)
+        await other_session.delete(row)
+
+    await _run_in_second_session(_hard_delete)
+
+    result = await service.render(variant)
+    assert result.ok is False
+    assert result.text is None

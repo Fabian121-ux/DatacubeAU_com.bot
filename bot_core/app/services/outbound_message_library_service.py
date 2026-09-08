@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import (
@@ -540,7 +540,15 @@ class OutboundMessageLibraryService:
         # project's sessions use expire_on_commit=False), and another
         # session/worker could have disabled or deleted it since. Checking cached
         # Python attributes would silently render retired content.
-        await self.session.refresh(variant)
+        try:
+            await self.session.refresh(variant)
+        except InvalidRequestError:
+            # A concurrent hard delete (maintenance/retention cleanup) removed the
+            # row entirely -- refresh() raises InvalidRequestError ("Could not
+            # refresh instance") in this case, not a plain empty result. Same
+            # fail-closed outcome as any other retired variant, not an unhandled
+            # exception.
+            return RenderResult(False, error="variant is not active")
         if variant.deleted_at is not None or variant.disabled_at is not None or not variant.is_enabled:
             # get_variant() deliberately still returns a disabled variant (so an
             # owner can inspect it), but a caller holding a stale id must never be
@@ -597,6 +605,17 @@ class OutboundMessageLibraryService:
 
         variant = await self.session.get(OutboundMessageVariant, variant_id)
         if variant is None:
+            return LibraryResult(False, error="variant not found")
+        # session.get() returns an already-cached object without a fresh query if
+        # this session loaded this row before -- same expire_on_commit=False
+        # staleness risk render() guards against. A concurrent hard delete (
+        # maintenance/retention cleanup) is the same fail-closed outcome as any
+        # other now-ineligible variant, not an unhandled exception.
+        try:
+            await self.session.refresh(variant)
+        except InvalidRequestError:
+            # refresh() raises InvalidRequestError ("Could not refresh instance"),
+            # not a plain empty result, when the row was concurrently hard-deleted.
             return LibraryResult(False, error="variant not found")
         if variant.message_set_id != message_set_id:
             return LibraryResult(False, error="variant does not belong to message_set_id")
