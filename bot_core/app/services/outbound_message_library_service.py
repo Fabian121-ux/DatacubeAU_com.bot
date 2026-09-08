@@ -308,6 +308,18 @@ class OutboundMessageLibraryService:
         status: str = "draft",
         request_id: str | None = None,
     ) -> LibraryResult:
+        # A str is technically iterable (so "vip" would silently become
+        # ['v','i','p']) and a non-iterable like an int raises TypeError the moment
+        # a comprehension below tries to loop over it -- both must be rejected
+        # before any iteration is attempted, not discovered by crashing.
+        for field_name, field_value in (
+            ("required_variables", required_variables),
+            ("optional_variables", optional_variables),
+            ("tags", tags),
+        ):
+            if field_value is not None and not isinstance(field_value, list):
+                return LibraryResult(False, error=f"{field_name} must be a list")
+
         label = str(label or "").strip()
         template_body = str(template_body or "").strip()
         required_variables = sorted({str(v).strip() for v in (required_variables or []) if str(v).strip()})
@@ -573,11 +585,27 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="variant not found")
         if variant.message_set_id != message_set_id:
             return LibraryResult(False, error="variant does not belong to message_set_id")
+        # Only an approved, active variant was ever eligible to be selected. A
+        # draft/disabled/deleted variant reaching this point (a stale id, a caller
+        # bypassing the selection engine) must not be recorded as a real selection --
+        # these rows drive per-variant send-result/reply-rate analytics.
+        if variant.status != "approved" or not variant.is_enabled or variant.disabled_at is not None:
+            return LibraryResult(False, error="variant is not an eligible (approved, active) selection")
 
-        if contact_id is not None and await self.session.get(Contact, contact_id) is None:
+        contact = await self.session.get(Contact, contact_id) if contact_id is not None else None
+        if contact_id is not None and contact is None:
             return LibraryResult(False, error="contact not found")
-        if outbound_queue_id is not None and await self.session.get(OutboundMessage, outbound_queue_id) is None:
+        outbound_message = (
+            await self.session.get(OutboundMessage, outbound_queue_id) if outbound_queue_id is not None else None
+        )
+        if outbound_queue_id is not None and outbound_message is None:
             return LibraryResult(False, error="outbound_queue_id not found")
+        if contact is not None and outbound_message is not None and outbound_message.chat_id != contact.whatsapp_id:
+            # Both ids exist independently but don't refer to the same delivery --
+            # e.g. a real contact paired with an OutboundMessage addressed to someone
+            # else. Recording it would permanently misattribute that send/variant
+            # selection in per-contact analytics.
+            return LibraryResult(False, error="outbound_queue_id does not belong to contact_id")
         if selection_score is not None:
             is_real_number = isinstance(selection_score, (int, float)) and not isinstance(selection_score, bool)
             if not is_real_number:

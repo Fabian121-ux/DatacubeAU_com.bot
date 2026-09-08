@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from app.models.schema import AuditLog, OutboundMessageVariant, OutboundVariantUsage
+from app.models.schema import AuditLog, Contact, OutboundMessage, OutboundMessageVariant, OutboundVariantUsage
 from app.services.outbound_message_library_service import OutboundMessageLibraryService
 
 
@@ -341,7 +341,9 @@ async def test_a_deleted_label_can_be_reused_by_a_new_variant(db_session):
 async def test_record_variant_usage_and_update_send_result(db_session, test_contact):
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
 
     usage = await service.record_variant_usage(
         message_set_id=set_id,
@@ -559,7 +561,9 @@ async def test_record_variant_usage_rejects_unknown_optional_foreign_keys(db_ses
     documented fail-closed LibraryResult."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
 
     unknown_contact = await service.record_variant_usage(
         message_set_id=set_id, variant_id=variant.id, contact_id=999999
@@ -620,7 +624,9 @@ async def test_hard_delete_of_set_preserves_usage_history_via_set_null(db_sessio
     existing outbound_authorization_audit pattern, so historical rows survive."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
     usage = await service.record_variant_usage(
         message_set_id=set_id,
         variant_id=variant.id,
@@ -690,7 +696,9 @@ async def test_record_variant_usage_rejects_invalid_selection_score(db_session):
     fail-closed LibraryResult."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
 
     non_numeric = await service.record_variant_usage(
         message_set_id=set_id, variant_id=variant.id, selection_score="high"
@@ -836,7 +844,9 @@ async def test_record_variant_usage_normalizes_non_string_source_automation(db_s
     """Regression: source_automation had the same raw-len()-before-normalization gap."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
 
     result = await service.record_variant_usage(
         message_set_id=set_id, variant_id=variant.id, source_automation=42
@@ -853,7 +863,9 @@ async def test_record_variant_usage_rejects_huge_selection_score_without_crashin
     to convert it to a float, crashing instead of returning the fail-closed result."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
 
     result = await service.record_variant_usage(
         message_set_id=set_id, variant_id=variant.id, selection_score=10**10000
@@ -901,3 +913,111 @@ async def test_database_rejects_closed_allowlist_values_even_bypassing_the_servi
     with pytest.raises(IntegrityError):
         await db_session.flush()
     await db_session.rollback()
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 7 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_ineligible_variant(db_session):
+    """Regression: only an approved, active variant was ever eligible to be
+    selected, but record_variant_usage() only checked the variant existed and
+    belonged to the given set -- a draft, disabled, or deleted variant id (stale,
+    or a caller bypassing the selection engine) was recorded as a real selection,
+    contaminating per-variant send-result/reply-rate analytics."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    draft_variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi.")
+    draft_result = await service.record_variant_usage(message_set_id=set_id, variant_id=draft_variant.id)
+    assert draft_result.ok is False
+    assert "not an eligible" in (draft_result.error or "")
+
+    approved_variant = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hi.", status="approved"
+    )
+    await service.disable_variant(approved_variant.id)
+    disabled_result = await service.record_variant_usage(message_set_id=set_id, variant_id=approved_variant.id)
+    assert disabled_result.ok is False
+    assert "not an eligible" in (disabled_result.error or "")
+
+    eligible_variant = await service.create_variant(
+        message_set_id=set_id, label="C", template_body="Hi.", status="approved"
+    )
+    eligible_result = await service.record_variant_usage(message_set_id=set_id, variant_id=eligible_variant.id)
+    assert eligible_result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_queue_row_for_a_different_contact(db_session):
+    """Regression: contact_id and outbound_queue_id were validated independently for
+    existence, so a real contact could be paired with a real OutboundMessage row
+    addressed to a completely different recipient. The resulting usage row would
+    permanently misattribute that delivery/selection in per-contact analytics."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+
+    contact_a = Contact(whatsapp_id="15550000001@c.us", display_name="A")
+    contact_b = Contact(whatsapp_id="15550000002@c.us", display_name="B")
+    db_session.add_all([contact_a, contact_b])
+    await db_session.flush()
+
+    queue_row_for_b = OutboundMessage(chat_id="15550000002@c.us", message_text="hi")
+    db_session.add(queue_row_for_b)
+    await db_session.flush()
+
+    mismatched = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        contact_id=contact_a.id,
+        outbound_queue_id=queue_row_for_b.id,
+    )
+    assert mismatched.ok is False
+    assert "does not belong" in (mismatched.error or "")
+
+    matched = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        contact_id=contact_b.id,
+        outbound_queue_id=queue_row_for_b.id,
+    )
+    assert matched.ok is True
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_non_list_collection_inputs(db_session):
+    """Regression: a non-list required_variables/optional_variables/tags crashed
+    (an int isn't iterable) or silently corrupted (a str like "vip" iterates into
+    ['v','i','p']) instead of returning the documented fail-closed result."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    int_required = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", required_variables=1
+    )
+    assert int_required.ok is False
+    assert "required_variables" in (int_required.error or "")
+
+    str_optional = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hi.", optional_variables="vip"
+    )
+    assert str_optional.ok is False
+    assert "optional_variables" in (str_optional.error or "")
+
+    str_tags = await service.create_variant(
+        message_set_id=set_id, label="C", template_body="Hi.", tags="vip"
+    )
+    assert str_tags.ok is False
+    assert "tags" in (str_tags.error or "")
+
+    valid = await service.create_variant(
+        message_set_id=set_id, label="D", template_body="Hi.", tags=["vip", "lead"]
+    )
+    assert valid.ok is True
+    variant = await service.get_variant(valid.id)
+    assert variant.tags == ["vip", "lead"]
