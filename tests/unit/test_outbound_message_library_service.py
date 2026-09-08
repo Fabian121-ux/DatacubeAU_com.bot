@@ -526,3 +526,103 @@ async def test_create_variant_rejects_unmatched_template_delimiters(db_session):
     )
     assert split_by_newline.ok is False
     assert "unmatched" in (split_by_newline.error or "")
+
+
+@pytest.mark.asyncio
+async def test_render_treats_whitespace_only_required_value_as_missing(db_session):
+    """Regression: a required value of "   " passed the `in (None, "")` check and
+    rendered blank-looking personalization ("Hi    , ...") instead of failing closed,
+    even though it's just as absent as an empty string for a real message."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi {{first_name}}.",
+        required_variables=["first_name"],
+        status="approved",
+    )
+    variant = await service.get_variant(created.id)
+
+    result = service.render(variant, {"first_name": "   "})
+    assert result.ok is False
+    assert result.missing_variables == ["first_name"]
+    assert result.text is None
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_unknown_optional_foreign_keys(db_session, test_contact):
+    """Regression: a stale/nonexistent contact_id or outbound_queue_id reached
+    flush() unvalidated and crashed with an IntegrityError instead of the service's
+    documented fail-closed LibraryResult."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+
+    unknown_contact = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, contact_id=999999
+    )
+    assert unknown_contact.ok is False
+    assert "contact" in (unknown_contact.error or "")
+
+    unknown_queue_row = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=999999
+    )
+    assert unknown_queue_row.ok is False
+    assert "outbound_queue_id" in (unknown_queue_row.error or "")
+
+    # A real contact_id still works.
+    real_contact = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, contact_id=test_contact.id
+    )
+    assert real_contact.ok is True
+
+
+@pytest.mark.asyncio
+async def test_disable_and_delete_advance_updated_at(db_session):
+    """Regression: disabling/deleting a set or variant changed durable state without
+    advancing updated_at, so a future change-cursor-based sync would miss it."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+
+    set_before = await service.get_message_set(set_id)
+    set_created_at_updated_at = set_before.updated_at
+
+    await service.disable_message_set(set_id)
+    set_after_disable = await service.get_message_set(set_id)
+    assert set_after_disable.updated_at > set_created_at_updated_at
+
+    variant_before = await service.get_variant(variant.id)
+    variant_created_updated_at = variant_before.updated_at
+
+    await service.disable_variant(variant.id)
+    row = await db_session.get(type(variant_before), variant.id)
+    assert row.updated_at > variant_created_updated_at
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_of_set_preserves_usage_history_via_set_null(db_session, test_contact):
+    """Regression: message_set_id/variant_id used ON DELETE CASCADE, so a future
+    hard-delete during maintenance/retention cleanup would silently erase this
+    table's analytics/audit trail. They are now ON DELETE SET NULL, matching the
+    existing outbound_authorization_audit pattern, so historical rows survive."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    usage = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        contact_id=test_contact.id,
+        selection_reason="only eligible approved variant",
+    )
+    assert usage.ok is True
+
+    message_set_row = await db_session.get(type(await service.get_message_set(set_id)), set_id)
+    await db_session.delete(message_set_row)
+    await db_session.flush()
+
+    surviving = await db_session.get(OutboundVariantUsage, usage.id)
+    assert surviving is not None
+    assert surviving.message_set_id is None
+    assert surviving.selection_reason == "only eligible approved variant"

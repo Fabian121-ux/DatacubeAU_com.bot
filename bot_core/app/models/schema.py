@@ -626,18 +626,20 @@ class OutboundVariantUsage(Base):
     """Analytics/audit trail of variant selections (roadmap Phase 17).
 
     Observability only. This table is never consulted by the P0 delivery fence and
-    cannot grant, imply, or record outbound authority by itself.
+    cannot grant, imply, or record outbound authority by itself. `message_set_id`/
+    `variant_id` are ON DELETE SET NULL (not CASCADE), so a future hard-delete of
+    library content cannot erase this audit trail's selection reasons/send results.
     """
 
     __tablename__ = "outbound_variant_usage"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     contact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="SET NULL"))
-    message_set_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("outbound_message_sets.id", ondelete="CASCADE"), nullable=False
+    message_set_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_sets.id", ondelete="SET NULL")
     )
-    variant_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("outbound_message_variants.id", ondelete="CASCADE"), nullable=False
+    variant_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_variants.id", ondelete="SET NULL")
     )
     outbound_queue_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("outbound_queue.id", ondelete="SET NULL")

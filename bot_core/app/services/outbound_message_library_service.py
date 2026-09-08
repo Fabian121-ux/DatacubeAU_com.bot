@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import (
     AuditLog,
+    Contact,
+    OutboundMessage,
     OutboundMessageSet,
     OutboundMessageVariant,
     OutboundVariantUsage,
@@ -197,8 +199,10 @@ class OutboundMessageLibraryService:
         if message_set.disabled_at is not None:
             return LibraryResult(True, id=message_set_id)
 
-        message_set.disabled_at = utcnow()
+        now = utcnow()
+        message_set.disabled_at = now
         message_set.is_enabled = False
+        message_set.updated_at = now
         self.session.add(
             AuditLog(
                 action="outbound_message_set_disabled",
@@ -221,6 +225,7 @@ class OutboundMessageLibraryService:
         message_set.deleted_at = now
         message_set.disabled_at = message_set.disabled_at or now
         message_set.is_enabled = False
+        message_set.updated_at = now
 
         # Cascade the tombstone to every active child variant. Without this, a
         # variant under a deleted set stays fetchable via get_variant()/
@@ -238,6 +243,7 @@ class OutboundMessageLibraryService:
             variant.deleted_at = now
             variant.disabled_at = variant.disabled_at or now
             variant.is_enabled = False
+            variant.updated_at = now
 
         self.session.add(
             AuditLog(
@@ -402,8 +408,10 @@ class OutboundMessageLibraryService:
         if variant.disabled_at is not None:
             return LibraryResult(True, id=variant_id)
 
-        variant.disabled_at = utcnow()
+        now = utcnow()
+        variant.disabled_at = now
         variant.is_enabled = False
+        variant.updated_at = now
         self.session.add(
             AuditLog(
                 action="outbound_message_variant_disabled",
@@ -426,6 +434,7 @@ class OutboundMessageLibraryService:
         variant.deleted_at = now
         variant.disabled_at = variant.disabled_at or now
         variant.is_enabled = False
+        variant.updated_at = now
         self.session.add(
             AuditLog(
                 action="outbound_message_variant_deleted",
@@ -459,9 +468,14 @@ class OutboundMessageLibraryService:
             # template whose placeholders drifted outside its declared contract.
             return RenderResult(False, error="template contains undeclared variable(s)")
 
-        missing = sorted(
-            name for name in required if name not in variables or variables[name] in (None, "")
-        )
+        def _is_blank(value: Any) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, str) and not value.strip():
+                return True
+            return False
+
+        missing = sorted(name for name in required if name not in variables or _is_blank(variables[name]))
         if missing:
             return RenderResult(False, missing_variables=missing)
 
@@ -495,6 +509,11 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="variant not found")
         if variant.message_set_id != message_set_id:
             return LibraryResult(False, error="variant does not belong to message_set_id")
+
+        if contact_id is not None and await self.session.get(Contact, contact_id) is None:
+            return LibraryResult(False, error="contact not found")
+        if outbound_queue_id is not None and await self.session.get(OutboundMessage, outbound_queue_id) is None:
+            return LibraryResult(False, error="outbound_queue_id not found")
 
         usage = OutboundVariantUsage(
             contact_id=contact_id,

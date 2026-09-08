@@ -67,12 +67,15 @@ CREATE INDEX IF NOT EXISTS ix_outbound_message_variants_set_eligible
     WHERE deleted_at IS NULL AND is_enabled = true;
 
 -- Analytics/audit trail only. Never consulted by the delivery fence; this table
--- cannot grant, imply, or record outbound authority by itself.
+-- cannot grant, imply, or record outbound authority by itself. message_set_id and
+-- variant_id are ON DELETE SET NULL rather than CASCADE, so a future hard-delete of
+-- library content (maintenance/retention cleanup) cannot erase the historical
+-- selection-reason/send-result audit trail this table exists to preserve.
 CREATE TABLE IF NOT EXISTS outbound_variant_usage (
     id BIGSERIAL PRIMARY KEY,
     contact_id BIGINT NULL REFERENCES contacts(id) ON DELETE SET NULL,
-    message_set_id BIGINT NOT NULL REFERENCES outbound_message_sets(id) ON DELETE CASCADE,
-    variant_id BIGINT NOT NULL REFERENCES outbound_message_variants(id) ON DELETE CASCADE,
+    message_set_id BIGINT NULL REFERENCES outbound_message_sets(id) ON DELETE SET NULL,
+    variant_id BIGINT NULL REFERENCES outbound_message_variants(id) ON DELETE SET NULL,
     outbound_queue_id BIGINT NULL REFERENCES outbound_queue(id) ON DELETE SET NULL,
     selection_score DOUBLE PRECISION NULL,
     selection_reason TEXT NULL,
