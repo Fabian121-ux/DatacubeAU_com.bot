@@ -9,8 +9,10 @@ no bytes, base64, or transport locator is ever persisted.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
+from app.models.schema import PrivateMediaArtifact
+from app.services.private_media_artifact_service import PrivateMediaArtifactResult, PrivateMediaArtifactService
 from app.services.view_once_observation_service import ViewOnceObservationService
 
 
@@ -239,3 +241,168 @@ async def test_observation_failure_never_raises_into_ingress(db_session, monkeyp
 
     assert observation.recorded is False
     assert "could not be persisted" in observation.reason
+
+
+# --------------------------------------------------------------------------------------
+# PrivateMediaArtifact provenance (roadmap phase 5, metadata only)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_positive_observation_records_metadata_only_artifact(db_session):
+    await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+    )
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.source_message_id == "SRC-1"
+    assert artifact.source_chat_id == CHAT
+    assert artifact.transport_provenance == "waha_webhook_observation"
+    assert artifact.media_kind == "image"
+    assert artifact.media_mime == "image/jpeg"
+    assert artifact.storage_locator is None
+    assert artifact.retention_policy == "none"
+
+
+@pytest.mark.asyncio
+async def test_media_kind_is_inferred_from_mime_when_the_nested_media_has_no_type(db_session):
+    """Regression: a top-level `type` next to a bare `media: {url, mimetype}` (no nested
+    `type` key) is the normal ingress payload shape used by test_view_once_ingress_
+    integration.py. `ViewOnceCapabilityService.media_type` only reads the nested key, so
+    without inferring from MIME the artifact would be durably misclassified as "unknown"
+    despite the MIME making the category unambiguous.
+    """
+    await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg"}),
+    )
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.media_kind == "image"
+
+
+@pytest.mark.asyncio
+async def test_repeated_observation_of_the_same_source_does_not_duplicate_the_artifact(db_session):
+    payload = _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"})
+
+    await _observe(db_session, payload)
+    await _observe(db_session, payload)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_recording_failure_never_raises_into_ingress(db_session, monkeypatch):
+    """The same non-fatal guarantee applies to the newer PrivateMediaArtifact write."""
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _boom)
+
+    observation = await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+    )
+
+    assert observation.recorded is True
+    rows = await _rows(db_session)
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_observed_byte_size_is_recorded_on_the_artifact(db_session):
+    """Ingress already carries a reported size (`fileSize`/`filesize`/`size`) the same
+    way `MessageNormalizer` extracts it; the artifact must not discard it and wait for
+    a later `.vvopen` to learn a size WAHA already reported at observation time.
+    """
+    await _observe(
+        db_session,
+        _payload(
+            isViewOnce=True,
+            media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image", "fileSize": 54321},
+        ),
+    )
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.byte_size == 54321
+
+
+@pytest.mark.asyncio
+async def test_rejected_artifact_write_is_logged(db_session, monkeypatch, caplog):
+    """A validation rejection (`ok=False`, no exception) must still be surfaced -- the
+    SAVEPOINT exits normally on a clean rejection, so only checking for an exception
+    would silently drop the warning this failure mode is supposed to produce.
+    """
+
+    async def _rejected(*args, **kwargs):
+        return PrivateMediaArtifactResult(False, error="simulated validation rejection")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _rejected)
+
+    with caplog.at_level("WARNING"):
+        observation = await _observe(
+            db_session,
+            _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+        )
+
+    assert observation.recorded is True
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+    assert "private_media_artifact_observation_failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reported_size_under_data_container_is_recorded(db_session):
+    """`MessageNormalizer._reported_size` treats `_data` itself (not just `_data.media`)
+    as a size source for some engines. `_media_candidates` alone only ever collects
+    dicts found under a `media` key, so without also checking `_data` directly this
+    size would be silently missed.
+    """
+    await _observe(
+        db_session,
+        _payload(
+            isViewOnce=True,
+            media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"},
+            _data={"fileSize": 99999},
+        ),
+    )
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.byte_size == 99999
+
+
+@pytest.mark.asyncio
+async def test_metadata_tombstone_with_no_artifact_row_is_honored(db_session):
+    """The exact regression a create-on-no-row branch would cause when no artifact was
+    ever created for a source that view_once_media_metadata already has tombstoned --
+    a legacy observation predating this deployment, or one where an earlier artifact
+    write itself failed. Re-observation must not create a fresh active artifact for a
+    source the OWNER already deleted, even though get_or_create_from_observation's own
+    tombstone check has nothing to find (no artifact row exists at all).
+    """
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO view_once_media_metadata (
+                source_message_id, source_chat_id, media_type, media_mime,
+                capability_state, evidence_source, transport_available, retention_mode,
+                deleted_at
+            ) VALUES (
+                'SRC-1', :chat, 'image', 'image/jpeg',
+                'transient_available', 'waha_payload', true, 'none', now()
+            )
+            """
+        ),
+        {"chat": CHAT},
+    )
+
+    await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+    )
+
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []

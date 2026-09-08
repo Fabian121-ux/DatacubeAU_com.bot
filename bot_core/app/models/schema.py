@@ -526,7 +526,8 @@ class PrivateMediaArtifact(Base):
 
     Metadata only. `storage_locator` stays NULL until a private byte-storage backend
     exists behind ``PrivateMediaArtifactService`` (docs/VIEW_ONCE_MEDIA_PIPELINE.md,
-    roadmap phase 5). No producer or delivery path is wired to this table yet.
+    roadmap phase 5). View-once ingress observation and the `.vvopen` owner return both
+    write metadata-only rows here; no delivery path reads from this table.
     """
 
     __tablename__ = "private_media_artifacts"

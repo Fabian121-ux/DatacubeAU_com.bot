@@ -14,9 +14,10 @@ import pytest
 from sqlalchemy import select, text
 
 from app.core.message_normalizer import MessageNormalizer
-from app.models.schema import AdminAccount, AuditLog, OutboundMessage
+from app.models.schema import AdminAccount, AuditLog, OutboundMessage, PrivateMediaArtifact
 from app.services.command_control_service import CommandControlService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.private_media_artifact_service import PrivateMediaArtifactResult, PrivateMediaArtifactService
 from app.services.view_once_command_service import ViewOnceCommandService
 from app.workers import background_workers
 
@@ -85,22 +86,22 @@ async def _seed_owner(db_session, permission="owner"):
     return owner
 
 
-async def _seed_metadata(db_session, *, source_id="SRC-1", deleted=False, transport=True):
+async def _seed_metadata(db_session, *, source_id="SRC-1", deleted=False, transport=True, contact_id=None):
     await db_session.execute(
         text(
             """
             INSERT INTO view_once_media_metadata (
-                source_message_id, source_chat_id, media_type, media_mime,
+                source_message_id, source_chat_id, source_contact_id, media_type, media_mime,
                 capability_state, evidence_source, transport_available, retention_mode,
                 deleted_at
             ) VALUES (
-                :sid, :chat, 'image', 'image/jpeg',
+                :sid, :chat, :contact_id, 'image', 'image/jpeg',
                 'transient_available', 'waha_payload', :transport, 'none',
                 CASE WHEN :deleted THEN now() ELSE NULL END
             )
             """
         ),
-        {"sid": source_id, "chat": PEER_ID, "transport": transport, "deleted": deleted},
+        {"sid": source_id, "chat": PEER_ID, "contact_id": contact_id, "transport": transport, "deleted": deleted},
     )
 
 
@@ -108,7 +109,7 @@ async def _outbound(db_session):
     return (await db_session.execute(select(OutboundMessage))).scalars().all()
 
 
-async def _run(db_session, event, owner, operation=None):
+async def _run(db_session, event, owner, operation=None, request_id=None):
     message = _normalize(event)
     command, args = CommandControlService.parse(message.message_text)
     resolved = operation or CommandControlService._view_once_operation(command, args)
@@ -117,6 +118,7 @@ async def _run(db_session, event, owner, operation=None):
         message=message,
         owner=owner,
         transport_message_id=event["payload"]["id"],
+        request_id=request_id,
     )
 
 
@@ -370,6 +372,238 @@ async def test_repeated_command_message_does_not_queue_two_returns(db_session):
 
     assert len(await _outbound(db_session)) == 1
     assert first.outbound_queue_id == second.outbound_queue_id
+
+
+@pytest.mark.asyncio
+async def test_retrying_the_same_command_reconciles_a_previously_failed_artifact_write(db_session, monkeypatch):
+    """A command retry (same transport_message_id) must not be the artifact's only
+    chance: `_existing_return`'s dedupe returns before the artifact call is ever
+    reached again, so if the first attempt's artifact write transiently failed, only
+    the existing-return path itself can repair it.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    event = _event(command_id="VV-RETRY")
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _boom)
+    first = await _run(db_session, event, owner)
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+    monkeypatch.undo()
+    second = await _run(db_session, event, owner)
+
+    assert first.outbound_queue_id == second.outbound_queue_id
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.source_message_id == "SRC-1"
+
+
+@pytest.mark.asyncio
+async def test_open_records_metadata_only_provenance_bound_to_owner(db_session):
+    """A successful `.vvopen` return also records a PrivateMediaArtifact (roadmap phase 5).
+
+    This is provenance, not authority: no bytes, no storage_locator, and it must be
+    associated with the exact OWNER account that received the return.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.source_message_id == "SRC-1"
+    # Source identity is where the media originated (the peer chat the quoted message
+    # came from), never the OWNER self-DM destination the return is queued to.
+    assert artifact.source_chat_id == PEER_ID
+    assert artifact.transport_provenance == "view_once_command"
+    assert artifact.owner_admin_account_id == owner.id
+    assert artifact.media_kind == "image"
+    assert artifact.media_mime == "image/jpeg"
+    assert artifact.storage_locator is None
+    assert artifact.retention_policy == "none"
+
+
+@pytest.mark.asyncio
+async def test_open_passes_request_id_and_verified_byte_size_to_the_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    event = _event()
+    event["payload"]["replyTo"]["media"]["fileSize"] = 12345
+
+    await _run(db_session, event, owner, request_id="req-123")
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.byte_size == 12345
+
+    audit = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "private_media_artifact_created")
+        )
+    ).scalars().one()
+    assert audit.details_json["request_id"] == "req-123"
+
+
+@pytest.mark.asyncio
+async def test_open_carries_the_source_contact_into_the_artifact(db_session, test_contact):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, contact_id=test_contact.id)
+
+    await _run(db_session, _event(), owner)
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.source_contact_id == test_contact.id
+
+
+@pytest.mark.asyncio
+async def test_open_logs_a_rejected_artifact_write_instead_of_dropping_it(db_session, monkeypatch, caplog):
+    """A validation rejection (`ok=False`, no exception) must still be surfaced.
+
+    The SAVEPOINT exits normally on a clean rejection, so only checking for an
+    exception would silently drop the warning -- and, unlike the ingress path, the
+    owner return itself must still succeed regardless.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    async def _rejected(*args, **kwargs):
+        return PrivateMediaArtifactResult(False, error="simulated validation rejection")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _rejected)
+
+    with caplog.at_level("WARNING"):
+        result = await _run(db_session, _event(), owner)
+
+    assert result.outbound_queue_id is not None
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+    assert "private_media_artifact_observation_failed" in caplog.text
+    assert "simulated validation rejection" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_delete_then_reobserve_at_ingress_does_not_resurrect_the_artifact(db_session):
+    """The exact regression a create-on-tombstone branch would cause.
+
+    `view_once_media_metadata`'s own upsert is a no-op once a row is deleted (its
+    ON CONFLICT ... DO UPDATE is gated on `deleted_at IS NULL`), so ingress observation
+    reaches PrivateMediaArtifactService unconditionally on a repeat delivery -- a webhook
+    retry replaying the same source after an OWNER `.vv delete` must not recreate an
+    active artifact behind their back.
+    """
+    from app.services.view_once_observation_service import ViewOnceObservationService
+
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(command_id="VV-A"), owner)
+    artifact_id = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().artifact_id
+
+    await _run(db_session, _event(command_id="VV-DEL"), owner, operation="delete")
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is not None
+
+    await ViewOnceObservationService(db_session).observe(
+        payload={"id": "SRC-1", "chatId": PEER_ID, "isViewOnce": True, "media": {"url": "http://x/a.jpg", "type": "image"}},
+        source_message_id="SRC-1",
+        source_chat_id=PEER_ID,
+        source_contact_id=None,
+    )
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_id == artifact_id
+    assert artifacts[0].deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_repeated_open_of_the_same_source_does_not_duplicate_the_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(command_id="VV-A"), owner)
+    await _run(db_session, _event(command_id="VV-B"), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_ingress_observed_artifact_and_later_open_converge_on_one_row(db_session):
+    """The exact regression a mismatched source_chat_id would cause.
+
+    Ingress records the artifact under the peer chat the message actually came from.
+    A later `.vvopen` for the same source must backfill that same row, never mint a
+    second one addressed to the OWNER self-DM instead.
+    """
+    from app.services.view_once_observation_service import ViewOnceObservationService
+
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await ViewOnceObservationService(db_session).observe(
+        payload={"id": "SRC-1", "chatId": PEER_ID, "isViewOnce": True, "media": {"url": "http://x/a.jpg", "type": "image"}},
+        source_message_id="SRC-1",
+        source_chat_id=PEER_ID,
+        source_contact_id=None,
+    )
+    assert len((await db_session.execute(select(PrivateMediaArtifact))).scalars().all()) == 1
+
+    await _run(db_session, _event(), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    assert artifacts[0].owner_admin_account_id == owner.id
+
+
+@pytest.mark.asyncio
+async def test_delete_also_tombstones_the_matching_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is None
+
+    await _run(db_session, _event(), owner, operation="delete")
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_without_a_recorded_artifact_still_succeeds(db_session):
+    """`.vv delete` must work even when observation never created an artifact row."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    result = await _run(db_session, _event(), owner, operation="delete")
+
+    assert "was deleted" in result.reply_text
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_delete_retries_a_previously_failed_artifact_cleanup(db_session, monkeypatch):
+    """A second `.vv delete` on an already-deleted source must retry artifact
+    tombstoning rather than short-circuit before ever reaching it again -- otherwise a
+    transient cleanup failure on the first attempt is permanently unrepairable.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "delete_by_source", _boom)
+    first = await _run(db_session, _event(), owner, operation="delete")
+    assert "was deleted" in first.reply_text
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is None
+
+    monkeypatch.undo()
+    second = await _run(db_session, _event(), owner, operation="delete")
+
+    assert "already deleted" in second.reply_text
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.deleted_at is not None
 
 
 @pytest.mark.asyncio

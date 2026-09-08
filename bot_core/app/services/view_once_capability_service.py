@@ -129,8 +129,36 @@ class ViewOnceCapabilityService:
         _, id_conflict = cls._consistent_message_id(reply_to)
         if id_conflict:
             return None
+        return cls._size_from_candidates(cls._size_candidates(reply_to))
+
+    @classmethod
+    def message_media_size(cls, payload: Any) -> int | None:
+        """Same size extraction as ``reply_media_size``, for a direct message payload
+        rather than a reply/quote snapshot nested under ``replyTo``."""
+        if not isinstance(payload, dict):
+            return None
+        return cls._size_from_candidates(cls._size_candidates(payload))
+
+    @classmethod
+    def _size_candidates(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """``_media_candidates`` plus the engine-level ``_data`` container itself.
+
+        Matches ``MessageNormalizer._reported_size``, which checks three sources: the
+        top-level ``media`` dict, ``_data.media``, and ``_data`` itself -- some engines
+        report ``fileSize`` directly on ``_data`` rather than nested under its own
+        ``media`` key. ``_media_candidates`` only ever collects dicts found under a
+        ``media`` key, so it alone misses that third source.
+        """
+        candidates = list(cls._media_candidates(payload))
+        data = payload.get("_data")
+        if isinstance(data, dict):
+            candidates.append(data)
+        return candidates
+
+    @staticmethod
+    def _size_from_candidates(candidates: list[dict[str, Any]]) -> int | None:
         sizes: list[int] = []
-        for media in cls._media_candidates(reply_to):
+        for media in candidates:
             for key in ("fileSize", "filesize", "size"):
                 if key not in media or media.get(key) is None:
                     continue
@@ -140,6 +168,20 @@ class ViewOnceCapabilityService:
                     continue
                 sizes.append(max(0, size))
         return max(sizes) if sizes else None
+
+    @classmethod
+    def infer_media_kind(cls, media_type: str | None, media_mime: str | None) -> str | None:
+        """Best-effort media category for callers that only need a coarse kind.
+
+        ``ViewOnceCapability.media_type`` is the raw ``type`` string a payload
+        happened to expose and is often ``None`` even when the MIME alone makes the
+        category unambiguous (a top-level ``type`` next to a nested ``media`` object
+        with only a URL/MIME, for example). This reuses the same category inference
+        ``_media()`` already applies internally for conflict detection, so a caller
+        recording a durable ``media_kind`` does not have to duplicate that mapping or
+        settle for a knowable "unknown".
+        """
+        return cls._media_category(media_type, media_mime)
 
     @classmethod
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
