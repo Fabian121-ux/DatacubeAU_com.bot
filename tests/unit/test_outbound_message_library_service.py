@@ -466,3 +466,63 @@ async def test_delete_message_set_cascades_tombstone_to_its_variants(db_session)
     assert await service.get_variant(variant_a.id) is None
     assert await service.get_variant(variant_b.id) is None
     assert await service.list_variants_for_set(set_id, include_disabled=True) == []
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_non_integer_weight_instead_of_crashing(db_session):
+    """Regression: int(weight) raised TypeError/ValueError for None or a non-numeric
+    string instead of returning the documented fail-closed LibraryResult, and a float
+    like 1.7 was silently truncated to 1 rather than rejected."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    none_weight = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", weight=None
+    )
+    assert none_weight.ok is False
+    assert "weight" in (none_weight.error or "")
+
+    string_weight = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hi.", weight="high"
+    )
+    assert string_weight.ok is False
+    assert "weight" in (string_weight.error or "")
+
+    float_weight = await service.create_variant(
+        message_set_id=set_id, label="C", template_body="Hi.", weight=1.7
+    )
+    assert float_weight.ok is False
+    assert "weight" in (float_weight.error or "")
+
+    bool_weight = await service.create_variant(
+        message_set_id=set_id, label="D", template_body="Hi.", weight=True
+    )
+    assert bool_weight.ok is False
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_unmatched_template_delimiters(db_session):
+    """Regression: _LOOSE_BRACE_PATTERN only matches balanced {{...}} spans, so an
+    unclosed "{{first_name" (or a placeholder split by a newline, which "." does not
+    cross) produced no matches at all and passed validation, later rendering as
+    literal, broken template syntax."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    unclosed = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi {{first_name"
+    )
+    assert unclosed.ok is False
+    assert "unmatched" in (unclosed.error or "")
+
+    unopened = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hi first_name}}"
+    )
+    assert unopened.ok is False
+    assert "unmatched" in (unopened.error or "")
+
+    split_by_newline = await service.create_variant(
+        message_set_id=set_id, label="C", template_body="Hi {{first_\nname}}"
+    )
+    assert split_by_newline.ok is False
+    assert "unmatched" in (split_by_newline.error or "")

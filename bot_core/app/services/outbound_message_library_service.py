@@ -290,7 +290,9 @@ class OutboundMessageLibraryService:
                 False,
                 error=f"status {status!r} is not valid; only {sorted(self.ALLOWED_VARIANT_STATUSES)} is accepted",
             )
-        if not (self.MIN_WEIGHT <= int(weight) <= self.MAX_WEIGHT):
+        if not isinstance(weight, int) or isinstance(weight, bool):
+            return LibraryResult(False, error="weight must be an integer")
+        if not (self.MIN_WEIGHT <= weight <= self.MAX_WEIGHT):
             return LibraryResult(False, error=f"weight must be between {self.MIN_WEIGHT} and {self.MAX_WEIGHT}")
         if media_kind is not None and len(media_kind) > self.MAX_MEDIA_KIND_LENGTH:
             return LibraryResult(False, error="invalid media_kind")
@@ -302,6 +304,14 @@ class OutboundMessageLibraryService:
         overlap = set(required_variables) & set(optional_variables)
         if overlap:
             return LibraryResult(False, error=f"variable(s) {sorted(overlap)} cannot be both required and optional")
+
+        # Delimiters that never paired up at all (e.g. "Hi {{first_name" with no
+        # closing "}}", or a "{{...}}" split across a newline, which "." does not
+        # cross): strip every span _LOOSE_BRACE_PATTERN *did* match, and if a literal
+        # "{{" or "}}" remains, something didn't close.
+        unmatched_remainder = _LOOSE_BRACE_PATTERN.sub("", template_body)
+        if "{{" in unmatched_remainder or "}}" in unmatched_remainder:
+            return LibraryResult(False, error="template contains unmatched variable delimiter(s)")
 
         malformed = [
             span for span in _LOOSE_BRACE_PATTERN.findall(template_body) if not _VALID_TOKEN_CONTENT.match(span)
@@ -344,7 +354,7 @@ class OutboundMessageLibraryService:
             media_caption=str(media_caption).strip() if media_caption else None,
             language=language,
             tags=list(tags) if tags else None,
-            weight=int(weight),
+            weight=weight,
             status=status,
         )
         self.session.add(variant)
