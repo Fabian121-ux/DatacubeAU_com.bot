@@ -9,6 +9,29 @@ from app.models.enums import ChatType
 from app.utils.text import normalize_text
 
 
+@dataclass(frozen=True, slots=True)
+class NormalizedMedia:
+    """Canonical inbound media metadata derived from the active WAHA contract.
+
+    Field names follow the bundled WAHA DTOs rather than guesses:
+    `WAMessage` exposes `hasMedia`, optional `media`, and optional `replyTo`;
+    `WAMedia` exposes `url`, `mimetype`, `filename` (there is no size field, so
+    `reported_size` is best-effort from engine-specific `_data` and is often None).
+
+    This is metadata only. The transient `media.url` is deliberately not part of the
+    canonical record because it is a short-lived transport capability, not durable
+    identity, and must never be persisted as such.
+    """
+
+    has_media: bool = False
+    media_kind: str | None = None
+    mime_type: str | None = None
+    filename: str | None = None
+    reported_size: int | None = None
+    transient_media_available: bool = False
+    quoted_source_message_id: str | None = None
+
+
 @dataclass(slots=True)
 class NormalizedMessage:
     chat_id: str
@@ -22,6 +45,7 @@ class NormalizedMessage:
     payload: dict[str, Any]
     sender_alternate_ids: list[str] = field(default_factory=list)
     sender_identity: dict[str, Any] = field(default_factory=dict)
+    media: NormalizedMedia = field(default_factory=NormalizedMedia)
 
 
 class MessageNormalizer:
@@ -75,7 +99,97 @@ class MessageNormalizer:
             payload=payload,
             sender_alternate_ids=alternate_ids,
             sender_identity=sender_identity,
+            media=self._normalize_media(payload, message_type),
         )
+
+    @classmethod
+    def _normalize_media(cls, payload: dict[str, Any], message_type: str) -> NormalizedMedia:
+        """Extract bounded media metadata without ever failing the whole message.
+
+        A malformed or partial media object must degrade to "no usable media" rather
+        than raising, because ingress normalization runs before persistence and a crash
+        here would drop a legitimate inbound message.
+        """
+        media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
+        has_media = bool(payload.get("hasMedia")) or bool(media)
+
+        mime_type = cls._clean_text(media.get("mimetype") or media.get("mimeType") or media.get("mime"))
+        filename = cls._safe_filename(media.get("filename"))
+        # `WAMedia` carries no size field; engines may expose one under `_data`.
+        reported_size = cls._reported_size(payload)
+
+        return NormalizedMedia(
+            has_media=has_media,
+            media_kind=cls._media_kind(message_type, mime_type),
+            mime_type=mime_type,
+            filename=filename,
+            reported_size=reported_size,
+            transient_media_available=bool(cls._clean_text(media.get("url"))),
+            quoted_source_message_id=cls._quoted_source_message_id(payload),
+        )
+
+    @staticmethod
+    def _media_kind(message_type: str, mime_type: str | None) -> str | None:
+        """Classify media semantically. Never used as view-once evidence."""
+        declared = str(message_type or "").strip().lower()
+        if declared in {"image", "video", "document", "sticker"}:
+            return declared
+        if declared in {"ptt", "voice"}:
+            return "voice"
+        if declared == "audio":
+            return "audio"
+        mime = str(mime_type or "").strip().lower()
+        top = mime.partition("/")[0]
+        if top in {"image", "video", "audio"}:
+            return top
+        return None
+
+    @staticmethod
+    def _quoted_source_message_id(payload: dict[str, Any]) -> str | None:
+        """Return the replied-to message ID as a reference only.
+
+        `ReplyToMessage.id` is a pointer to another message. It must never replace the
+        canonical top-level source ID, so it is exposed as a distinct field.
+        """
+        reply_to = payload.get("replyTo")
+        if not isinstance(reply_to, dict):
+            return None
+        value = reply_to.get("id")
+        if isinstance(value, dict):
+            value = value.get("_serialized") or value.get("id")
+        text = str(value or "").strip()
+        return text if text and len(text) <= 200 else None
+
+    @classmethod
+    def _reported_size(cls, payload: dict[str, Any]) -> int | None:
+        data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
+        for source in (payload.get("media"), data.get("media"), data):
+            if not isinstance(source, dict):
+                continue
+            for key in ("fileSize", "filesize", "size"):
+                if source.get(key) is None:
+                    continue
+                try:
+                    parsed = int(source[key])
+                except (TypeError, ValueError):
+                    continue
+                if parsed >= 0:
+                    return parsed
+        return None
+
+    @staticmethod
+    def _clean_text(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @staticmethod
+    def _safe_filename(value: Any) -> str | None:
+        name = str(value or "").strip()
+        if not name or len(name) > 200:
+            return None
+        if "/" in name or "\\" in name or name.startswith(".") or "\x00" in name:
+            return None
+        return name
 
     @classmethod
     def _sender_id_candidates(cls, payload: dict[str, Any], chat_id: str) -> list[str]:
