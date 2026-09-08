@@ -32,6 +32,7 @@ from app.models.schema import (
     InternetUsageEvent,
     Message,
     OutboundMessage,
+    PrivateMediaArtifact,
     CommandCatalogEntry,
     UserTrigger,
     UserMemory,
@@ -50,6 +51,7 @@ from app.db import Base
 # command-control tests fail on `admin_accounts_normalized_whatsapp_id_key`.
 CLEANUP_MODELS = (
     ScheduledAction,
+    PrivateMediaArtifact,
     OutboundMessage,
     AIUsageEvent,
     InternetUsageEvent,

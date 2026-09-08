@@ -25,6 +25,18 @@ real WAHA send or session reconnect has been performed in this track.
 - **Typed WAHA transport adapters.** `send_image`, `send_video`, `send_voice`, and
   `send_file` post to their exact endpoints with a validated MIME, and are single-attempt
   (`retry_safe=False`). Request contracts are covered by mocked tests.
+- **`.vv` / `.vvopen` end-to-end command handler.** `ViewOnceCommandService` resolves the
+  exact quoted source message, re-derives view-once/media evidence from the OWNER's own
+  live reply snapshot (never trusting only the stored observation), and queues a return
+  to the OWNER self-DM through the normal Outbound Queue path. `info`, `list`, `delete`,
+  and the `retain on/off` refusal replies are also implemented. It is wired into command
+  dispatch via `CommandControlService` (`_VIEW_ONCE_ALIASES` / `VIEW_ONCE_COMMAND`) and
+  covered by 92 passing regression tests across
+  `test_view_once_command.py`, `test_view_once_command_authority.py`,
+  `test_view_once_capability_service.py`, `test_view_once_ingress_integration.py`, and
+  `test_view_once_observation.py` (re-verified this run against a fresh ephemeral
+  Postgres 16 instance). This section previously said the handler was not implemented;
+  that was stale relative to the code merged in PR #41 and has been corrected here.
 - **Media-type-aware worker dispatch after P0 authorization.** `OutboundMediaDispatchService`
   runs only after the final authorization fence and the outbound safety limits have already
   allowed a row. It selects one exact operation (`image -> send_image`, `video -> send_video`,
@@ -51,13 +63,15 @@ real WAHA send or session reconnect has been performed in this track.
 
 These are explicitly unfinished. Do not describe them as working.
 
-- **`.vv` / `.vvopen` end-to-end command handler.** View-once *classification* is implemented
-  and tested (`ViewOnceCapabilityService`), and migration 031 registers the command in the
-  Command Center catalog, but the handler that resolves a quoted source message, fetches the
-  capability, and returns media to the OWNER self-DM is not implemented.
-- **`PrivateMediaArtifact` byte storage.** No private byte store, no artifact metadata table
-  beyond the capability-truthful `view_once_media_metadata` record, no integrity hashing, no
-  quotas, no TTL, and no expiry cleanup.
+- **`PrivateMediaArtifact` byte storage.** Migration 032 adds the PostgreSQL metadata
+  table (`private_media_artifacts`) and `PrivateMediaArtifactService` (create / get /
+  disable / delete / list-for-owner), covering opaque artifact ID, exact source
+  message/contact/chat identifiers, media kind/MIME/size/content hash, transport
+  provenance, retention policy, and lifecycle timestamps. This is metadata only: there
+  is still no private byte store (`storage_locator` stays NULL), and the service is not
+  called from any producer or delivery path yet. `retention_policy` is fail-closed to
+  `"none"` in code — any other value is refused — until quotas, TTL enforcement, and an
+  actual byte-storage backend exist behind this service.
 - **Persistent view-once retention.** Not implemented.
 - **`.vvretain on`.** Unavailable, and it must remain unavailable until the storage,
   quota, TTL, deletion, disable, audit, and restart-safety requirements below are met.
@@ -138,6 +152,10 @@ The PR #38 migrations are therefore remapped in this successor track:
 
 Any later private-artifact migration starts after 031. Migration numbers are never reused for two production meanings.
 
+`032_private_media_artifact.sql` adds the `private_media_artifacts` metadata table described
+above. It is purely additive (new table, new indexes) and changes no existing table, so it
+carries no migration-compatibility risk for rows written before this migration.
+
 ## Transport capability truth
 
 The legacy generic `send_media()` helper is wired to `/api/sendImage` and is therefore image-only. It is now reached only by legacy untyped rows, which keep their original image-only behaviour and caption fallback. Video and audio are never routed through it.
@@ -203,8 +221,8 @@ Content/media binding now covers the exact media locator, kind, and caption alon
 1. **Done.** Rebase/port PR #38 onto P0 `main`, renumbering migrations and preserving the P0 worker/Command Center changes.
 2. **Done.** Add explicit WAHA image/video/voice/file adapter methods and mock-only request-contract tests; do not change live routing yet.
 3. **Done.** Add media-type-aware Outbound Queue dispatch after final P0 authorization, with fail-closed unknown/conflicting types and no automatic replay on uncertain sends. Producer-side media is canonicalized at one boundary before the queue row is created.
-4. **Not started.** Restore/validate `.vv` image behavior on the new main and add truthful video/audio handling only when exact capability evidence is available. Classification exists; the command handler does not.
-5. **Not started.** Introduce the single Private Media Artifact service and PostgreSQL metadata only after storage/retention policy tests are defined; default retention OFF.
+4. **Done.** `.vv`/`.vvopen` image return, `info`, `list`, and `delete` are implemented and tested end to end (with mocks) against the merged P0 main. Truthful video/audio handling through this command remains future work pending exact capability evidence for those media types.
+5. **Started, metadata layer only.** `PrivateMediaArtifactService` and the `private_media_artifacts` table (migration 032) exist with fail-closed `retention_policy="none"`. Private byte storage, quotas, TTL enforcement, and wiring this service into any producer or delivery path are not started.
 6. **Not started.** Add bounded image/video/audio AI-derived-artifact processing through existing Tool Registry/AI boundaries. No automatic Memory/KB promotion.
 7. **Partially done.** The active WAHA build was inspected for the webhook session contract (`populateSessionInfo`, `WAHAWebhook` DTO). View-once/revocation payload metadata has not been re-inspected against the deployed engine beyond the existing classification fixtures. If a required capability is absent, document the exact gap before considering an isolated Baileys prototype. Never run WAHA and Baileys simultaneously in production.
 
