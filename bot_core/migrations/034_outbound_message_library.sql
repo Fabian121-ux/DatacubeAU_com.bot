@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS outbound_variant_usage (
     message_set_id BIGINT NOT NULL REFERENCES outbound_message_sets(id) ON DELETE CASCADE,
     variant_id BIGINT NOT NULL REFERENCES outbound_message_variants(id) ON DELETE CASCADE,
     outbound_queue_id BIGINT NULL REFERENCES outbound_queue(id) ON DELETE SET NULL,
-    selection_score NUMERIC NULL,
+    selection_score DOUBLE PRECISION NULL,
     selection_reason TEXT NULL,
     source_automation VARCHAR(120) NULL,
     send_result VARCHAR(20) NOT NULL DEFAULT 'pending',

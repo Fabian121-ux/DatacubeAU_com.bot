@@ -16,6 +16,11 @@ from app.models.schema import (
 from app.utils.time import utcnow
 
 _TOKEN_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+# Any "{{...}}"-shaped span, whether or not its contents are a valid identifier. Used
+# only to detect a malformed placeholder (e.g. a typo'd hyphen) that _TOKEN_PATTERN
+# would otherwise silently ignore rather than substitute.
+_LOOSE_BRACE_PATTERN = re.compile(r"\{\{(.*?)\}\}")
+_VALID_TOKEN_CONTENT = re.compile(r"^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*$")
 
 
 @dataclass(slots=True)
@@ -78,6 +83,7 @@ class OutboundMessageLibraryService:
     MAX_MEDIA_KIND_LENGTH = 40
     MAX_MEDIA_MIME_LENGTH = 160
     MAX_SOURCE_AUTOMATION_LENGTH = 120
+    MAX_CREATED_BY_LENGTH = 120
     MIN_WEIGHT = 1
     MAX_WEIGHT = 100
 
@@ -107,6 +113,7 @@ class OutboundMessageLibraryService:
         description = str(description or "").strip()
         category = str(category or "").strip()
         channel = str(channel or "").strip()
+        created_by = str(created_by).strip() if created_by else None
 
         if not set_key or len(set_key) > self.MAX_KEY_LENGTH:
             return LibraryResult(False, error="invalid set_key")
@@ -120,6 +127,8 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid channel")
         if primary_language is not None and len(primary_language) > self.MAX_LANGUAGE_LENGTH:
             return LibraryResult(False, error="invalid primary_language")
+        if created_by is not None and len(created_by) > self.MAX_CREATED_BY_LENGTH:
+            return LibraryResult(False, error="invalid created_by")
         if selection_strategy not in self.ALLOWED_SELECTION_STRATEGIES:
             return LibraryResult(
                 False,
@@ -129,12 +138,18 @@ class OutboundMessageLibraryService:
                 ),
             )
 
+        # set_key is a permanent identifier, the same convention Identity Registry uses
+        # for registry_key: once used, never reused, even after delete()'s tombstone.
+        # The column carries an unconditional (not partial) UNIQUE constraint, so a
+        # deleted row must be rejected here too, rather than left to crash flush().
         existing = (
             await self.session.execute(
                 select(OutboundMessageSet).where(OutboundMessageSet.set_key == set_key)
             )
         ).scalar_one_or_none()
-        if existing is not None and existing.deleted_at is None:
+        if existing is not None:
+            if existing.deleted_at is not None:
+                return LibraryResult(False, error=f"set_key {set_key!r} was deleted and cannot be reused")
             return LibraryResult(False, error=f"set_key {set_key!r} already exists")
 
         message_set = OutboundMessageSet(
@@ -206,12 +221,30 @@ class OutboundMessageLibraryService:
         message_set.deleted_at = now
         message_set.disabled_at = message_set.disabled_at or now
         message_set.is_enabled = False
+
+        # Cascade the tombstone to every active child variant. Without this, a
+        # variant under a deleted set stays fetchable via get_variant()/
+        # list_variants_for_set() and renderable, so deleting the set would not
+        # actually retire its message content.
+        child_variants = (
+            await self.session.execute(
+                select(OutboundMessageVariant).where(
+                    OutboundMessageVariant.message_set_id == message_set_id,
+                    OutboundMessageVariant.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for variant in child_variants:
+            variant.deleted_at = now
+            variant.disabled_at = variant.disabled_at or now
+            variant.is_enabled = False
+
         self.session.add(
             AuditLog(
                 action="outbound_message_set_deleted",
                 entity_type="outbound_message_set",
                 entity_id=str(message_set_id),
-                details_json={"request_id": request_id},
+                details_json={"request_id": request_id, "cascaded_variant_count": len(child_variants)},
             )
         )
         await self.session.flush()
@@ -269,6 +302,12 @@ class OutboundMessageLibraryService:
         overlap = set(required_variables) & set(optional_variables)
         if overlap:
             return LibraryResult(False, error=f"variable(s) {sorted(overlap)} cannot be both required and optional")
+
+        malformed = [
+            span for span in _LOOSE_BRACE_PATTERN.findall(template_body) if not _VALID_TOKEN_CONTENT.match(span)
+        ]
+        if malformed:
+            return LibraryResult(False, error=f"template contains malformed variable placeholder(s) {malformed!r}")
 
         tokens_in_body = set(_TOKEN_PATTERN.findall(template_body))
         if tokens_in_body != set(required_variables):
@@ -440,6 +479,12 @@ class OutboundMessageLibraryService:
     ) -> LibraryResult:
         if source_automation is not None and len(source_automation) > self.MAX_SOURCE_AUTOMATION_LENGTH:
             return LibraryResult(False, error="invalid source_automation")
+
+        variant = await self.session.get(OutboundMessageVariant, variant_id)
+        if variant is None:
+            return LibraryResult(False, error="variant not found")
+        if variant.message_set_id != message_set_id:
+            return LibraryResult(False, error="variant does not belong to message_set_id")
 
         usage = OutboundVariantUsage(
             contact_id=contact_id,

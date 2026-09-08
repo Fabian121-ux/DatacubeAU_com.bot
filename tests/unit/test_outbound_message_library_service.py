@@ -371,3 +371,98 @@ async def test_update_usage_send_result_on_unknown_id_fails_closed(db_session):
     service = OutboundMessageLibraryService(db_session)
     result = await service.update_usage_send_result(999999, "sent")
     assert result.ok is False
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review findings on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_message_set_rejects_oversized_created_by_cleanly(db_session):
+    """Regression: created_by reached flush() unbounded and crashed instead of
+    returning the service's documented fail-closed result."""
+    service = OutboundMessageLibraryService(db_session)
+    result = await service.create_message_set(
+        set_key="lead_follow_up",
+        name="Lead Follow-up",
+        description="d",
+        category="lead_follow_up",
+        created_by="x" * 121,
+    )
+    assert result.ok is False
+    assert "created_by" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_create_message_set_rejects_reuse_of_a_deleted_set_key(db_session):
+    """Regression: set_key carries an unconditional UNIQUE constraint (unlike a
+    variant's per-set label), so recreating a deleted set_key must be rejected
+    cleanly rather than reaching flush() and raising an IntegrityError."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    await service.delete_message_set(set_id)
+
+    recreate = await service.create_message_set(
+        set_key="lead_follow_up",
+        name="New Name",
+        description="d",
+        category="lead_follow_up",
+    )
+    assert recreate.ok is False
+    assert "deleted" in (recreate.error or "")
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_malformed_placeholder(db_session):
+    """Regression: a placeholder like {{first-name}} (hyphen, not underscore) doesn't
+    match the strict token pattern, so it silently passed validation and would later
+    render as literal, broken template syntax instead of being substituted."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    result = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi {{first-name}}.",
+    )
+    assert result.ok is False
+    assert "malformed" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_variant_from_a_different_set(db_session, test_contact):
+    """Regression: independent foreign keys let a variant from set B be recorded
+    against set A's id, corrupting the per-set analytics trail."""
+    service = OutboundMessageLibraryService(db_session)
+    set_a = await _make_set(service, set_key="set_a")
+    set_b = await _make_set(service, set_key="set_b")
+    variant_in_b = await service.create_variant(message_set_id=set_b, label="A", template_body="Hi there.")
+
+    result = await service.record_variant_usage(
+        message_set_id=set_a,
+        variant_id=variant_in_b.id,
+        contact_id=test_contact.id,
+    )
+    assert result.ok is False
+    assert "does not belong" in (result.error or "")
+
+    rows = (await db_session.execute(OutboundVariantUsage.__table__.select())).mappings().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_delete_message_set_cascades_tombstone_to_its_variants(db_session):
+    """Regression: deleting a set only tombstoned the parent row, leaving every
+    child variant enabled and independently fetchable/renderable, so deleting the
+    set did not actually retire its message content."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant_a = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant_b = await service.create_variant(message_set_id=set_id, label="B", template_body="Hello there.")
+
+    await service.delete_message_set(set_id)
+
+    assert await service.get_variant(variant_a.id) is None
+    assert await service.get_variant(variant_b.id) is None
+    assert await service.list_variants_for_set(set_id, include_disabled=True) == []
