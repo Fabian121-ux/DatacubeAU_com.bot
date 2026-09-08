@@ -767,3 +767,137 @@ async def test_create_variant_concurrent_duplicate_label_translates_cleanly(db_s
     duplicate = await service.create_variant(message_set_id=set_id, label="A", template_body="Hello there.")
     assert duplicate.ok is False
     assert "already exists" in (duplicate.error or "")
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 6 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_variant_locked_read_still_rejects_a_disabled_set(db_session):
+    """Regression: create_variant() now reads the parent set with SELECT ... FOR
+    UPDATE (to serialize against a concurrent disable_message_set() UPDATE on the
+    same row) rather than the plain get_message_set() read. Confirms that switch
+    didn't change the ordinary, single-transaction "set already disabled" outcome.
+    The actual cross-transaction race this closes isn't reproducible here (needs a
+    second live DB connection), same limitation as the round 4/5 TOCTOU fixes."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    await service.disable_message_set(set_id)
+
+    result = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    assert result.ok is False
+    assert "disabled" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_create_variant_normalizes_non_string_metadata_instead_of_crashing(db_session):
+    """Regression: media_kind/media_mime/language were length-checked with a raw
+    len() call before normalization, so a non-sized value (e.g. an int from a
+    JSON-facing caller) raised TypeError instead of being handled cleanly."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    result = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi there.",
+        media_kind=12345,
+        media_mime=67890,
+        language=1,
+    )
+    assert result.ok is True
+    variant = await service.get_variant(result.id)
+    assert variant.media_kind == "12345"
+    assert variant.media_mime == "67890"
+    assert variant.language == "1"
+
+
+@pytest.mark.asyncio
+async def test_create_message_set_normalizes_non_string_primary_language(db_session):
+    """Regression: primary_language had the same raw-len()-before-normalization gap
+    as create_variant's media fields."""
+    service = OutboundMessageLibraryService(db_session)
+    result = await service.create_message_set(
+        set_key="lead_follow_up",
+        name="Lead Follow-up",
+        description="d",
+        category="c",
+        primary_language=1,
+    )
+    assert result.ok is True
+    message_set = await service.get_message_set(result.id)
+    assert message_set.primary_language == "1"
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_normalizes_non_string_source_automation(db_session):
+    """Regression: source_automation had the same raw-len()-before-normalization gap."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+
+    result = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, source_automation=42
+    )
+    assert result.ok is True
+    row = await db_session.get(OutboundVariantUsage, result.id)
+    assert row.source_automation == "42"
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_huge_selection_score_without_crashing(db_session):
+    """Regression: an arbitrarily large Python int (e.g. 10**10000) passes the
+    int/float isinstance check but raises OverflowError when math.isfinite() tries
+    to convert it to a float, crashing instead of returning the fail-closed result."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+
+    result = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_score=10**10000
+    )
+    assert result.ok is False
+    assert "selection_score" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_closed_allowlist_values_even_bypassing_the_service(db_session):
+    """Regression: variant status, set selection_strategy, and usage send_result had
+    no DB-level CHECK constraint, so a maintenance script, seed, or direct ORM use
+    could persist a value outside the documented closed allowlist -- bypassing the
+    service's own validation entirely, same class of gap the weight bound fix (round
+    4) closed for weight."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.schema import OutboundMessageSet
+
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    bad_status_variant = OutboundMessageVariant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="published"
+    )
+    db_session.add(bad_status_variant)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+    bad_strategy_set = OutboundMessageSet(
+        set_key="bad_strategy", name="n", description="d", category="c", selection_strategy="ai_only_random"
+    )
+    db_session.add(bad_strategy_set)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+    set_id_2 = await _make_set(service, set_key="send_result_set")
+    variant_2 = await service.create_variant(message_set_id=set_id_2, label="A", template_body="Hi.")
+    bad_send_result_usage = OutboundVariantUsage(
+        message_set_id=set_id_2, variant_id=variant_2.id, send_result="definitely_delivered"
+    )
+    db_session.add(bad_send_result_usage)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()

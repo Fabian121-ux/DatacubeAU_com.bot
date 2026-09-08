@@ -582,6 +582,12 @@ class OutboundMessageSet(Base):
     """
 
     __tablename__ = "outbound_message_sets"
+    __table_args__ = (
+        CheckConstraint(
+            "selection_strategy IN ('deterministic_score')",
+            name="ck_outbound_message_sets_selection_strategy",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     set_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
@@ -612,6 +618,7 @@ class OutboundMessageVariant(Base):
     __tablename__ = "outbound_message_variants"
     __table_args__ = (
         CheckConstraint("weight BETWEEN 1 AND 100", name="ck_outbound_message_variants_weight_bounded"),
+        CheckConstraint("status IN ('draft', 'approved')", name="ck_outbound_message_variants_status"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -647,6 +654,12 @@ class OutboundVariantUsage(Base):
     """
 
     __tablename__ = "outbound_variant_usage"
+    __table_args__ = (
+        CheckConstraint(
+            "send_result IN ('pending', 'sent', 'failed', 'blocked')",
+            name="ck_outbound_variant_usage_send_result",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     contact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="SET NULL"))

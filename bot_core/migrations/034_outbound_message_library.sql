@@ -25,7 +25,13 @@ CREATE TABLE IF NOT EXISTS outbound_message_sets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     disabled_at TIMESTAMPTZ NULL,
-    deleted_at TIMESTAMPTZ NULL
+    deleted_at TIMESTAMPTZ NULL,
+
+    -- Only one strategy is implemented so far (see OutboundMessageLibraryService.
+    -- ALLOWED_SELECTION_STRATEGIES); expanding this set is deliberately the trigger
+    -- for that future work, not something a raw insert should be able to bypass.
+    CONSTRAINT ck_outbound_message_sets_selection_strategy
+        CHECK (selection_strategy IN ('deterministic_score'))
 );
 
 CREATE INDEX IF NOT EXISTS ix_outbound_message_sets_category_active
@@ -53,7 +59,8 @@ CREATE TABLE IF NOT EXISTS outbound_message_variants (
     disabled_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL,
 
-    CONSTRAINT ck_outbound_message_variants_weight_bounded CHECK (weight BETWEEN 1 AND 100)
+    CONSTRAINT ck_outbound_message_variants_weight_bounded CHECK (weight BETWEEN 1 AND 100),
+    CONSTRAINT ck_outbound_message_variants_status CHECK (status IN ('draft', 'approved'))
 );
 
 -- A label is only unique among a set's *active* variants, so a deleted "A" can be
@@ -82,7 +89,10 @@ CREATE TABLE IF NOT EXISTS outbound_variant_usage (
     source_automation VARCHAR(120) NULL,
     send_result VARCHAR(20) NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT ck_outbound_variant_usage_send_result
+        CHECK (send_result IN ('pending', 'sent', 'failed', 'blocked'))
 );
 
 CREATE INDEX IF NOT EXISTS ix_outbound_variant_usage_contact_set

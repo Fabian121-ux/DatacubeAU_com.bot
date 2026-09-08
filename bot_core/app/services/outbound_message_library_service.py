@@ -117,7 +117,8 @@ class OutboundMessageLibraryService:
         description = str(description or "").strip()
         category = str(category or "").strip()
         channel = str(channel or "").strip()
-        created_by = str(created_by).strip() if created_by else None
+        created_by = str(created_by).strip() if created_by is not None else None
+        primary_language = str(primary_language).strip() if primary_language is not None else None
 
         if not set_key or len(set_key) > self.MAX_KEY_LENGTH:
             return LibraryResult(False, error="invalid set_key")
@@ -307,16 +308,13 @@ class OutboundMessageLibraryService:
         status: str = "draft",
         request_id: str | None = None,
     ) -> LibraryResult:
-        message_set = await self.get_message_set(message_set_id)
-        if message_set is None:
-            return LibraryResult(False, error="message set not found")
-        if message_set.disabled_at is not None:
-            return LibraryResult(False, error="message set is disabled")
-
         label = str(label or "").strip()
         template_body = str(template_body or "").strip()
         required_variables = sorted({str(v).strip() for v in (required_variables or []) if str(v).strip()})
         optional_variables = sorted({str(v).strip() for v in (optional_variables or []) if str(v).strip()})
+        media_kind = str(media_kind).strip() if media_kind is not None else None
+        media_mime = str(media_mime).strip() if media_mime is not None else None
+        language = str(language).strip() if language is not None else None
 
         if not label or len(label) > self.MAX_LABEL_LENGTH:
             return LibraryResult(False, error="invalid label")
@@ -337,6 +335,24 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid media_mime")
         if language is not None and len(language) > self.MAX_LANGUAGE_LENGTH:
             return LibraryResult(False, error="invalid language")
+
+        # Locked read (SELECT ... FOR UPDATE), not the plain get_message_set() used
+        # elsewhere: a concurrent disable_message_set() UPDATEs this exact row inside
+        # its own transaction, so this lock serializes the two rather than merely
+        # checking a value that could go stale the instant after it's read. Without
+        # this, transaction A could read "enabled" here, transaction B could disable
+        # the set and finish cascading its *existing* children, and only then would
+        # A's insert land -- a new, never-cascaded, fully enabled variant under a
+        # disabled set.
+        message_set = (
+            await self.session.execute(
+                select(OutboundMessageSet).where(OutboundMessageSet.id == message_set_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if message_set is None or message_set.deleted_at is not None:
+            return LibraryResult(False, error="message set not found")
+        if message_set.disabled_at is not None:
+            return LibraryResult(False, error="message set is disabled")
 
         overlap = set(required_variables) & set(optional_variables)
         if overlap:
@@ -386,10 +402,10 @@ class OutboundMessageLibraryService:
             required_variables=required_variables or None,
             optional_variables=optional_variables or None,
             media_locator=str(media_locator).strip() if media_locator else None,
-            media_kind=str(media_kind).strip() if media_kind else None,
-            media_mime=str(media_mime).strip() if media_mime else None,
+            media_kind=media_kind or None,
+            media_mime=media_mime or None,
             media_caption=str(media_caption).strip() if media_caption else None,
-            language=language,
+            language=language or None,
             tags=list(tags) if tags else None,
             weight=weight,
             status=status,
@@ -548,6 +564,7 @@ class OutboundMessageLibraryService:
         selection_reason: str | None = None,
         source_automation: str | None = None,
     ) -> LibraryResult:
+        source_automation = str(source_automation).strip() if source_automation is not None else None
         if source_automation is not None and len(source_automation) > self.MAX_SOURCE_AUTOMATION_LENGTH:
             return LibraryResult(False, error="invalid source_automation")
 
@@ -563,7 +580,17 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="outbound_queue_id not found")
         if selection_score is not None:
             is_real_number = isinstance(selection_score, (int, float)) and not isinstance(selection_score, bool)
-            if not is_real_number or not math.isfinite(selection_score):
+            if not is_real_number:
+                return LibraryResult(False, error="invalid selection_score")
+            try:
+                # A Python int far outside float range (e.g. 10**10000) is still an
+                # "is_real_number", but converting it for math.isfinite() raises
+                # OverflowError rather than returning False -- guard the conversion
+                # itself, not just the finiteness check.
+                score_is_finite = math.isfinite(selection_score)
+            except OverflowError:
+                score_is_finite = False
+            if not score_is_finite:
                 return LibraryResult(False, error="invalid selection_score")
 
         usage = OutboundVariantUsage(
