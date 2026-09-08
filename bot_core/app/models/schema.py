@@ -558,6 +558,98 @@ class PrivateMediaArtifact(Base):
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
+class OutboundMessageSet(Base):
+    """A named, reusable outbound message set (roadmap Phase 17).
+
+    Answers "WHAT COULD ZINA SAY?" only. This model and its variants carry zero
+    outbound authority: no producer or delivery path is wired to it, and selecting a
+    variant never grants send authority (see docs/ZINA_IMPLEMENTATION_ROADMAP.md
+    Phase 17, "Authority separation"). Contact eligibility and send authorization
+    remain entirely owned by `contact_automation_policies` and
+    `OutboundAuthorizationService`.
+    """
+
+    __tablename__ = "outbound_message_sets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    set_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'whatsapp'"))
+    primary_language: Mapped[str | None] = mapped_column(String(20))
+    selection_strategy: Mapped[str] = mapped_column(
+        String(40), nullable=False, server_default=text("'deterministic_score'")
+    )
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OutboundMessageVariant(Base):
+    """One approved wording variant within an `OutboundMessageSet` (roadmap Phase 17).
+
+    `required_variables` is the exact, closed set of `{{token}}` names that must
+    appear in `template_body` — enforced at creation time, not just at render time.
+    """
+
+    __tablename__ = "outbound_message_variants"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_set_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_sets.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(40), nullable=False)
+    template_body: Mapped[str] = mapped_column(Text, nullable=False)
+    required_variables: Mapped[list[str] | None] = mapped_column(JSON)
+    optional_variables: Mapped[list[str] | None] = mapped_column(JSON)
+    media_locator: Mapped[str | None] = mapped_column(Text)
+    media_kind: Mapped[str | None] = mapped_column(String(40))
+    media_mime: Mapped[str | None] = mapped_column(String(160))
+    media_caption: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(String(20))
+    tags: Mapped[list[str] | None] = mapped_column(JSON)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'draft'"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OutboundVariantUsage(Base):
+    """Analytics/audit trail of variant selections (roadmap Phase 17).
+
+    Observability only. This table is never consulted by the P0 delivery fence and
+    cannot grant, imply, or record outbound authority by itself.
+    """
+
+    __tablename__ = "outbound_variant_usage"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="SET NULL"))
+    message_set_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_sets.id", ondelete="CASCADE"), nullable=False
+    )
+    variant_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_variants.id", ondelete="CASCADE"), nullable=False
+    )
+    outbound_queue_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("outbound_queue.id", ondelete="SET NULL")
+    )
+    selection_score: Mapped[float | None] = mapped_column(Float)
+    selection_reason: Mapped[str | None] = mapped_column(Text)
+    source_automation: Mapped[str | None] = mapped_column(String(120))
+    send_result: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
 class WahaOutage(Base):
     __tablename__ = "waha_outages"
 

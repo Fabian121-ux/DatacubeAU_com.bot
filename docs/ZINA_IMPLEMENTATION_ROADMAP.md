@@ -2,7 +2,7 @@
 
 Status: engineering execution plan for the "Zina Hourly Engineering" autonomous routine. This is **not** a runtime source of truth — it describes what to build and in what order, not what Zina answers with at runtime. Every claim here was verified against the actual codebase at the commit noted below; a later run must re-verify before trusting any status marked here, per this doc's own rule.
 
-Last verified: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d` (post-merge of PR #44), by a full three-way codebase audit (three parallel Explore passes covering Identity/Memory/FAQ/Knowledge, Command Center/Dashboard/Router/Tools/Scheduled Actions, and Project Intelligence/Internet/Observability).
+Last verified: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d` (post-merge of PR #44), by a full three-way codebase audit (three parallel Explore passes covering Identity/Memory/FAQ/Knowledge, Command Center/Dashboard/Router/Tools/Scheduled Actions, and Project Intelligence/Internet/Observability). Phase 17 added 2026-09-08 against `main` @ `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (post-merge of PR #47; PR #48 was open, not yet merged, at the time of this audit) — that phase's own architecture map (Outbound Queue/`OutboundAuthorizationService`/Contact Automation Policy/Scheduled Actions/`_queue_broadcast`/migration numbering) was independently re-verified via a dedicated Explore pass, not carried over from the prior audit.
 
 Status legend: **DONE** (production-ready per acceptance criteria) / **PARTIAL** (real, wired-in work exists but acceptance criteria are incomplete) / **STUB** (scaffolding only, not load-bearing) / **MISSING** (does not exist).
 
@@ -317,4 +317,59 @@ Create/Read/Disable/Schedule/Target/Owner/Authority-policy/Failures/Next-run/Aud
 
 **Not TEST READY yet.** The blocking items are dashboard CRUD completeness (Phases 1/3/4/6/13) and the Command Center/`ReplyRule` duplication (Phase 5) — both are about Fabian being able to *manage* Zina safely before controlled testing, not about WhatsApp-facing safety (which is already solid per Phase 10).
 
-**Next implementation step:** Work Phases 1, 5, then 3/4/6/13 dashboard gaps, in that order, before attempting `docs/ZINA_CONTROLLED_TEST_PLAN.md`.
+**Next implementation step:** Work Phases 1, 5, then 3/4/6/13 dashboard gaps, in that order, before attempting `docs/ZINA_CONTROLLED_TEST_PLAN.md`. Phase 17 (below) is additive and explicitly must not delay this work — it was appended after Phase 16 rather than renumbered into the middle of the list precisely so it never reads as higher priority than TEST READY.
+
+---
+
+## Phase 17 — Intelligent Outbound Message Library
+
+**Status: STARTED — data model + CRUD + template rendering foundation only. Zero wiring, zero selection engine, zero outbound authority.**
+
+### Why this exists
+
+Requirement added 2026-09-08 (owner instruction): Zina must avoid sending the same generic message to every eligible contact. Inspired by the *architectural concepts* of SaleSmartly's targeted-broadcast feature (targeted recipient grouping, tags/attributes, reusable templates with variables, multiple message variants, campaign analytics, send/result tracking) — explicitly **not** its anti-ban/anti-detection strategy. Zina must never randomize message content to disguise bulk messaging or evade WhatsApp enforcement; variant selection here exists for relevance and analytics, never for evasion.
+
+Long-term goal: Zina chooses the best appropriate *approved* message for each *authorized* contact instead of blindly broadcasting identical content.
+
+### Authority separation (non-negotiable, matches Phase 0/10's existing model)
+
+This phase answers exactly one question — **WHAT COULD ZINA SAY?** — and must never answer any of the following, which remain owned exactly where they already are:
+
+| Question | Owner (unchanged) |
+|---|---|
+| May this contact receive this category of message? | `contact_automation_policies` (raw table) / `OwnerContactAutomationPolicyService` |
+| May this exact action execute now? | `OutboundAuthorizationService` / `RouterOutboundAuthorityService` |
+| Deliver this exact authorized payload. | `background_workers.py::_delivery_authorized` (the P0 fence), `OutboundMessage`/`outbound_queue` |
+
+A selected/rendered message variant **does not grant outbound authority**. The required per-recipient flow, once a producer exists, is: determine eligibility → verify consent/OWNER authorization/automation policy → choose eligible message set → select best eligible variant → substitute permitted variables → freeze the exact resulting payload → bind recipient + resulting text + media metadata to authority → enqueue **one** recipient-specific `outbound_queue` row → the existing P0 fence runs immediately before WAHA, unchanged → send only if authorization remains exactly valid. There must never be a path from this library directly to WAHA.
+
+### No duplicate broadcast system
+
+Audited before writing any code (2026-09-08): `owner_command_service.py::_queue_broadcast` (`.broadcast`-style owner commands) is **not** a working fan-out mechanism — it deliberately stamps every row `delivery_policy="unauthorized_broadcast"`, a value `_delivery_authorized` never accepts, so every row it creates is permanently blocked at the fence by design (see its own docstring and `docs/VIEW_ONCE_MEDIA_PIPELINE.md`). There is currently no working single owner-authorized fan-out entry point anywhere in the codebase. This phase must **not** resurrect or repurpose `_queue_broadcast`, and must **not** invent a second scheduling/queue table parallel to `OutboundMessage`/`ScheduledAction`. A future "release a message-library selection to N recipients" producer must mint durable per-recipient `outbound_approvals`/`contact_automation_policies` grants and queue through the existing `OutboundMessage` model with a `delivery_policy` the fence already recognizes (or a new value explicitly added to `_delivery_authorized`, reviewed with the same rigor as PR #43) — exactly the same primitive `ScheduledActionService.release_due` already uses, not a parallel one.
+
+### What's implemented (this run)
+
+Purely additive, zero behavior change, nothing wired into any producer or delivery path — same safety shape as `PrivateMediaArtifactService` (PR #44):
+
+- **Migration 034** (`bot_core/migrations/034_outbound_message_library.sql`): three new tables.
+  - `outbound_message_sets` — `set_key` (unique), `name`, `description`, `category`, `purpose`, `channel`, `primary_language`, `selection_strategy` (closed allowlist, currently only `deterministic_score`), `created_by` (provenance), `is_enabled`, timestamps, `disabled_at`/`deleted_at`.
+  - `outbound_message_variants` — FK to its set, `label` (unique per active set), `template_body`, `required_variables`/`optional_variables` (JSON), optional media locator/kind/MIME/caption, `language`, `tags`, bounded `weight` (1–100, for future bounded A/B weighting among *equivalent eligible* variants), `status` (closed allowlist: `draft`/`approved` — only `approved` is meant to ever be selected once a selection engine exists), lifecycle fields.
+  - `outbound_variant_usage` — analytics/audit trail only (contact, set, variant, `outbound_queue_id`, `selection_score`, `selection_reason`, `source_automation`, `send_result`). Never consulted by the delivery fence; cannot grant authority.
+- **Models**: `OutboundMessageSet`, `OutboundMessageVariant`, `OutboundVariantUsage` in `schema.py`, registered in `tests/conftest.py`'s `CLEANUP_MODELS` (ordered child-before-parent: usage → variant → set → the existing `OutboundMessage`).
+- **Service**: `bot_core/app/services/outbound_message_library_service.py`, `OutboundMessageLibraryService` — Create/Read/Update(via recreate)/Disable/Delete for both sets and variants, all fail-closed on invalid/oversized input (mirrors `PrivateMediaArtifactService`'s bounded-field pattern, including the two Codex-review findings from PR #45 — oversized fields never reach `flush()`, and `selection_strategy`/variant `status`/`send_result` are closed allowlists rather than arbitrary caller text). A variant's `required_variables` must equal, exactly, the set of `{{token}}` placeholders in its `template_body` (checked at creation, both directions — no undeclared token, no unused declaration) — enforced again at render time as defense in depth. `render()` substitutes only from a caller-supplied `variables` dict; a missing or empty required variable fails the render closed with the exact missing names, and **no value is ever invented**, per the mission's identity-hierarchy rule.
+- **Tests**: `tests/unit/test_outbound_message_library_service.py` — creation validation (allowlists, bounds, duplicate `set_key`/`label`, required/optional overlap), the required-variables-equals-template-tokens invariant, render success, render fails closed on missing/empty/absent variables, render never substitutes an undeclared optional variable, `only_approved` listing filter, disable→delete monotonic lifecycle for both sets and variants (idempotent, tombstone-preserving, excluded from listings, still individually fetchable-as-None once deleted), a deleted label being reusable, and usage-record creation/`send_result` update including its own closed allowlist.
+
+### What's explicitly NOT in this run (future steps, in order)
+
+1. **Selection Engine** (`OutboundMessageSelectionService` or similar) — deterministic scoring across purpose/category/language/contact attributes/conversation history/prior variants used/recency/preferences/tone/semantic relevance/historical performance, with AI allowed to *rank* natural-language suitability but never to grant authority. Must produce an explainable `(variant, score, reason)` triple, observable in conversation/outbound inspection (Phase 7). Depends on Contact gaining structured attributes/tags — today `contacts` has only free-form `identity_json` (Phase 1/Contact gap noted implicitly here; consider whether tags belong on `Contact` or a new join table before building the scorer, since `identity_json` is not queryable/indexable the way tag-based eligibility filtering needs).
+2. **Producer wiring** — the actual per-recipient flow described in "Authority separation" above: an OWNER-initiated outreach plan that evaluates recipients individually (never a single input fanning out into a direct transport loop), reusing `contact_automation_policies`/`OutboundAuthorizationService` exactly as `ScheduledActionService.release_due` does today. This is where every outbound-safety test in the acceptance list below actually becomes exercisable (unauthorized/opted-out/disabled/wrong-category/over-limit/duplicate/blocked/ambiguous contacts must all produce zero outbound; payload mutation after authorization must make zero WAHA calls; duplicate campaign execution and restart/reconciliation must not duplicate outbound; one recipient's failure must not authorize another's send) — this PR intentionally stops short of it because it is exactly the kind of P0-shaped change that needs the same standalone review rigor PR #43 got, not a rider on a data-model PR.
+3. **AI Control Center section** — "Outbound Messaging" pages (Message Sets, Variants, Contact Automation Policies, Automations, Scheduled Actions, Outbound Queue, Analytics, Opt-outs/Blocks) showing enabled state, variant count, usage, reply/failure rate where measurable, blocked-by-authority count, last used, selection strategy, recent selections, and the exact reason a message was selected. Blocked on Phase 6 generally (no AI Control Center concept exists yet) and, for reply/failure-rate analytics, on Phase 7's observability gaps.
+4. **Personalization variable sourcing** — a resolver that pulls `{{first_name}}`/`{{project}}`/`{{company}}`/`{{appointment_time}}`/etc. from Identity Registry (`get_by_key`/`resolve_references`), `Contact`, and conversation context, and refuses (or falls back to another eligible variant) when a required variable has no authoritative value — `render()` already fails closed on a missing value; only the *sourcing* of that value from real domains is unbuilt.
+
+### Acceptance criteria (from the requirement — tracked, not all met yet)
+
+Create/Read/Update/Delete/Disable for sets and variants (**done**); template variables (**done** — rendering); multiple approved variants per set (**done**); deterministic scoring engine (**not started**); AI ranking assist (**not started**); bounded A/B weighting for analytics among equivalent eligible variants (`weight` column exists, **not consumed yet**); campaign/usage analytics (**partially done** — `OutboundVariantUsage` records selection + send result, no dashboard); authority separation preserved end-to-end (**done by construction** — nothing wired in yet, so nothing to violate); no second broadcast system (**confirmed, audited above**); consent/opt-out first-class (**deferred to producer wiring**, step 2 above); full outbound-safety test matrix from the requirement (fail-closed unauthorized/opted-out/duplicate/mutation/restart cases) — **deferred to step 2**, since none of it is exercisable before a producer exists.
+
+**Dependencies:** none blocking Phase 0/10 (P0 safety is untouched and already DONE). Step 1 (Selection Engine) benefits from Contact gaining structured tags (currently free-text `identity_json` only). Step 2 (producer wiring) must be reviewed with P0-equivalent rigor before merge, same bar as PR #43.
+
+**Next implementation step:** Build the Selection Engine (step 1) as its own scoped PR against this foundation — deterministic scoring first, explainable `(variant, score, reason)` output, before any AI-ranking assist. Do not build producer wiring (step 2) until the Selection Engine exists and is tested, and do not let either delay Phases 1/5 (still the actual blockers for TEST READY per Phase 16).
