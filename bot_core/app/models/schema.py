@@ -3,7 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -598,6 +610,9 @@ class OutboundMessageVariant(Base):
     """
 
     __tablename__ = "outbound_message_variants"
+    __table_args__ = (
+        CheckConstraint("weight BETWEEN 1 AND 100", name="ck_outbound_message_variants_weight_bounded"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     message_set_id: Mapped[int] = mapped_column(

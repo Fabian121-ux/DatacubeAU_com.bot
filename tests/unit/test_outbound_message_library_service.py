@@ -10,9 +10,11 @@ These tests cover CRUD lifecycle, fail-closed validation, and template rendering
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from app.models.schema import AuditLog, OutboundVariantUsage
+from app.models.schema import AuditLog, OutboundMessageVariant, OutboundVariantUsage
 from app.services.outbound_message_library_service import OutboundMessageLibraryService
 
 
@@ -581,24 +583,33 @@ async def test_record_variant_usage_rejects_unknown_optional_foreign_keys(db_ses
 @pytest.mark.asyncio
 async def test_disable_and_delete_advance_updated_at(db_session):
     """Regression: disabling/deleting a set or variant changed durable state without
-    advancing updated_at, so a future change-cursor-based sync would miss it."""
+    advancing updated_at, so a future change-cursor-based sync would miss it.
+
+    Tests the variant and the set independently (rather than one variant under one
+    disabled set) because disable_message_set() now cascades to its variants — cascading
+    onto an already-disabled variant would make a direct disable_variant() call an
+    idempotent no-op that legitimately does not re-advance updated_at.
+    """
     service = OutboundMessageLibraryService(db_session)
-    set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
 
-    set_before = await service.get_message_set(set_id)
-    set_created_at_updated_at = set_before.updated_at
-
-    await service.disable_message_set(set_id)
-    set_after_disable = await service.get_message_set(set_id)
-    assert set_after_disable.updated_at > set_created_at_updated_at
-
+    variant_set_id = await _make_set(service, set_key="variant_updated_at_set")
+    variant = await service.create_variant(message_set_id=variant_set_id, label="A", template_body="Hi there.")
     variant_before = await service.get_variant(variant.id)
     variant_created_updated_at = variant_before.updated_at
 
+    await asyncio.sleep(0.01)
     await service.disable_variant(variant.id)
     row = await db_session.get(type(variant_before), variant.id)
     assert row.updated_at > variant_created_updated_at
+
+    set_id = await _make_set(service, set_key="set_updated_at_set")
+    set_before = await service.get_message_set(set_id)
+    set_created_updated_at = set_before.updated_at
+
+    await asyncio.sleep(0.01)
+    await service.disable_message_set(set_id)
+    set_after_disable = await service.get_message_set(set_id)
+    assert set_after_disable.updated_at > set_created_updated_at
 
 
 @pytest.mark.asyncio
@@ -626,3 +637,78 @@ async def test_hard_delete_of_set_preserves_usage_history_via_set_null(db_sessio
     assert surviving is not None
     assert surviving.message_set_id is None
     assert surviving.selection_reason == "only eligible approved variant"
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 4 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_weight_above_100_even_bypassing_the_service(db_session):
+    """Regression: the CHECK constraint only enforced the lower bound (weight >= 1),
+    so a row inserted outside create_variant() (maintenance script, seed, direct ORM
+    use) could carry weight > 100 and later distort weighted selection. The DB
+    constraint itself must reject it, independent of the service's own validation."""
+    from sqlalchemy.exc import IntegrityError
+
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    variant = OutboundMessageVariant(message_set_id=set_id, label="A", template_body="Hi.", weight=150)
+    db_session.add(variant)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_disable_message_set_cascades_to_its_variants(db_session):
+    """Regression: disabling a set only changed the parent; list_variants_for_set()
+    and get_variant() still returned its variants as enabled, and render() would
+    still accept them, so a "disabled" set's content stayed fully usable."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant_a = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant_b = await service.create_variant(message_set_id=set_id, label="B", template_body="Hello there.")
+
+    await service.disable_message_set(set_id)
+
+    assert await service.list_variants_for_set(set_id) == []
+    fetched_a = await service.get_variant(variant_a.id)
+    fetched_b = await service.get_variant(variant_b.id)
+    assert fetched_a.disabled_at is not None
+    assert fetched_a.is_enabled is False
+    assert fetched_b.disabled_at is not None
+    assert fetched_b.is_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_invalid_selection_score(db_session):
+    """Regression: a nonnumeric selection_score (or NaN/inf) reached flush()
+    unvalidated and crashed with a conversion/bind error instead of the documented
+    fail-closed LibraryResult."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+
+    non_numeric = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_score="high"
+    )
+    assert non_numeric.ok is False
+    assert "selection_score" in (non_numeric.error or "")
+
+    not_finite = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_score=float("nan")
+    )
+    assert not_finite.ok is False
+
+    bool_score = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_score=True
+    )
+    assert bool_score.ok is False
+
+    real_score = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_score=0.87
+    )
+    assert real_score.ok is True

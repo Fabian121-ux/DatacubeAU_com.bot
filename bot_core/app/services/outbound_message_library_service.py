@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import (
@@ -165,8 +167,17 @@ class OutboundMessageLibraryService:
             selection_strategy=selection_strategy,
             created_by=created_by,
         )
-        self.session.add(message_set)
-        await self.session.flush()
+        # The existence check above has a TOCTOU window: two concurrent callers can
+        # both pass it before either INSERT commits. A SAVEPOINT (begin_nested)
+        # contains the resulting IntegrityError to just this insert, so the loser
+        # gets the documented fail-closed result instead of an unhandled exception
+        # that leaves the whole session requiring rollback.
+        try:
+            async with self.session.begin_nested():
+                self.session.add(message_set)
+                await self.session.flush()
+        except IntegrityError:
+            return LibraryResult(False, error=f"set_key {set_key!r} already exists")
 
         self.session.add(
             AuditLog(
@@ -203,12 +214,30 @@ class OutboundMessageLibraryService:
         message_set.disabled_at = now
         message_set.is_enabled = False
         message_set.updated_at = now
+
+        # Cascade to every active child variant, same reasoning as delete_message_set:
+        # without this, get_variant()/list_variants_for_set() and render() would still
+        # treat the variant as usable even though its parent set is disabled.
+        child_variants = (
+            await self.session.execute(
+                select(OutboundMessageVariant).where(
+                    OutboundMessageVariant.message_set_id == message_set_id,
+                    OutboundMessageVariant.deleted_at.is_(None),
+                    OutboundMessageVariant.disabled_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for variant in child_variants:
+            variant.disabled_at = now
+            variant.is_enabled = False
+            variant.updated_at = now
+
         self.session.add(
             AuditLog(
                 action="outbound_message_set_disabled",
                 entity_type="outbound_message_set",
                 entity_id=str(message_set_id),
-                details_json={"request_id": request_id},
+                details_json={"request_id": request_id, "cascaded_variant_count": len(child_variants)},
             )
         )
         await self.session.flush()
@@ -514,6 +543,10 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="contact not found")
         if outbound_queue_id is not None and await self.session.get(OutboundMessage, outbound_queue_id) is None:
             return LibraryResult(False, error="outbound_queue_id not found")
+        if selection_score is not None:
+            is_real_number = isinstance(selection_score, (int, float)) and not isinstance(selection_score, bool)
+            if not is_real_number or not math.isfinite(selection_score):
+                return LibraryResult(False, error="invalid selection_score")
 
         usage = OutboundVariantUsage(
             contact_id=contact_id,

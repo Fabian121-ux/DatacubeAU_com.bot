@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS outbound_message_variants (
     disabled_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL,
 
-    CONSTRAINT ck_outbound_message_variants_weight_positive CHECK (weight >= 1)
+    CONSTRAINT ck_outbound_message_variants_weight_bounded CHECK (weight BETWEEN 1 AND 100)
 );
 
 -- A label is only unique among a set's *active* variants, so a deleted "A" can be
