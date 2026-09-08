@@ -461,8 +461,11 @@ class IdentityRegistryEntry(Base):
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     facts_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    source: Mapped[str | None] = mapped_column(String(120))
+    entity_type: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CommandCatalogEntry(Base):
