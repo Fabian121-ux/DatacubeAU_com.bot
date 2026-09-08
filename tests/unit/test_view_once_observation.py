@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, text
 
 from app.models.schema import PrivateMediaArtifact
-from app.services.private_media_artifact_service import PrivateMediaArtifactService
+from app.services.private_media_artifact_service import PrivateMediaArtifactResult, PrivateMediaArtifactService
 from app.services.view_once_observation_service import ViewOnceObservationService
 
 
@@ -312,4 +312,46 @@ async def test_artifact_recording_failure_never_raises_into_ingress(db_session, 
     assert observation.recorded is True
     rows = await _rows(db_session)
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_observed_byte_size_is_recorded_on_the_artifact(db_session):
+    """Ingress already carries a reported size (`fileSize`/`filesize`/`size`) the same
+    way `MessageNormalizer` extracts it; the artifact must not discard it and wait for
+    a later `.vvopen` to learn a size WAHA already reported at observation time.
+    """
+    await _observe(
+        db_session,
+        _payload(
+            isViewOnce=True,
+            media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image", "fileSize": 54321},
+        ),
+    )
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.byte_size == 54321
+
+
+@pytest.mark.asyncio
+async def test_rejected_artifact_write_is_logged(db_session, monkeypatch, caplog):
+    """A validation rejection (`ok=False`, no exception) must still be surfaced -- the
+    SAVEPOINT exits normally on a clean rejection, so only checking for an exception
+    would silently drop the warning this failure mode is supposed to produce.
+    """
+
+    async def _rejected(*args, **kwargs):
+        return PrivateMediaArtifactResult(False, error="simulated validation rejection")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _rejected)
+
+    with caplog.at_level("WARNING"):
+        observation = await _observe(
+            db_session,
+            _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+        )
+
+    assert observation.recorded is True
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+    assert "private_media_artifact_observation_failed" in caplog.text
+    assert "simulated validation rejection" in caplog.text
     assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []

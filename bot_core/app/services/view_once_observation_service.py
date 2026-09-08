@@ -107,7 +107,7 @@ class ViewOnceObservationService:
             # only this nested attempt, never poison the already-flushed view_once_media_
             # metadata upsert or the surrounding ingress transaction.
             async with self.session.begin_nested():
-                await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
+                artifact_result = await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
                     source_message_id=canonical_id,
                     source_chat_id=chat_id,
                     source_contact_id=source_contact_id,
@@ -117,6 +117,15 @@ class ViewOnceObservationService:
                         or "unknown"
                     ),
                     media_mime=capability.media_mime,
+                    byte_size=ViewOnceCapabilityService.message_media_size(payload),
+                )
+            if not artifact_result.ok:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "private_media_artifact_observation_failed",
+                    source_message_id=canonical_id,
+                    error=artifact_result.error,
                 )
         except Exception as exc:  # noqa: BLE001 - observation must never break ingress
             log_event(

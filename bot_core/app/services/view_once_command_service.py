@@ -237,7 +237,7 @@ class ViewOnceCommandService:
             # only this nested attempt, never the already-queued, already-stamped owner
             # return or its audit log.
             async with self.session.begin_nested():
-                await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
+                artifact_result = await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
                     source_message_id=quoted_id,
                     # The source identity is where the media originated (the same chat
                     # ingress observation recorded it under), never the OWNER self-DM
@@ -252,6 +252,14 @@ class ViewOnceCommandService:
                     media_mime=decision.media.mimetype,
                     byte_size=size,
                     request_id=request_id,
+                )
+            if not artifact_result.ok:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "private_media_artifact_observation_failed",
+                    source_message_id=quoted_id,
+                    error=artifact_result.error,
                 )
         except Exception as exc:  # noqa: BLE001 - provenance recording must never break the return
             log_event(
@@ -369,8 +377,16 @@ class ViewOnceCommandService:
         # must never turn a successful metadata delete into a failure.
         try:
             async with self.session.begin_nested():
-                await PrivateMediaArtifactService(self.session).delete_by_source(
+                artifact_result = await PrivateMediaArtifactService(self.session).delete_by_source(
                     record["source_chat_id"], quoted_id, request_id=request_id
+                )
+            if not artifact_result.ok:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "private_media_artifact_observation_failed",
+                    source_message_id=quoted_id,
+                    error=artifact_result.error,
                 )
         except Exception as exc:  # noqa: BLE001 - artifact cleanup must never break the delete
             log_event(

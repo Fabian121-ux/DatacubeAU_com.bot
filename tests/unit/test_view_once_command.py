@@ -17,6 +17,7 @@ from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage, PrivateMediaArtifact
 from app.services.command_control_service import CommandControlService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.private_media_artifact_service import PrivateMediaArtifactResult, PrivateMediaArtifactService
 from app.services.view_once_command_service import ViewOnceCommandService
 from app.workers import background_workers
 
@@ -429,6 +430,31 @@ async def test_open_carries_the_source_contact_into_the_artifact(db_session, tes
 
     artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
     assert artifact.source_contact_id == test_contact.id
+
+
+@pytest.mark.asyncio
+async def test_open_logs_a_rejected_artifact_write_instead_of_dropping_it(db_session, monkeypatch, caplog):
+    """A validation rejection (`ok=False`, no exception) must still be surfaced.
+
+    The SAVEPOINT exits normally on a clean rejection, so only checking for an
+    exception would silently drop the warning -- and, unlike the ingress path, the
+    owner return itself must still succeed regardless.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    async def _rejected(*args, **kwargs):
+        return PrivateMediaArtifactResult(False, error="simulated validation rejection")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _rejected)
+
+    with caplog.at_level("WARNING"):
+        result = await _run(db_session, _event(), owner)
+
+    assert result.outbound_queue_id is not None
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+    assert "private_media_artifact_observation_failed" in caplog.text
+    assert "simulated validation rejection" in caplog.text
 
 
 @pytest.mark.asyncio

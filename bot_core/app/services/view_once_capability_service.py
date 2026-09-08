@@ -129,8 +129,20 @@ class ViewOnceCapabilityService:
         _, id_conflict = cls._consistent_message_id(reply_to)
         if id_conflict:
             return None
+        return cls._size_from_candidates(cls._media_candidates(reply_to))
+
+    @classmethod
+    def message_media_size(cls, payload: Any) -> int | None:
+        """Same size extraction as ``reply_media_size``, for a direct message payload
+        rather than a reply/quote snapshot nested under ``replyTo``."""
+        if not isinstance(payload, dict):
+            return None
+        return cls._size_from_candidates(cls._media_candidates(payload))
+
+    @staticmethod
+    def _size_from_candidates(candidates: list[dict[str, Any]]) -> int | None:
         sizes: list[int] = []
-        for media in cls._media_candidates(reply_to):
+        for media in candidates:
             for key in ("fileSize", "filesize", "size"):
                 if key not in media or media.get(key) is None:
                     continue
