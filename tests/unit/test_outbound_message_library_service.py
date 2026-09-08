@@ -11,8 +11,10 @@ These tests cover CRUD lifecycle, fail-closed validation, and template rendering
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.schema import AuditLog, Contact, OutboundMessage, OutboundMessageVariant, OutboundVariantUsage
 from app.services.outbound_message_library_service import OutboundMessageLibraryService
@@ -202,7 +204,7 @@ async def test_render_substitutes_provided_variables(db_session):
     )
     variant = await service.get_variant(created.id)
 
-    result = service.render(variant, {"first_name": "Ada", "project": "ZinaX"})
+    result = await service.render(variant, {"first_name": "Ada", "project": "ZinaX"})
     assert result.ok is True
     assert result.text == "Hi Ada, following up on ZinaX."
 
@@ -220,16 +222,16 @@ async def test_render_fails_closed_on_missing_required_variable_and_never_invent
     )
     variant = await service.get_variant(created.id)
 
-    missing_entirely = service.render(variant, {"first_name": "Ada"})
+    missing_entirely = await service.render(variant, {"first_name": "Ada"})
     assert missing_entirely.ok is False
     assert missing_entirely.missing_variables == ["project"]
     assert missing_entirely.text is None
 
-    empty_value = service.render(variant, {"first_name": "Ada", "project": ""})
+    empty_value = await service.render(variant, {"first_name": "Ada", "project": ""})
     assert empty_value.ok is False
     assert empty_value.missing_variables == ["project"]
 
-    no_variables_at_all = service.render(variant, None)
+    no_variables_at_all = await service.render(variant, None)
     assert no_variables_at_all.ok is False
     assert set(no_variables_at_all.missing_variables) == {"first_name", "project"}
 
@@ -248,7 +250,7 @@ async def test_render_ignores_optional_variables_not_used_in_body(db_session):
     )
     variant = await service.get_variant(created.id)
 
-    result = service.render(variant, {"first_name": "Ada"})
+    result = await service.render(variant, {"first_name": "Ada"})
     assert result.ok is True
     assert result.text == "Hi Ada."
 
@@ -548,7 +550,7 @@ async def test_render_treats_whitespace_only_required_value_as_missing(db_sessio
     )
     variant = await service.get_variant(created.id)
 
-    result = service.render(variant, {"first_name": "   "})
+    result = await service.render(variant, {"first_name": "   "})
     assert result.ok is False
     assert result.missing_variables == ["first_name"]
     assert result.text is None
@@ -755,7 +757,7 @@ async def test_render_rejects_disabled_variant_even_when_fetched_directly(db_ses
     variant = await service.get_variant(created.id)
     assert variant is not None  # still individually fetchable by design
 
-    result = service.render(variant)
+    result = await service.render(variant)
     assert result.ok is False
     assert "not active" in (result.error or "")
     assert result.text is None
@@ -1097,3 +1099,70 @@ async def test_allowlist_checks_reject_unhashable_values_instead_of_crashing(db_
 
     bad_send_result = await service.update_usage_send_result(usage.id, ["sent"])
     assert bad_send_result.ok is False
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 9 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_render_refreshes_stale_cached_lifecycle_state(db_session):
+    """Regression: render() checked variant.is_enabled/disabled_at/deleted_at on
+    whatever Python object the caller passed in. Since this project's sessions use
+    expire_on_commit=False, a variant fetched by one session keeps stale cached
+    attributes after a *different* session disables it and commits -- render()
+    would substitute retired content unless it refreshes from the database first.
+
+    A single shared session can't demonstrate this: SQLAlchemy's identity map means
+    every fetch of the same row within one session returns the same Python object,
+    so an in-session disable is already visible with no possible staleness -- this
+    needs a second, independent session against the same database, exactly the
+    "another session/worker" scenario the fix targets."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
+    variant = await service.get_variant(created.id)
+    await db_session.commit()
+
+    database_url = os.environ.get(
+        "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test"
+    )
+    other_engine = create_async_engine(database_url)
+    try:
+        other_session_factory = async_sessionmaker(bind=other_engine, expire_on_commit=False)
+        async with other_session_factory() as other_session:
+            await OutboundMessageLibraryService(other_session).disable_variant(created.id)
+            await other_session.commit()
+    finally:
+        await other_engine.dispose()
+
+    assert variant.is_enabled is True  # confirms the object is stale in this session
+
+    result = await service.render(variant)
+    assert result.ok is False
+    assert "not active" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_non_string_tag_elements(db_session):
+    """Regression: the round-7 fix validated tags was a list but not its elements.
+    tags=[object()] passed the list check and crashed at flush() (not JSON
+    serializable); a JSON-serializable non-string like {"tier": "vip"} would have
+    silently persisted despite the model declaring list[str]."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    result = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", tags=[{"tier": "vip"}]
+    )
+    assert result.ok is False
+    assert "tags" in (result.error or "")
+
+    mixed = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hi.", tags=["vip", 123]
+    )
+    assert mixed.ok is False
+    assert "tags" in (mixed.error or "")

@@ -320,6 +320,15 @@ class OutboundMessageLibraryService:
             if field_value is not None and not isinstance(field_value, list):
                 return LibraryResult(False, error=f"{field_name} must be a list")
 
+        # required_variables/optional_variables tolerate any element (str() below
+        # coerces it, and a garbage value just fails the token-match invariant that
+        # follows). tags has no such downstream check, and the model column is
+        # JSONB list[str]: a non-string element (e.g. an object, or a JSON-serializable
+        # dict like {"tier": "vip"}) would either crash flush() or silently persist
+        # a shape the model never declared, so it's rejected here explicitly.
+        if tags is not None and not all(isinstance(t, str) for t in tags):
+            return LibraryResult(False, error="tags must be a list of strings")
+
         label = str(label or "").strip()
         template_body = str(template_body or "").strip()
         required_variables = sorted({str(v).strip() for v in (required_variables or []) if str(v).strip()})
@@ -518,7 +527,7 @@ class OutboundMessageLibraryService:
     # Rendering
     # ------------------------------------------------------------------------------
 
-    def render(self, variant: OutboundMessageVariant, variables: dict[str, Any] | None = None) -> RenderResult:
+    async def render(self, variant: OutboundMessageVariant, variables: dict[str, Any] | None = None) -> RenderResult:
         """Substitute a variant's declared variables. Never invents a missing value.
 
         ``variables`` must be sourced by the caller from an authoritative Zina domain
@@ -526,6 +535,12 @@ class OutboundMessageLibraryService:
         absent (or empty) from ``variables`` fails the render closed rather than
         guessing, leaving a blank, or leaking the literal ``{{token}}`` text.
         """
+        # Refresh from the database before trusting lifecycle fields: a caller may
+        # have fetched this exact object earlier in a long-lived session (this
+        # project's sessions use expire_on_commit=False), and another
+        # session/worker could have disabled or deleted it since. Checking cached
+        # Python attributes would silently render retired content.
+        await self.session.refresh(variant)
         if variant.deleted_at is not None or variant.disabled_at is not None or not variant.is_enabled:
             # get_variant() deliberately still returns a disabled variant (so an
             # owner can inspect it), but a caller holding a stale id must never be
