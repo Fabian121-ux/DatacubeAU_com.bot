@@ -1,0 +1,267 @@
+"""Foundational metadata layer for PrivateMediaArtifactService.
+
+This service is metadata-only (docs/VIEW_ONCE_MEDIA_PIPELINE.md roadmap phase 5): no
+private byte storage exists yet, and no producer or delivery path calls it. These
+tests cover create/get/disable/delete lifecycle and the fail-closed retention gate
+that refuses any retention policy beyond "none" until a byte-storage backend exists.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.models.schema import AdminAccount, AuditLog, PrivateMediaArtifact
+from app.services.private_media_artifact_service import PrivateMediaArtifactService
+
+
+def _owner():
+    return AdminAccount(
+        name="Fabian",
+        whatsapp_number="2348000000001",
+        normalized_whatsapp_id="2348000000001@c.us",
+        role="primary_admin",
+        permission_level="owner",
+        is_primary=True,
+        is_enabled=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_persists_metadata_only_and_stamps_audit(db_session, test_contact):
+    owner = _owner()
+    db_session.add(owner)
+    await db_session.flush()
+
+    service = PrivateMediaArtifactService(db_session)
+    result = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        source_contact_id=test_contact.id,
+        owner_admin_account_id=owner.id,
+        media_mime="image/jpeg",
+        byte_size=1024,
+        content_hash="deadbeef",
+        request_id="req-1",
+    )
+
+    assert result.ok is True
+    assert result.artifact_id
+
+    artifact = await service.get(result.artifact_id)
+    assert artifact is not None
+    assert artifact.source_message_id == "SRC-1"
+    assert artifact.retention_policy == "none"
+    # No byte storage exists yet at this layer.
+    assert artifact.storage_locator is None
+
+    audit = (
+        await db_session.execute(
+            AuditLog.__table__.select().where(AuditLog.action == "private_media_artifact_created")
+        )
+    ).mappings().first()
+    assert audit is not None
+    assert audit["entity_id"] == result.artifact_id
+
+
+@pytest.mark.asyncio
+async def test_create_generates_distinct_opaque_artifact_ids(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    first = await service.create(
+        source_message_id="SRC-A",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+    )
+    second = await service.create(
+        source_message_id="SRC-B",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+    )
+
+    assert first.ok and second.ok
+    assert first.artifact_id != second.artifact_id
+    assert first.artifact_id not in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_any_retention_policy_other_than_none(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    result = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        retention_policy="persistent",
+    )
+
+    assert result.ok is False
+    assert result.artifact_id is None
+    assert "not enabled" in (result.error or "")
+
+    count = (await db_session.execute(PrivateMediaArtifact.__table__.select())).mappings().all()
+    assert count == []
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_invalid_inputs(db_session):
+    service = PrivateMediaArtifactService(db_session)
+
+    missing_source = await service.create(
+        source_message_id="",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+    )
+    assert missing_source.ok is False
+
+    missing_kind = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="",
+    )
+    assert missing_kind.ok is False
+
+    negative_size = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        byte_size=-1,
+    )
+    assert negative_size.ok is False
+
+
+@pytest.mark.asyncio
+async def test_get_returns_none_for_unknown_or_deleted_artifact(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    assert await service.get("does-not-exist") is None
+
+    created = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+    )
+    await service.delete(created.artifact_id)
+    assert await service.get(created.artifact_id) is None
+
+
+@pytest.mark.asyncio
+async def test_disable_then_delete_lifecycle_is_monotonic_and_tombstones(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    created = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        content_hash="abc123",
+    )
+    artifact_id = created.artifact_id
+
+    disable_result = await service.disable(artifact_id, request_id="req-2")
+    assert disable_result.ok is True
+
+    artifact = await service.get(artifact_id)
+    assert artifact is not None
+    assert artifact.disabled_at is not None
+
+    # Disabling an already-disabled artifact is idempotent, not an error.
+    second_disable = await service.disable(artifact_id)
+    assert second_disable.ok is True
+
+    delete_result = await service.delete(artifact_id, request_id="req-3")
+    assert delete_result.ok is True
+
+    # get() returns None once deleted, but the tombstone row itself survives with
+    # content_hash/storage_locator cleared as the minimum audit-preserving state.
+    assert await service.get(artifact_id) is None
+    tombstone = (
+        await db_session.execute(
+            PrivateMediaArtifact.__table__.select().where(
+                PrivateMediaArtifact.artifact_id == artifact_id
+            )
+        )
+    ).mappings().first()
+    assert tombstone is not None
+    assert tombstone["deleted_at"] is not None
+    assert tombstone["content_hash"] is None
+    assert tombstone["storage_locator"] is None
+
+    # Deletion is idempotent, not a re-raised error.
+    repeat_delete = await service.delete(artifact_id)
+    assert repeat_delete.ok is True
+
+
+@pytest.mark.asyncio
+async def test_disable_and_delete_on_unknown_artifact_fail_closed(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    disable_result = await service.disable("does-not-exist")
+    assert disable_result.ok is False
+
+    delete_result = await service.delete("does-not-exist")
+    assert delete_result.ok is False
+
+
+@pytest.mark.asyncio
+async def test_list_for_owner_is_bounded_and_excludes_deleted(db_session):
+    owner = _owner()
+    db_session.add(owner)
+    await db_session.flush()
+
+    service = PrivateMediaArtifactService(db_session)
+    ids = []
+    for index in range(3):
+        result = await service.create(
+            source_message_id=f"SRC-{index}",
+            source_chat_id="2348000000001@c.us",
+            transport_provenance="view_once_command",
+            media_kind="image",
+            owner_admin_account_id=owner.id,
+        )
+        ids.append(result.artifact_id)
+    await service.delete(ids[0])
+
+    listed = await service.list_for_owner(owner.id, limit=10)
+    listed_ids = {artifact.artifact_id for artifact in listed}
+    assert ids[0] not in listed_ids
+    assert ids[1] in listed_ids and ids[2] in listed_ids
+
+
+@pytest.mark.asyncio
+async def test_list_for_owner_only_returns_that_owners_artifacts(db_session):
+    owner_a = _owner()
+    owner_b = AdminAccount(
+        name="Other",
+        whatsapp_number="2348000000009",
+        normalized_whatsapp_id="2348000000009@c.us",
+        role="admin",
+        permission_level="owner",
+        is_primary=False,
+        is_enabled=True,
+    )
+    db_session.add_all([owner_a, owner_b])
+    await db_session.flush()
+
+    service = PrivateMediaArtifactService(db_session)
+    await service.create(
+        source_message_id="SRC-A",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        owner_admin_account_id=owner_a.id,
+    )
+    await service.create(
+        source_message_id="SRC-B",
+        source_chat_id="2348000000009@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        owner_admin_account_id=owner_b.id,
+    )
+
+    listed_a = await service.list_for_owner(owner_a.id, limit=10)
+    assert len(listed_a) == 1
+    assert listed_a[0].source_message_id == "SRC-A"

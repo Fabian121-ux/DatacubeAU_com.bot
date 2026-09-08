@@ -518,6 +518,43 @@ class OutboundMessage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
+class PrivateMediaArtifact(Base):
+    """PostgreSQL authoritative metadata for the Private Media Artifact service.
+
+    Metadata only. `storage_locator` stays NULL until a private byte-storage backend
+    exists behind ``PrivateMediaArtifactService`` (docs/VIEW_ONCE_MEDIA_PIPELINE.md,
+    roadmap phase 5). No producer or delivery path is wired to this table yet.
+    """
+
+    __tablename__ = "private_media_artifacts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    artifact_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    source_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_chat_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_contact_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("contacts.id", ondelete="SET NULL")
+    )
+    owner_admin_account_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("admin_accounts.id", ondelete="SET NULL")
+    )
+    media_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    media_mime: Mapped[str | None] = mapped_column(String(160))
+    byte_size: Mapped[int | None] = mapped_column(BigInteger)
+    content_hash: Mapped[str | None] = mapped_column(String(128))
+    storage_locator: Mapped[str | None] = mapped_column(Text)
+    transport_provenance: Mapped[str] = mapped_column(String(80), nullable=False)
+    retention_policy: Mapped[str] = mapped_column(String(24), nullable=False, server_default=text("'none'"))
+    retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    last_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
 class WahaOutage(Base):
     __tablename__ = "waha_outages"
 
