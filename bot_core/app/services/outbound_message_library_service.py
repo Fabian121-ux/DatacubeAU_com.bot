@@ -310,6 +310,8 @@ class OutboundMessageLibraryService:
         message_set = await self.get_message_set(message_set_id)
         if message_set is None:
             return LibraryResult(False, error="message set not found")
+        if message_set.disabled_at is not None:
+            return LibraryResult(False, error="message set is disabled")
 
         label = str(label or "").strip()
         template_body = str(template_body or "").strip()
@@ -392,8 +394,17 @@ class OutboundMessageLibraryService:
             weight=weight,
             status=status,
         )
-        self.session.add(variant)
-        await self.session.flush()
+        # Same TOCTOU window as create_message_set's set_key check: two concurrent
+        # callers can both pass the duplicate-label query above before either INSERT
+        # commits. The partial unique index (message_set_id, label WHERE deleted_at
+        # IS NULL) then makes the loser's flush() raise IntegrityError; the SAVEPOINT
+        # contains that to just this insert.
+        try:
+            async with self.session.begin_nested():
+                self.session.add(variant)
+                await self.session.flush()
+        except IntegrityError:
+            return LibraryResult(False, error=f"label {label!r} already exists in this set")
 
         self.session.add(
             AuditLog(
@@ -487,6 +498,13 @@ class OutboundMessageLibraryService:
         absent (or empty) from ``variables`` fails the render closed rather than
         guessing, leaving a blank, or leaking the literal ``{{token}}`` text.
         """
+        if variant.deleted_at is not None or variant.disabled_at is not None or not variant.is_enabled:
+            # get_variant() deliberately still returns a disabled variant (so an
+            # owner can inspect it), but a caller holding a stale id must never be
+            # able to render content from it — cascading disable/delete onto
+            # children only matters if render() itself also refuses them.
+            return RenderResult(False, error="variant is not active")
+
         variables = variables or {}
         required = set(variant.required_variables or [])
         allowed = required | set(variant.optional_variables or [])

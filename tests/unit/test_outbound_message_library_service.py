@@ -712,3 +712,58 @@ async def test_record_variant_usage_rejects_invalid_selection_score(db_session):
         message_set_id=set_id, variant_id=variant.id, selection_score=0.87
     )
     assert real_score.ok is True
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 5 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_creation_under_a_disabled_set(db_session):
+    """Regression: get_message_set() still returns a disabled (not deleted) set, so
+    create_variant() let a new, fully enabled variant be added under it -- undoing
+    the disable-cascade for any content added afterward."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    await service.disable_message_set(set_id)
+
+    result = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    assert result.ok is False
+    assert "disabled" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_render_rejects_disabled_variant_even_when_fetched_directly(db_session):
+    """Regression: get_variant() deliberately still returns a disabled variant (so it
+    can be inspected), but render() never checked is_enabled/disabled_at/deleted_at,
+    so a caller holding the id could keep rendering a disabled variant's content --
+    the cascading-disable fix only matters if render() itself also refuses it."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+
+    await service.disable_variant(created.id)
+    variant = await service.get_variant(created.id)
+    assert variant is not None  # still individually fetchable by design
+
+    result = service.render(variant)
+    assert result.ok is False
+    assert "not active" in (result.error or "")
+    assert result.text is None
+
+
+@pytest.mark.asyncio
+async def test_create_variant_concurrent_duplicate_label_translates_cleanly(db_session):
+    """Regression: create_variant() had the same TOCTOU race as create_message_set --
+    the SAVEPOINT wrapping must not break the normal, single-threaded duplicate-label
+    rejection path (the actual concurrent-transaction race itself isn't reproducible
+    without a second live DB connection, same limitation noted for the set_key fix)."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    first = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    assert first.ok is True
+
+    duplicate = await service.create_variant(message_set_id=set_id, label="A", template_body="Hello there.")
+    assert duplicate.ok is False
+    assert "already exists" in (duplicate.error or "")
