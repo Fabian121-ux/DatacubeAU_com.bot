@@ -170,18 +170,28 @@ class PrivateMediaArtifactService:
         retries, repeated ``.vv info`` / ``.vvopen`` / ``.vv list`` on one item). This must
         converge on one artifact identity rather than minting a new opaque ``artifact_id``
         every time, matching the idempotent-per-source pattern ``view_once_media_metadata``
-        already uses. A deleted artifact is never resurrected by a later observation — the
-        caller gets a fresh row instead, same as that table's own ``deleted_at`` handling.
+        already uses.
+
+        A deletion tombstone for this exact source is a durable no-op, never a signal to
+        mint a replacement: ``view_once_media_metadata`` deliberately stays deleted across
+        re-observation (its own upsert only updates rows where ``deleted_at IS NULL``), so
+        an OWNER's ``.vv delete`` must stay durable here too. Silently recreating an active
+        artifact after deletion — which a later webhook retry or another ``.vvopen`` could
+        otherwise trigger — would undo that deletion behind the OWNER's back and leave the
+        two tables inconsistent.
 
         Enforced at the database level by ``ux_private_media_artifacts_source`` (migration
-        034), so a genuine race between two callers fails with ``IntegrityError`` rather than
-        silently duplicating; callers on non-fatal observation paths should catch that the
-        same way they already catch any other persistence failure here.
+        034) for the active-row case, so a genuine race between two callers fails with
+        ``IntegrityError`` rather than silently duplicating; callers on non-fatal observation
+        paths should catch that the same way they already catch any other persistence
+        failure here.
         """
         media_mime = str(media_mime).strip() if media_mime is not None else None
         content_hash = str(content_hash).strip() if content_hash is not None else None
 
-        existing = await self._find_active_by_source(source_chat_id, source_message_id)
+        existing = await self._find_any_by_source(source_chat_id, source_message_id)
+        if existing is not None and existing.deleted_at is not None:
+            return PrivateMediaArtifactResult(True)
         if existing is None:
             return await self.create(
                 source_message_id=source_message_id,
@@ -326,6 +336,28 @@ class PrivateMediaArtifactService:
                 .where(PrivateMediaArtifact.source_chat_id == source_chat_id)
                 .where(PrivateMediaArtifact.source_message_id == source_message_id)
                 .where(PrivateMediaArtifact.deleted_at.is_(None))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    async def _find_any_by_source(
+        self, source_chat_id: str, source_message_id: str
+    ) -> PrivateMediaArtifact | None:
+        """Like ``_find_active_by_source`` but also returns a deleted tombstone.
+
+        ``get_or_create_from_observation`` needs to see a tombstone (not just an active
+        row) so it can treat it as a durable no-op rather than falling through to
+        ``create()`` and minting a replacement for a source the OWNER already deleted.
+        """
+        source_chat_id = str(source_chat_id or "").strip()
+        source_message_id = str(source_message_id or "").strip()
+        if not source_chat_id or not source_message_id:
+            return None
+        return (
+            await self.session.execute(
+                select(PrivateMediaArtifact)
+                .where(PrivateMediaArtifact.source_chat_id == source_chat_id)
+                .where(PrivateMediaArtifact.source_message_id == source_message_id)
                 .limit(1)
             )
         ).scalar_one_or_none()

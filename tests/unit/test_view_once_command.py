@@ -85,22 +85,22 @@ async def _seed_owner(db_session, permission="owner"):
     return owner
 
 
-async def _seed_metadata(db_session, *, source_id="SRC-1", deleted=False, transport=True):
+async def _seed_metadata(db_session, *, source_id="SRC-1", deleted=False, transport=True, contact_id=None):
     await db_session.execute(
         text(
             """
             INSERT INTO view_once_media_metadata (
-                source_message_id, source_chat_id, media_type, media_mime,
+                source_message_id, source_chat_id, source_contact_id, media_type, media_mime,
                 capability_state, evidence_source, transport_available, retention_mode,
                 deleted_at
             ) VALUES (
-                :sid, :chat, 'image', 'image/jpeg',
+                :sid, :chat, :contact_id, 'image', 'image/jpeg',
                 'transient_available', 'waha_payload', :transport, 'none',
                 CASE WHEN :deleted THEN now() ELSE NULL END
             )
             """
         ),
-        {"sid": source_id, "chat": PEER_ID, "transport": transport, "deleted": deleted},
+        {"sid": source_id, "chat": PEER_ID, "contact_id": contact_id, "transport": transport, "deleted": deleted},
     )
 
 
@@ -418,6 +418,50 @@ async def test_open_passes_request_id_and_verified_byte_size_to_the_artifact(db_
         )
     ).scalars().one()
     assert audit.details_json["request_id"] == "req-123"
+
+
+@pytest.mark.asyncio
+async def test_open_carries_the_source_contact_into_the_artifact(db_session, test_contact):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, contact_id=test_contact.id)
+
+    await _run(db_session, _event(), owner)
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.source_contact_id == test_contact.id
+
+
+@pytest.mark.asyncio
+async def test_delete_then_reobserve_at_ingress_does_not_resurrect_the_artifact(db_session):
+    """The exact regression a create-on-tombstone branch would cause.
+
+    `view_once_media_metadata`'s own upsert is a no-op once a row is deleted (its
+    ON CONFLICT ... DO UPDATE is gated on `deleted_at IS NULL`), so ingress observation
+    reaches PrivateMediaArtifactService unconditionally on a repeat delivery -- a webhook
+    retry replaying the same source after an OWNER `.vv delete` must not recreate an
+    active artifact behind their back.
+    """
+    from app.services.view_once_observation_service import ViewOnceObservationService
+
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(command_id="VV-A"), owner)
+    artifact_id = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().artifact_id
+
+    await _run(db_session, _event(command_id="VV-DEL"), owner, operation="delete")
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is not None
+
+    await ViewOnceObservationService(db_session).observe(
+        payload={"id": "SRC-1", "chatId": PEER_ID, "isViewOnce": True, "media": {"url": "http://x/a.jpg", "type": "image"}},
+        source_message_id="SRC-1",
+        source_chat_id=PEER_ID,
+        source_contact_id=None,
+    )
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_id == artifact_id
+    assert artifacts[0].deleted_at is not None
 
 
 @pytest.mark.asyncio

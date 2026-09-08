@@ -415,7 +415,15 @@ async def test_get_or_create_from_observation_backfills_missing_fields_without_o
 
 
 @pytest.mark.asyncio
-async def test_get_or_create_from_observation_does_not_resurrect_a_deleted_artifact(db_session):
+async def test_get_or_create_from_observation_treats_a_deletion_tombstone_as_a_durable_no_op(db_session):
+    """A deleted source must stay deleted, never silently resurrect as a fresh active row.
+
+    Regression for a Codex review finding: `view_once_media_metadata` deliberately stays
+    deleted across re-observation (OWNER deletion is durable), so a later webhook retry
+    or another `.vvopen` recreating an active PrivateMediaArtifact for the same exact
+    source would undo that deletion behind the OWNER's back and leave the two tables
+    inconsistent.
+    """
     service = PrivateMediaArtifactService(db_session)
     first = await service.get_or_create_from_observation(
         source_message_id="SRC-1",
@@ -432,8 +440,12 @@ async def test_get_or_create_from_observation_does_not_resurrect_a_deleted_artif
         media_kind="image",
     )
 
-    assert second.artifact_id != first.artifact_id
-    assert await service.get(second.artifact_id) is not None
+    assert second.ok is True
+    assert second.artifact_id is None
+    rows = (await db_session.execute(PrivateMediaArtifact.__table__.select())).mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["artifact_id"] == first.artifact_id
+    assert rows[0]["deleted_at"] is not None
 
 
 @pytest.mark.asyncio

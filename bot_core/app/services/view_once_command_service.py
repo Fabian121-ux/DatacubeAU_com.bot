@@ -245,6 +245,7 @@ class ViewOnceCommandService:
                     # never find the artifact ingress already created for this exact
                     # source and mints a second, incorrectly-addressed one instead.
                     source_chat_id=record["source_chat_id"],
+                    source_contact_id=record["source_contact_id"],
                     owner_admin_account_id=owner.id,
                     transport_provenance="view_once_command",
                     media_kind=decision.media.media_kind,
@@ -394,8 +395,8 @@ class ViewOnceCommandService:
             await self.session.execute(
                 text(
                     """
-                    SELECT source_message_id, source_chat_id, media_type, media_mime,
-                           capability_state, transport_available, first_observed_at,
+                    SELECT source_message_id, source_chat_id, source_contact_id, media_type,
+                           media_mime, capability_state, transport_available, first_observed_at,
                            last_observed_at, returned_to_owner_at, deleted_at
                     FROM view_once_media_metadata
                     WHERE source_message_id = :source_message_id
