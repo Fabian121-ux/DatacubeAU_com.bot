@@ -134,7 +134,7 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid primary_language")
         if created_by is not None and len(created_by) > self.MAX_CREATED_BY_LENGTH:
             return LibraryResult(False, error="invalid created_by")
-        if selection_strategy not in self.ALLOWED_SELECTION_STRATEGIES:
+        if not isinstance(selection_strategy, str) or selection_strategy not in self.ALLOWED_SELECTION_STRATEGIES:
             return LibraryResult(
                 False,
                 error=(
@@ -332,7 +332,7 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid label")
         if not template_body or len(template_body) > self.MAX_TEMPLATE_BODY_LENGTH:
             return LibraryResult(False, error="invalid template_body")
-        if status not in self.ALLOWED_VARIANT_STATUSES:
+        if not isinstance(status, str) or status not in self.ALLOWED_VARIANT_STATUSES:
             return LibraryResult(
                 False,
                 error=f"status {status!r} is not valid; only {sorted(self.ALLOWED_VARIANT_STATUSES)} is accepted",
@@ -600,11 +600,19 @@ class OutboundMessageLibraryService:
         )
         if outbound_queue_id is not None and outbound_message is None:
             return LibraryResult(False, error="outbound_queue_id not found")
-        if contact is not None and outbound_message is not None and outbound_message.chat_id != contact.whatsapp_id:
+        if (
+            contact is not None
+            and outbound_message is not None
+            and outbound_message.chat_id not in (contact.whatsapp_id, contact.chat_id)
+        ):
             # Both ids exist independently but don't refer to the same delivery --
             # e.g. a real contact paired with an OutboundMessage addressed to someone
             # else. Recording it would permanently misattribute that send/variant
-            # selection in per-contact analytics.
+            # selection in per-contact analytics. A contact is identified by either
+            # whatsapp_id or chat_id (same convention as
+            # PushCommandService._contact_for_chat()'s or_(Contact.chat_id == ...,
+            # Contact.whatsapp_id == ...) lookup) -- Contact.chat_id is nullable and
+            # never equals a real chat_id string when unset, so this stays safe.
             return LibraryResult(False, error="outbound_queue_id does not belong to contact_id")
         if selection_score is not None:
             is_real_number = isinstance(selection_score, (int, float)) and not isinstance(selection_score, bool)
@@ -635,7 +643,7 @@ class OutboundMessageLibraryService:
         return LibraryResult(True, id=usage.id)
 
     async def update_usage_send_result(self, usage_id: int, send_result: str) -> LibraryResult:
-        if send_result not in self.ALLOWED_SEND_RESULTS:
+        if not isinstance(send_result, str) or send_result not in self.ALLOWED_SEND_RESULTS:
             return LibraryResult(
                 False, error=f"send_result {send_result!r} is not valid; only {sorted(self.ALLOWED_SEND_RESULTS)}"
             )

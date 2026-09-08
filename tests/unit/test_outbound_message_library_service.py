@@ -1021,3 +1021,79 @@ async def test_create_variant_rejects_non_list_collection_inputs(db_session):
     assert valid.ok is True
     variant = await service.get_variant(valid.id)
     assert variant.tags == ["vip", "lead"]
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 8 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_matches_queue_row_against_either_contact_identifier(db_session):
+    """Regression: the round-7 fix compared only Contact.whatsapp_id, rejecting a
+    legitimate pairing where the queue row targets Contact.chat_id instead -- the
+    same either-field convention PushCommandService._contact_for_chat() already uses
+    (or_(Contact.chat_id == ..., Contact.whatsapp_id == ...))."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+
+    contact = Contact(whatsapp_id="15550000003@c.us", chat_id="15550000003-group@g.us", display_name="C")
+    db_session.add(contact)
+    await db_session.flush()
+
+    queue_row_via_chat_id = OutboundMessage(chat_id="15550000003-group@g.us", message_text="hi")
+    db_session.add(queue_row_via_chat_id)
+    await db_session.flush()
+
+    result = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        contact_id=contact.id,
+        outbound_queue_id=queue_row_via_chat_id.id,
+    )
+    assert result.ok is True
+
+    other_queue_row = OutboundMessage(chat_id="99990000000@c.us", message_text="hi")
+    db_session.add(other_queue_row)
+    await db_session.flush()
+
+    mismatched = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        contact_id=contact.id,
+        outbound_queue_id=other_queue_row.id,
+    )
+    assert mismatched.ok is False
+    assert "does not belong" in (mismatched.error or "")
+
+
+@pytest.mark.asyncio
+async def test_allowlist_checks_reject_unhashable_values_instead_of_crashing(db_session):
+    """Regression: `x not in <frozenset>` raises TypeError for an unhashable value
+    (a list or dict) rather than evaluating to True, so a JSON-facing caller passing
+    an object/array for selection_strategy/status/send_result crashed instead of
+    getting the documented fail-closed LibraryResult."""
+    service = OutboundMessageLibraryService(db_session)
+
+    bad_strategy = await service.create_message_set(
+        set_key="x", name="n", description="d", category="c", selection_strategy=["deterministic_score"]
+    )
+    assert bad_strategy.ok is False
+
+    set_id = await _make_set(service)
+    bad_status = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status={"not": "a string"}
+    )
+    assert bad_status.ok is False
+
+    approved_variant = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hi.", status="approved"
+    )
+    usage = await service.record_variant_usage(message_set_id=set_id, variant_id=approved_variant.id)
+    assert usage.ok is True
+
+    bad_send_result = await service.update_usage_send_result(usage.id, ["sent"])
+    assert bad_send_result.ok is False
