@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select, text
 
 from app.core.message_normalizer import MessageNormalizer
-from app.models.schema import AdminAccount, AuditLog, OutboundMessage
+from app.models.schema import AdminAccount, AuditLog, OutboundMessage, PrivateMediaArtifact
 from app.services.command_control_service import CommandControlService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.view_once_command_service import ViewOnceCommandService
@@ -370,6 +370,42 @@ async def test_repeated_command_message_does_not_queue_two_returns(db_session):
 
     assert len(await _outbound(db_session)) == 1
     assert first.outbound_queue_id == second.outbound_queue_id
+
+
+@pytest.mark.asyncio
+async def test_open_records_metadata_only_provenance_bound_to_owner(db_session):
+    """A successful `.vvopen` return also records a PrivateMediaArtifact (roadmap phase 5).
+
+    This is provenance, not authority: no bytes, no storage_locator, and it must be
+    associated with the exact OWNER account that received the return.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.source_message_id == "SRC-1"
+    assert artifact.transport_provenance == "view_once_command"
+    assert artifact.owner_admin_account_id == owner.id
+    assert artifact.media_kind == "image"
+    assert artifact.media_mime == "image/jpeg"
+    assert artifact.storage_locator is None
+    assert artifact.retention_policy == "none"
+
+
+@pytest.mark.asyncio
+async def test_repeated_open_of_the_same_source_does_not_duplicate_the_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(command_id="VV-A"), owner)
+    await _run(db_session, _event(command_id="VV-B"), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
 
 
 @pytest.mark.asyncio

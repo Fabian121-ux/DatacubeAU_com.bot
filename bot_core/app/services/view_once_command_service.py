@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from sqlalchemy import text
@@ -8,10 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.admin_management_service import AdminManagementService
+from app.services.logging_service import log_event
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_metadata_service import OutboundMediaMetadataService
+from app.services.private_media_artifact_service import PrivateMediaArtifactService
 from app.services.view_once_capability_service import ViewOnceCapabilityService
 from app.utils.time import utcnow
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -83,6 +89,7 @@ class ViewOnceCommandService:
             record,
             quoted_id,
             message=message,
+            owner=owner,
             owner_chat_id=owner_chat_id,
             transport_message_id=transport_message_id,
             request_id=request_id,
@@ -98,6 +105,7 @@ class ViewOnceCommandService:
         quoted_id: str,
         *,
         message: Any,
+        owner: AdminAccount,
         owner_chat_id: str,
         transport_message_id: str | None,
         request_id: str | None,
@@ -218,6 +226,34 @@ class ViewOnceCommandService:
             )
         )
         await self.session.flush()
+
+        # Metadata-only provenance record (docs/VIEW_ONCE_MEDIA_PIPELINE.md roadmap phase
+        # 5). This is observability, never authority: it stores no bytes and must never
+        # block or fail an already-authorized owner return, so a failure here is logged
+        # and swallowed rather than raised.
+        try:
+            # A SAVEPOINT, not the outer transaction: a failure here (including a genuine
+            # unique-constraint race on ux_private_media_artifacts_source) must roll back
+            # only this nested attempt, never the already-queued, already-stamped owner
+            # return or its audit log.
+            async with self.session.begin_nested():
+                await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
+                    source_message_id=quoted_id,
+                    source_chat_id=owner_chat_id,
+                    owner_admin_account_id=owner.id,
+                    transport_provenance="view_once_command",
+                    media_kind=decision.media.media_kind,
+                    media_mime=decision.media.mimetype,
+                )
+        except Exception as exc:  # noqa: BLE001 - provenance recording must never break the return
+            log_event(
+                logger,
+                logging.WARNING,
+                "private_media_artifact_observation_failed",
+                source_message_id=quoted_id,
+                error=str(exc),
+            )
+
         return ViewOnceCommandResult(True, outbound_queue_id=queued.id)
 
     # ----------------------------------------------------------------------------------

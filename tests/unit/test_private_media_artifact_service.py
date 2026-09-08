@@ -339,3 +339,128 @@ async def test_list_for_owner_only_returns_that_owners_artifacts(db_session):
     listed_a = await service.list_for_owner(owner_a.id, limit=10)
     assert len(listed_a) == 1
     assert listed_a[0].source_message_id == "SRC-A"
+
+
+# --------------------------------------------------------------------------------------
+# get_or_create_from_observation: idempotent per (source_chat_id, source_message_id)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_from_observation_creates_when_absent(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    result = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    assert result.ok is True
+    artifact = await service.get(result.artifact_id)
+    assert artifact is not None
+    assert artifact.transport_provenance == "waha_webhook_observation"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_from_observation_converges_on_one_row_for_the_same_source(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    first = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+    second = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    assert first.artifact_id == second.artifact_id
+    rows = (await db_session.execute(PrivateMediaArtifact.__table__.select())).mappings().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_from_observation_backfills_missing_fields_without_overwriting(db_session):
+    owner = _owner()
+    db_session.add(owner)
+    await db_session.flush()
+
+    service = PrivateMediaArtifactService(db_session)
+    await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+        content_hash="original-hash",
+    )
+    result = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        media_mime="image/jpeg",
+        owner_admin_account_id=owner.id,
+        content_hash="a-different-hash-that-must-not-overwrite",
+    )
+
+    artifact = await service.get(result.artifact_id)
+    assert artifact.media_mime == "image/jpeg"
+    assert artifact.owner_admin_account_id == owner.id
+    # The first-observed content hash is authoritative; a later call never overwrites it.
+    assert artifact.content_hash == "original-hash"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_from_observation_does_not_resurrect_a_deleted_artifact(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    first = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+    await service.delete(first.artifact_id)
+
+    second = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    assert second.artifact_id != first.artifact_id
+    assert await service.get(second.artifact_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_source_identity_is_enforced_unique_at_the_database_level(db_session):
+    """Regression for migration 034: a raw duplicate insert must fail, not silently land.
+
+    This proves the constraint that makes get_or_create_from_observation's
+    find-then-write pattern safe under a genuine race actually exists in the schema,
+    independent of the service's own application-level lookup.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    service = PrivateMediaArtifactService(db_session)
+    await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    duplicate = PrivateMediaArtifact(
+        artifact_id="duplicate-artifact-id",
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        media_kind="image",
+        transport_provenance="waha_webhook_observation",
+    )
+    db_session.add(duplicate)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()

@@ -25,7 +25,10 @@ class PrivateMediaArtifactService:
     docs/VIEW_ONCE_MEDIA_PIPELINE.md (roadmap phase 5): opaque artifact ID, exact
     source identifiers, media kind/MIME/size/hash, transport provenance, retention
     policy, and lifecycle timestamps. It intentionally does not implement private byte
-    storage, and no producer or delivery path calls it yet.
+    storage. ``ViewOnceObservationService`` (ingress) and ``ViewOnceCommandService``
+    (``.vvopen`` owner return) both call ``get_or_create_from_observation`` to record
+    metadata-only provenance; no delivery path depends on this service's data, and a
+    failure here never blocks or fails the message it describes.
 
     Retention is fail-closed at this layer: only ``retention_policy="none"`` (no byte
     retention) may be written. Any other value is refused until a private byte-storage
@@ -148,6 +151,63 @@ class PrivateMediaArtifactService:
         await self.session.flush()
         return PrivateMediaArtifactResult(True, artifact_id=artifact_id)
 
+    async def get_or_create_from_observation(
+        self,
+        *,
+        source_message_id: str,
+        source_chat_id: str,
+        transport_provenance: str,
+        media_kind: str,
+        source_contact_id: int | None = None,
+        owner_admin_account_id: int | None = None,
+        media_mime: str | None = None,
+        byte_size: int | None = None,
+        content_hash: str | None = None,
+        request_id: str | None = None,
+    ) -> PrivateMediaArtifactResult:
+        """Idempotent per exact ``(source_chat_id, source_message_id)``.
+
+        Producers observe or re-open the same source message more than once (webhook
+        retries, repeated ``.vv info`` / ``.vvopen`` / ``.vv list`` on one item). This must
+        converge on one artifact identity rather than minting a new opaque ``artifact_id``
+        every time, matching the idempotent-per-source pattern ``view_once_media_metadata``
+        already uses. A deleted artifact is never resurrected by a later observation — the
+        caller gets a fresh row instead, same as that table's own ``deleted_at`` handling.
+
+        Enforced at the database level by ``ux_private_media_artifacts_source`` (migration
+        034), so a genuine race between two callers fails with ``IntegrityError`` rather than
+        silently duplicating; callers on non-fatal observation paths should catch that the
+        same way they already catch any other persistence failure here.
+        """
+        existing = await self._find_active_by_source(source_chat_id, source_message_id)
+        if existing is None:
+            return await self.create(
+                source_message_id=source_message_id,
+                source_chat_id=source_chat_id,
+                transport_provenance=transport_provenance,
+                media_kind=media_kind,
+                source_contact_id=source_contact_id,
+                owner_admin_account_id=owner_admin_account_id,
+                media_mime=media_mime,
+                byte_size=byte_size,
+                content_hash=content_hash,
+                request_id=request_id,
+            )
+
+        if media_mime and not existing.media_mime:
+            existing.media_mime = media_mime
+        if content_hash and not existing.content_hash:
+            existing.content_hash = content_hash
+        if byte_size is not None and existing.byte_size is None:
+            existing.byte_size = byte_size
+        if source_contact_id is not None and existing.source_contact_id is None:
+            existing.source_contact_id = source_contact_id
+        if owner_admin_account_id is not None and existing.owner_admin_account_id is None:
+            existing.owner_admin_account_id = owner_admin_account_id
+        existing.last_observed_at = utcnow()
+        await self.session.flush()
+        return PrivateMediaArtifactResult(True, artifact_id=existing.artifact_id)
+
     async def get(self, artifact_id: str) -> PrivateMediaArtifact | None:
         artifact = await self._load(artifact_id)
         if artifact is None or artifact.deleted_at is not None:
@@ -224,6 +284,23 @@ class PrivateMediaArtifactService:
         return (
             await self.session.execute(
                 select(PrivateMediaArtifact).where(PrivateMediaArtifact.artifact_id == artifact_id)
+            )
+        ).scalar_one_or_none()
+
+    async def _find_active_by_source(
+        self, source_chat_id: str, source_message_id: str
+    ) -> PrivateMediaArtifact | None:
+        source_chat_id = str(source_chat_id or "").strip()
+        source_message_id = str(source_message_id or "").strip()
+        if not source_chat_id or not source_message_id:
+            return None
+        return (
+            await self.session.execute(
+                select(PrivateMediaArtifact)
+                .where(PrivateMediaArtifact.source_chat_id == source_chat_id)
+                .where(PrivateMediaArtifact.source_message_id == source_message_id)
+                .where(PrivateMediaArtifact.deleted_at.is_(None))
+                .limit(1)
             )
         ).scalar_one_or_none()
 

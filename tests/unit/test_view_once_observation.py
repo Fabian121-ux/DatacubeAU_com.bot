@@ -9,8 +9,10 @@ no bytes, base64, or transport locator is ever persisted.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
+from app.models.schema import PrivateMediaArtifact
+from app.services.private_media_artifact_service import PrivateMediaArtifactService
 from app.services.view_once_observation_service import ViewOnceObservationService
 
 
@@ -239,3 +241,58 @@ async def test_observation_failure_never_raises_into_ingress(db_session, monkeyp
 
     assert observation.recorded is False
     assert "could not be persisted" in observation.reason
+
+
+# --------------------------------------------------------------------------------------
+# PrivateMediaArtifact provenance (roadmap phase 5, metadata only)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_positive_observation_records_metadata_only_artifact(db_session):
+    await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+    )
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.source_message_id == "SRC-1"
+    assert artifact.source_chat_id == CHAT
+    assert artifact.transport_provenance == "waha_webhook_observation"
+    assert artifact.media_kind == "image"
+    assert artifact.media_mime == "image/jpeg"
+    assert artifact.storage_locator is None
+    assert artifact.retention_policy == "none"
+
+
+@pytest.mark.asyncio
+async def test_repeated_observation_of_the_same_source_does_not_duplicate_the_artifact(db_session):
+    payload = _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"})
+
+    await _observe(db_session, payload)
+    await _observe(db_session, payload)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_recording_failure_never_raises_into_ingress(db_session, monkeypatch):
+    """The same non-fatal guarantee applies to the newer PrivateMediaArtifact write."""
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _boom)
+
+    observation = await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+    )
+
+    assert observation.recorded is True
+    rows = await _rows(db_session)
+    assert len(rows) == 1
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []

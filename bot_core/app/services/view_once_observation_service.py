@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.logging_service import log_event
+from app.services.private_media_artifact_service import PrivateMediaArtifactService
 from app.services.view_once_capability_service import ViewOnceCapabilityService
 
 
@@ -99,6 +100,29 @@ class ViewOnceObservationService:
                 error=str(exc),
             )
             return ViewOnceObservation(False, state, f"observation could not be persisted: {exc}")
+
+        try:
+            # A SAVEPOINT, not the outer transaction: a failure here (including a genuine
+            # unique-constraint race on ux_private_media_artifacts_source) must roll back
+            # only this nested attempt, never poison the already-flushed view_once_media_
+            # metadata upsert or the surrounding ingress transaction.
+            async with self.session.begin_nested():
+                await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
+                    source_message_id=canonical_id,
+                    source_chat_id=chat_id,
+                    source_contact_id=source_contact_id,
+                    transport_provenance="waha_webhook_observation",
+                    media_kind=capability.media_type or "unknown",
+                    media_mime=capability.media_mime,
+                )
+        except Exception as exc:  # noqa: BLE001 - observation must never break ingress
+            log_event(
+                logger,
+                logging.WARNING,
+                "private_media_artifact_observation_failed",
+                source_message_id=canonical_id,
+                error=str(exc),
+            )
 
         log_event(
             logger,
