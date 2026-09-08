@@ -163,6 +163,7 @@ class AdminAccountUpdate(BaseModel):
 class IdentityRegistryUpdate(BaseModel):
     registry_key: str
     category: str | None = None
+    entity_type: str | None = None
     name: str | None = None
     description: str | None = None
     aliases: list[str] | None = None
@@ -171,6 +172,7 @@ class IdentityRegistryUpdate(BaseModel):
     answer: str | None = None
     facts_json: dict[str, Any] | None = None
     enabled: bool | None = None
+    source: str | None = None
 
 
 class MemoryUpdate(BaseModel):
@@ -1519,11 +1521,28 @@ async def identity_status(
 
 @router.get("/identity/registry")
 async def get_identity_registry(
+    q: str | None = None,
+    include_disabled: bool = False,
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     svc = IdentityRegistryService(db)
-    entries = await svc.enabled_entries()
+    if q or include_disabled:
+        entries = await svc.search(q or "", include_disabled=include_disabled)
+    else:
+        entries = await svc.enabled_entries()
     return {"count": len(entries), "items": [svc.serialize(row) for row in entries]}
+
+
+@router.get("/identity/registry/{registry_key}")
+async def get_identity_registry_entry(
+    registry_key: str,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    svc = IdentityRegistryService(db)
+    row = await svc.get_by_key(registry_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="identity registry entry not found")
+    return {"ok": True, "item": svc.serialize(row)}
 
 
 @router.post("/identity/registry")
@@ -1535,7 +1554,12 @@ async def upsert_identity_registry(
     if not key:
         raise HTTPException(status_code=400, detail="registry_key is required")
     row = (
-        await db.execute(select(IdentityRegistryEntry).where(IdentityRegistryEntry.registry_key == key).limit(1))
+        await db.execute(
+            select(IdentityRegistryEntry)
+            .where(IdentityRegistryEntry.registry_key == key)
+            .where(IdentityRegistryEntry.deleted_at.is_(None))
+            .limit(1)
+        )
     ).scalar_one_or_none()
     if not row:
         if not payload.name or not payload.description or not payload.answer:
@@ -1543,6 +1567,7 @@ async def upsert_identity_registry(
         row = IdentityRegistryEntry(
             registry_key=key,
             category=payload.category or "Identity",
+            entity_type=payload.entity_type,
             name=payload.name,
             description=payload.description,
             aliases=payload.aliases or [],
@@ -1551,12 +1576,13 @@ async def upsert_identity_registry(
             answer=payload.answer,
             facts_json=payload.facts_json or {},
             is_enabled=True if payload.enabled is None else payload.enabled,
+            source=payload.source or "admin_dashboard",
             created_at=utcnow(),
             updated_at=utcnow(),
         )
         db.add(row)
     else:
-        for field in ("category", "name", "description", "aliases", "keywords", "entities", "answer", "facts_json"):
+        for field in ("category", "entity_type", "name", "description", "aliases", "keywords", "entities", "answer", "facts_json", "source"):
             value = getattr(payload, field)
             if value is not None:
                 setattr(row, field, value)
@@ -1566,6 +1592,19 @@ async def upsert_identity_registry(
     db.add(AuditLog(action="identity_registry_updated", entity_type="identity_registry", entity_id=key, details_json={"registry_key": key}))
     await db.commit()
     return {"ok": True, "item": IdentityRegistryService.serialize(row)}
+
+
+@router.delete("/identity/registry/{registry_key}")
+async def delete_identity_registry_entry(
+    registry_key: str,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    svc = IdentityRegistryService(db)
+    deleted = await svc.delete(registry_key)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="identity registry entry not found")
+    await db.commit()
+    return {"ok": True, "registry_key": registry_key}
 
 
 @router.get("/faq")

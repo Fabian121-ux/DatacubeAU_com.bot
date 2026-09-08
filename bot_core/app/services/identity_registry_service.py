@@ -3,16 +3,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import IdentityRegistryEntry
+from app.models.schema import AuditLog, IdentityRegistryEntry
 from app.services.faq_service import FAQService
 from app.utils.time import utcnow
 
 
 class IdentityRegistryService:
     """Authoritative registry for Zina/Fabian/project identity facts."""
+
+    SEARCH_LIMIT = 50
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -43,10 +45,79 @@ class IdentityRegistryService:
     async def enabled_entries(self) -> list[IdentityRegistryEntry]:
         rows = (
             await self.session.execute(
-                select(IdentityRegistryEntry).where(IdentityRegistryEntry.is_enabled.is_(True)).order_by(IdentityRegistryEntry.id)
+                select(IdentityRegistryEntry)
+                .where(IdentityRegistryEntry.is_enabled.is_(True))
+                .where(IdentityRegistryEntry.deleted_at.is_(None))
+                .order_by(IdentityRegistryEntry.id)
             )
         ).scalars().all()
         return [row for row in rows if hasattr(row, "registry_key")]
+
+    async def get_by_key(self, registry_key: str) -> IdentityRegistryEntry | None:
+        """Fetch a single entry by key, including disabled ones, excluding deleted ones."""
+        key = str(registry_key or "").strip()
+        if not key:
+            return None
+        return (
+            await self.session.execute(
+                select(IdentityRegistryEntry)
+                .where(IdentityRegistryEntry.registry_key == key)
+                .where(IdentityRegistryEntry.deleted_at.is_(None))
+            )
+        ).scalar_one_or_none()
+
+    async def search(
+        self, query: str, *, include_disabled: bool = False, limit: int = SEARCH_LIMIT
+    ) -> list[IdentityRegistryEntry]:
+        """Substring search over key/name/category/description, excluding deleted rows.
+
+        This is a simple, explainable filter -- consistent with the registry's existing
+        scoring approach elsewhere in this file, not a new retrieval mechanism.
+        """
+        term = str(query or "").strip().lower()
+        bounded_limit = max(1, min(int(limit), 200))
+        stmt = select(IdentityRegistryEntry).where(IdentityRegistryEntry.deleted_at.is_(None))
+        if not include_disabled:
+            stmt = stmt.where(IdentityRegistryEntry.is_enabled.is_(True))
+        if term:
+            pattern = f"%{term}%"
+            stmt = stmt.where(
+                or_(
+                    IdentityRegistryEntry.registry_key.ilike(pattern),
+                    IdentityRegistryEntry.name.ilike(pattern),
+                    IdentityRegistryEntry.category.ilike(pattern),
+                    IdentityRegistryEntry.description.ilike(pattern),
+                )
+            )
+        stmt = stmt.order_by(IdentityRegistryEntry.id).limit(bounded_limit)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def delete(self, registry_key: str, *, request_id: str | None = None) -> bool:
+        """Soft-delete: tombstone the row rather than removing it.
+
+        Consistent with the tombstone pattern used elsewhere in this codebase (view-once
+        metadata, private media artifacts) -- deletion is monotonic and auditable, not a
+        hard row removal. A deleted entry is excluded from enabled_entries/get_by_key/
+        search and can never be resurrected by ensure_defaults_from_profile (it only
+        seeds keys that are absent from *enabled* entries, and a deleted key stays
+        absent from that set, so it also will not silently reappear as a default).
+        """
+        entry = await self.get_by_key(registry_key)
+        if entry is None:
+            return False
+        entry.deleted_at = utcnow()
+        entry.is_enabled = False
+        entry.updated_at = utcnow()
+        self.session.add(
+            AuditLog(
+                action="identity_registry_deleted",
+                entity_type="identity_registry",
+                entity_id=entry.registry_key,
+                details_json={"request_id": request_id},
+            )
+        )
+        await self.session.flush()
+        return True
 
     async def resolve_references(self, text_value: str) -> str:
         if "{{identity:" not in text_value:
@@ -61,13 +132,28 @@ class IdentityRegistryService:
         return re.sub(r"\{\{\s*identity:([a-zA-Z0-9_\-]+)\s*\}\}", repl, text_value)
 
     async def ensure_defaults_from_profile(self, profile: dict[str, str]) -> None:
-        existing = {entry.registry_key for entry in await self.enabled_entries()}
+        """Seed default entries the first time each registry_key is ever seen.
+
+        Existence is checked against *every* row for that key -- enabled, disabled, or
+        deleted -- because `registry_key` carries a unique constraint regardless of
+        lifecycle state. Checking only enabled rows was a real bug: a default that was
+        merely disabled (not deleted) would look "absent" here and a second insert with
+        the same key would raise an IntegrityError on flush. Deleted defaults are also
+        never resurrected by this method, since their key still occupies the unique
+        constraint until explicitly recreated by a human.
+        """
+        existing = set(
+            (
+                await self.session.execute(select(IdentityRegistryEntry.registry_key))
+            ).scalars().all()
+        )
         owner_name = profile.get("owner_name") or "Fabian"
         assistant_name = profile.get("assistant_name") or "Zina"
         defaults = [
             {
                 "registry_key": "zina",
                 "category": "Zina",
+                "entity_type": "assistant",
                 "name": assistant_name,
                 "description": f"{assistant_name} is {owner_name}'s personal AI assistant.",
                 "aliases": [assistant_name, "assistant", "you"],
@@ -79,6 +165,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "fabian",
                 "category": "Owner",
+                "entity_type": "person",
                 "name": owner_name,
                 "description": profile.get("owner_bio") or f"{owner_name} is the owner and creator I assist.",
                 "aliases": [owner_name, "owner", "creator"],
@@ -90,6 +177,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "services",
                 "category": "Services",
+                "entity_type": "meta",
                 "name": "Fabian Services",
                 "description": profile.get("services") or "Fabian builds AI-assisted systems, automation tools, and productivity-focused projects.",
                 "aliases": ["services", "what Fabian offers"],
@@ -101,6 +189,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "datacube_au",
                 "category": "Datacube AU",
+                "entity_type": "project",
                 "name": "Datacube AU",
                 "description": "Datacube AU is part of Fabian's AI assistant and automation ecosystem.",
                 "aliases": ["Datacube", "Datacube AU"],
@@ -112,6 +201,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "zinax",
                 "category": "ZinaX",
+                "entity_type": "project",
                 "name": "ZinaX",
                 "description": "ZinaX is a project in Fabian's AI assistant ecosystem.",
                 "aliases": ["ZinaX"],
@@ -123,6 +213,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "moxiz_gateway",
                 "category": "Projects",
+                "entity_type": "project",
                 "name": "Moxiz Gateway",
                 "description": "Moxiz Gateway is part of Fabian's broader product and automation ecosystem.",
                 "aliases": ["Moxiz", "Moxiz Gateway"],
@@ -134,6 +225,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "projects",
                 "category": "Projects",
+                "entity_type": "meta",
                 "name": "Fabian Projects",
                 "description": profile.get("projects") or f"{owner_name}'s active ecosystem includes Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway.",
                 "aliases": ["projects", "Fabian projects", "what Fabian is building"],
@@ -145,6 +237,7 @@ class IdentityRegistryService:
             {
                 "registry_key": "skills",
                 "category": "Skills",
+                "entity_type": "meta",
                 "name": "Fabian Skills",
                 "description": profile.get("skills") or f"{owner_name} works across AI systems, automation, Python, FastAPI, TypeScript, Docker, cybersecurity, and workflow tooling.",
                 "aliases": ["skills", "Fabian skills", "what Fabian can do"],
@@ -157,7 +250,11 @@ class IdentityRegistryService:
         for item in defaults:
             if item["registry_key"] in existing:
                 continue
-            self.session.add(IdentityRegistryEntry(**item, is_enabled=True, created_at=utcnow(), updated_at=utcnow()))
+            self.session.add(
+                IdentityRegistryEntry(
+                    **item, source="system_default", is_enabled=True, created_at=utcnow(), updated_at=utcnow()
+                )
+            )
         await self.session.flush()
 
     @classmethod
@@ -189,6 +286,8 @@ class IdentityRegistryService:
             "facts_json": entry.facts_json or {},
             "is_enabled": entry.is_enabled,
             "enabled": entry.is_enabled,
+            "source": entry.source,
+            "entity_type": entry.entity_type,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
         }
