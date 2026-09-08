@@ -136,6 +136,80 @@ async def test_create_rejects_invalid_inputs(db_session):
 
 
 @pytest.mark.asyncio
+async def test_create_rejects_unknown_transport_provenance(db_session):
+    """transport_provenance is a closed set of producer labels, never arbitrary text.
+
+    A caller passing a temporary transport URL, token, or other capability as
+    provenance must be refused here rather than have it land verbatim in AuditLog.
+    """
+    service = PrivateMediaArtifactService(db_session)
+    result = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="http://waha:3000/api/files/secret-token.jpg",
+        media_kind="image",
+    )
+
+    assert result.ok is False
+    assert result.artifact_id is None
+    assert "not a known producer label" in (result.error or "")
+
+    rows = (await db_session.execute(PrivateMediaArtifact.__table__.select())).mappings().all()
+    assert rows == []
+    audit_rows = (
+        await db_session.execute(
+            AuditLog.__table__.select().where(AuditLog.action == "private_media_artifact_created")
+        )
+    ).mappings().all()
+    assert audit_rows == []
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_oversized_bounded_fields_cleanly(db_session):
+    """An oversized field must return a validation error, never an unhandled DB exception.
+
+    Regression for a Codex review finding on PR #44: media_kind/media_mime/
+    transport_provenance/content_hash were unbounded before the row reached flush(),
+    so an oversized value crashed with asyncpg's StringDataRightTruncationError
+    instead of the result-based validation API this service otherwise exposes.
+    """
+    service = PrivateMediaArtifactService(db_session)
+
+    oversized_kind = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="x" * 41,
+    )
+    assert oversized_kind.ok is False
+    assert "media_kind" in (oversized_kind.error or "")
+
+    oversized_mime = await service.create(
+        source_message_id="SRC-2",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        media_mime="x" * 161,
+    )
+    assert oversized_mime.ok is False
+    assert "media_mime" in (oversized_mime.error or "")
+
+    oversized_hash = await service.create(
+        source_message_id="SRC-3",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        content_hash="x" * 129,
+    )
+    assert oversized_hash.ok is False
+    assert "content_hash" in (oversized_hash.error or "")
+
+    # Nothing was ever added to the session for any of the three rejected calls.
+    rows = (await db_session.execute(PrivateMediaArtifact.__table__.select())).mappings().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_get_returns_none_for_unknown_or_deleted_artifact(db_session):
     service = PrivateMediaArtifactService(db_session)
     assert await service.get("does-not-exist") is None
