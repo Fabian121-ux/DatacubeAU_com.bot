@@ -142,6 +142,20 @@ class ViewOnceCapabilityService:
         return max(sizes) if sizes else None
 
     @classmethod
+    def infer_media_kind(cls, media_type: str | None, media_mime: str | None) -> str | None:
+        """Best-effort media category for callers that only need a coarse kind.
+
+        ``ViewOnceCapability.media_type`` is the raw ``type`` string a payload
+        happened to expose and is often ``None`` even when the MIME alone makes the
+        category unambiguous (a top-level ``type`` next to a nested ``media`` object
+        with only a URL/MIME, for example). This reuses the same category inference
+        ``_media()`` already applies internally for conflict detection, so a caller
+        recording a durable ``media_kind`` does not have to duplicate that mapping or
+        settle for a knowable "unknown".
+        """
+        return cls._media_category(media_type, media_mime)
+
+    @classmethod
     def _explicit_view_once(cls, payload: Any, depth: int = 0) -> bool | None:
         if depth > cls._MAX_DEPTH or not isinstance(payload, dict):
             return None

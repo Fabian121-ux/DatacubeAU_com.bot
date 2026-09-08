@@ -112,7 +112,10 @@ class ViewOnceObservationService:
                     source_chat_id=chat_id,
                     source_contact_id=source_contact_id,
                     transport_provenance="waha_webhook_observation",
-                    media_kind=capability.media_type or "unknown",
+                    media_kind=(
+                        ViewOnceCapabilityService.infer_media_kind(capability.media_type, capability.media_mime)
+                        or "unknown"
+                    ),
                     media_mime=capability.media_mime,
                 )
         except Exception as exc:  # noqa: BLE001 - observation must never break ingress

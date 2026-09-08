@@ -464,3 +464,64 @@ async def test_source_identity_is_enforced_unique_at_the_database_level(db_sessi
     db_session.add(duplicate)
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_from_observation_backfill_rejects_oversized_fields_cleanly(db_session):
+    """The backfill path bypasses create()'s row construction, so it must repeat the
+    same bounds validation rather than let an oversized value reach flush() as an
+    unhandled StringDataRightTruncationError (regression for a Codex review finding
+    on this PR).
+    """
+    service = PrivateMediaArtifactService(db_session)
+    created = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    result = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+        media_mime="x" * 161,
+    )
+
+    assert result.ok is False
+    assert "media_mime" in (result.error or "")
+    # The existing row must be untouched, not partially mutated then rolled back.
+    artifact = await service.get(created.artifact_id)
+    assert artifact.media_mime is None
+
+
+# --------------------------------------------------------------------------------------
+# delete_by_source
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_by_source_tombstones_the_matching_artifact(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    created = await service.create(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    result = await service.delete_by_source("2348000000001@c.us", "SRC-1")
+
+    assert result.ok is True
+    assert await service.get(created.artifact_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_by_source_is_a_noop_when_nothing_was_ever_recorded(db_session):
+    service = PrivateMediaArtifactService(db_session)
+
+    result = await service.delete_by_source("2348000000001@c.us", "NEVER-OBSERVED")
+
+    assert result.ok is True
+    assert result.artifact_id is None

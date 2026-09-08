@@ -268,6 +268,23 @@ async def test_positive_observation_records_metadata_only_artifact(db_session):
 
 
 @pytest.mark.asyncio
+async def test_media_kind_is_inferred_from_mime_when_the_nested_media_has_no_type(db_session):
+    """Regression: a top-level `type` next to a bare `media: {url, mimetype}` (no nested
+    `type` key) is the normal ingress payload shape used by test_view_once_ingress_
+    integration.py. `ViewOnceCapabilityService.media_type` only reads the nested key, so
+    without inferring from MIME the artifact would be durably misclassified as "unknown"
+    despite the MIME making the category unambiguous.
+    """
+    await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg"}),
+    )
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.media_kind == "image"
+
+
+@pytest.mark.asyncio
 async def test_repeated_observation_of_the_same_source_does_not_duplicate_the_artifact(db_session):
     payload = _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"})
 

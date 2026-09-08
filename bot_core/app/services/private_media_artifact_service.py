@@ -100,12 +100,11 @@ class PrivateMediaArtifactService:
             )
         if not media_kind or len(media_kind) > self.MAX_MEDIA_KIND_LENGTH:
             return PrivateMediaArtifactResult(False, error="invalid media_kind")
-        if media_mime is not None and (not media_mime or len(media_mime) > self.MAX_MEDIA_MIME_LENGTH):
-            return PrivateMediaArtifactResult(False, error="invalid media_mime")
-        if content_hash is not None and (not content_hash or len(content_hash) > self.MAX_CONTENT_HASH_LENGTH):
-            return PrivateMediaArtifactResult(False, error="invalid content_hash")
-        if byte_size is not None and byte_size < 0:
-            return PrivateMediaArtifactResult(False, error="byte_size cannot be negative")
+        optional_error = self._validate_optional_fields(
+            media_mime=media_mime, content_hash=content_hash, byte_size=byte_size
+        )
+        if optional_error:
+            return PrivateMediaArtifactResult(False, error=optional_error)
         if retention_policy not in self.ALLOWED_RETENTION_POLICIES:
             return PrivateMediaArtifactResult(
                 False,
@@ -179,6 +178,9 @@ class PrivateMediaArtifactService:
         silently duplicating; callers on non-fatal observation paths should catch that the
         same way they already catch any other persistence failure here.
         """
+        media_mime = str(media_mime).strip() if media_mime is not None else None
+        content_hash = str(content_hash).strip() if content_hash is not None else None
+
         existing = await self._find_active_by_source(source_chat_id, source_message_id)
         if existing is None:
             return await self.create(
@@ -194,6 +196,15 @@ class PrivateMediaArtifactService:
                 request_id=request_id,
             )
 
+        # The backfill path bypasses create()'s row construction entirely, so it must
+        # repeat the same bounds validation here rather than let an oversized value
+        # reach flush() as an unhandled StringDataRightTruncationError.
+        optional_error = self._validate_optional_fields(
+            media_mime=media_mime, content_hash=content_hash, byte_size=byte_size
+        )
+        if optional_error:
+            return PrivateMediaArtifactResult(False, error=optional_error)
+
         if media_mime and not existing.media_mime:
             existing.media_mime = media_mime
         if content_hash and not existing.content_hash:
@@ -207,6 +218,21 @@ class PrivateMediaArtifactService:
         existing.last_observed_at = utcnow()
         await self.session.flush()
         return PrivateMediaArtifactResult(True, artifact_id=existing.artifact_id)
+
+    async def delete_by_source(
+        self, source_chat_id: str, source_message_id: str, *, request_id: str | None = None
+    ) -> PrivateMediaArtifactResult:
+        """Tombstone the artifact for an exact source, if one was ever recorded.
+
+        A no-op (``ok=True``, no ``artifact_id``) when nothing was recorded for this
+        source — callers that only want to keep an OWNER-facing metadata delete (for
+        example ``.vv delete`` against ``view_once_media_metadata``) in sync with this
+        newer table should not have to branch on whether observation ever ran.
+        """
+        existing = await self._find_active_by_source(source_chat_id, source_message_id)
+        if existing is None:
+            return PrivateMediaArtifactResult(True)
+        return await self.delete(existing.artifact_id, request_id=request_id)
 
     async def get(self, artifact_id: str) -> PrivateMediaArtifact | None:
         artifact = await self._load(artifact_id)
@@ -307,3 +333,22 @@ class PrivateMediaArtifactService:
     @classmethod
     def _new_artifact_id(cls) -> str:
         return secrets.token_urlsafe(cls.ARTIFACT_ID_BYTES)
+
+    @classmethod
+    def _validate_optional_fields(
+        cls,
+        *,
+        media_mime: str | None,
+        content_hash: str | None,
+        byte_size: int | None,
+    ) -> str | None:
+        """Shared bounds-checking for the fields both ``create`` and the backfill path
+        in ``get_or_create_from_observation`` may write. Callers must normalize
+        (strip) ``media_mime``/``content_hash`` before calling this."""
+        if media_mime is not None and (not media_mime or len(media_mime) > cls.MAX_MEDIA_MIME_LENGTH):
+            return "invalid media_mime"
+        if content_hash is not None and (not content_hash or len(content_hash) > cls.MAX_CONTENT_HASH_LENGTH):
+            return "invalid content_hash"
+        if byte_size is not None and byte_size < 0:
+            return "byte_size cannot be negative"
+        return None

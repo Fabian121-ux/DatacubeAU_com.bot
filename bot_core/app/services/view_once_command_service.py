@@ -239,11 +239,18 @@ class ViewOnceCommandService:
             async with self.session.begin_nested():
                 await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
                     source_message_id=quoted_id,
-                    source_chat_id=owner_chat_id,
+                    # The source identity is where the media originated (the same chat
+                    # ingress observation recorded it under), never the OWNER self-DM
+                    # destination the return is queued to -- otherwise this call can
+                    # never find the artifact ingress already created for this exact
+                    # source and mints a second, incorrectly-addressed one instead.
+                    source_chat_id=record["source_chat_id"],
                     owner_admin_account_id=owner.id,
                     transport_provenance="view_once_command",
                     media_kind=decision.media.media_kind,
                     media_mime=decision.media.mimetype,
+                    byte_size=size,
+                    request_id=request_id,
                 )
         except Exception as exc:  # noqa: BLE001 - provenance recording must never break the return
             log_event(
@@ -353,6 +360,26 @@ class ViewOnceCommandService:
             )
         )
         await self.session.flush()
+
+        # Keep the newer PrivateMediaArtifact table (if observation or a prior .vvopen
+        # ever recorded one for this exact source) in sync with this deletion, rather
+        # than leaving an active artifact row behind an OWNER-deleted view_once_media_
+        # metadata record. Same non-fatal posture as the two recording call sites: this
+        # must never turn a successful metadata delete into a failure.
+        try:
+            async with self.session.begin_nested():
+                await PrivateMediaArtifactService(self.session).delete_by_source(
+                    record["source_chat_id"], quoted_id, request_id=request_id
+                )
+        except Exception as exc:  # noqa: BLE001 - artifact cleanup must never break the delete
+            log_event(
+                logger,
+                logging.WARNING,
+                "private_media_artifact_observation_failed",
+                source_message_id=quoted_id,
+                error=str(exc),
+            )
+
         return self._reply(
             "Zina's metadata for this item was deleted. Zina never stored the media itself, "
             "so no media bytes were removed."
