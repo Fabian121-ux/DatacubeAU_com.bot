@@ -32,12 +32,28 @@ class PrivateMediaArtifactService:
     backend, TTL enforcement, and quota bounds exist behind this service, per the
     documented privacy defaults. This is deliberate: expanding the allowed set here is
     the trigger for that future work, not a value to loosen ahead of it.
+
+    ``transport_provenance`` is similarly restricted to a closed set of known producer
+    labels rather than arbitrary caller-supplied text: the media pipeline's privacy
+    contract (docs/VIEW_ONCE_MEDIA_PIPELINE.md) requires that transport URLs, tokens,
+    or other capabilities never enter durable logs, and this value is written verbatim
+    into ``AuditLog``. Adding a new producer means adding its label here deliberately,
+    not passing whatever string it happens to have on hand.
+
+    Every bounded field is length-checked against its column limit before the row is
+    ever added to the session, so a malformed caller gets a clean
+    ``PrivateMediaArtifactResult(False, ...)`` instead of an unhandled
+    ``StringDataRightTruncationError`` surfacing from ``flush()``.
     """
 
     ALLOWED_RETENTION_POLICIES = frozenset({"none"})
+    ALLOWED_TRANSPORT_PROVENANCES = frozenset({"view_once_command", "waha_webhook_observation"})
     ARTIFACT_ID_BYTES = 24
     MAX_SOURCE_ID_LENGTH = 200
     MAX_CHAT_ID_LENGTH = 120
+    MAX_MEDIA_KIND_LENGTH = 40
+    MAX_MEDIA_MIME_LENGTH = 160
+    MAX_CONTENT_HASH_LENGTH = 128
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -62,14 +78,29 @@ class PrivateMediaArtifactService:
         transport_provenance = str(transport_provenance or "").strip()
         media_kind = str(media_kind or "").strip()
 
+        media_mime = str(media_mime).strip() if media_mime is not None else None
+        content_hash = str(content_hash).strip() if content_hash is not None else None
+
         if not source_message_id or len(source_message_id) > self.MAX_SOURCE_ID_LENGTH:
             return PrivateMediaArtifactResult(False, error="invalid source_message_id")
         if not source_chat_id or len(source_chat_id) > self.MAX_CHAT_ID_LENGTH:
             return PrivateMediaArtifactResult(False, error="invalid source_chat_id")
         if not transport_provenance:
             return PrivateMediaArtifactResult(False, error="transport_provenance is required")
-        if not media_kind:
-            return PrivateMediaArtifactResult(False, error="media_kind is required")
+        if transport_provenance not in self.ALLOWED_TRANSPORT_PROVENANCES:
+            return PrivateMediaArtifactResult(
+                False,
+                error=(
+                    f"transport_provenance {transport_provenance!r} is not a known producer label; "
+                    f"only {sorted(self.ALLOWED_TRANSPORT_PROVENANCES)} is accepted"
+                ),
+            )
+        if not media_kind or len(media_kind) > self.MAX_MEDIA_KIND_LENGTH:
+            return PrivateMediaArtifactResult(False, error="invalid media_kind")
+        if media_mime is not None and (not media_mime or len(media_mime) > self.MAX_MEDIA_MIME_LENGTH):
+            return PrivateMediaArtifactResult(False, error="invalid media_mime")
+        if content_hash is not None and (not content_hash or len(content_hash) > self.MAX_CONTENT_HASH_LENGTH):
+            return PrivateMediaArtifactResult(False, error="invalid content_hash")
         if byte_size is not None and byte_size < 0:
             return PrivateMediaArtifactResult(False, error="byte_size cannot be negative")
         if retention_policy not in self.ALLOWED_RETENTION_POLICIES:
