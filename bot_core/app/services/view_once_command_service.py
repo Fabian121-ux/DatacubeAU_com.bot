@@ -169,6 +169,20 @@ class ViewOnceCommandService:
 
         existing = await self._existing_return(transport_message_id)
         if existing is not None:
+            # A command retry (same transport_message_id) must still reconcile
+            # provenance: if the first attempt's own artifact write transiently
+            # failed, this retry is otherwise the only chance to create or backfill
+            # it, since _existing_return's dedupe would return before ever reaching
+            # that call again.
+            await self._record_artifact(
+                quoted_id=quoted_id,
+                record=record,
+                owner=owner,
+                media_kind=decision.media.media_kind,
+                media_mime=decision.media.mimetype,
+                byte_size=size,
+                request_id=request_id,
+            )
             return ViewOnceCommandResult(True, outbound_queue_id=existing)
 
         caption = f"View-once {decision.media.media_kind} from your WhatsApp history."
@@ -227,10 +241,36 @@ class ViewOnceCommandService:
         )
         await self.session.flush()
 
-        # Metadata-only provenance record (docs/VIEW_ONCE_MEDIA_PIPELINE.md roadmap phase
-        # 5). This is observability, never authority: it stores no bytes and must never
-        # block or fail an already-authorized owner return, so a failure here is logged
-        # and swallowed rather than raised.
+        await self._record_artifact(
+            quoted_id=quoted_id,
+            record=record,
+            owner=owner,
+            media_kind=decision.media.media_kind,
+            media_mime=decision.media.mimetype,
+            byte_size=size,
+            request_id=request_id,
+        )
+
+        return ViewOnceCommandResult(True, outbound_queue_id=queued.id)
+
+    async def _record_artifact(
+        self,
+        *,
+        quoted_id: str,
+        record: dict[str, Any],
+        owner: AdminAccount,
+        media_kind: str,
+        media_mime: str | None,
+        byte_size: int | None,
+        request_id: str | None,
+    ) -> None:
+        """Metadata-only provenance record (docs/VIEW_ONCE_MEDIA_PIPELINE.md roadmap
+        phase 5). This is observability, never authority: it stores no bytes and must
+        never block or fail an already-authorized owner return, so a failure here is
+        logged and swallowed rather than raised. Called from both the fresh-return and
+        existing-return (retry) paths in ``_open``, so a transient failure on the first
+        attempt still gets reconciled on a retry of the same command message.
+        """
         try:
             # A SAVEPOINT, not the outer transaction: a failure here (including a genuine
             # unique-constraint race on ux_private_media_artifacts_source) must roll back
@@ -248,9 +288,9 @@ class ViewOnceCommandService:
                     source_contact_id=record["source_contact_id"],
                     owner_admin_account_id=owner.id,
                     transport_provenance="view_once_command",
-                    media_kind=decision.media.media_kind,
-                    media_mime=decision.media.mimetype,
-                    byte_size=size,
+                    media_kind=media_kind,
+                    media_mime=media_mime,
+                    byte_size=byte_size,
                     request_id=request_id,
                 )
             if not artifact_result.ok:
@@ -269,8 +309,6 @@ class ViewOnceCommandService:
                 source_message_id=quoted_id,
                 error=str(exc),
             )
-
-        return ViewOnceCommandResult(True, outbound_queue_id=queued.id)
 
     # ----------------------------------------------------------------------------------
     # .vv info / list / delete
@@ -347,33 +385,38 @@ class ViewOnceCommandService:
     ) -> ViewOnceCommandResult:
         if record is None:
             return self._reply(f"No view-once metadata observed for source {quoted_id}.")
-        if record["deleted_at"] is not None:
-            return self._reply("Zina's metadata for this item was already deleted.")
 
-        await self.session.execute(
-            text(
-                """
-                UPDATE view_once_media_metadata
-                SET deleted_at = now(), capability_state = 'deleted', transport_available = false
-                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
-                """
-            ),
-            {"source_message_id": quoted_id},
-        )
-        self.session.add(
-            AuditLog(
-                action="view_once_metadata_deleted",
-                entity_type="view_once_media_metadata",
-                entity_id=quoted_id,
-                details_json={"request_id": request_id, "source_message_id": quoted_id},
+        already_deleted = record["deleted_at"] is not None
+
+        if not already_deleted:
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE view_once_media_metadata
+                    SET deleted_at = now(), capability_state = 'deleted', transport_available = false
+                    WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                    """
+                ),
+                {"source_message_id": quoted_id},
             )
-        )
-        await self.session.flush()
+            self.session.add(
+                AuditLog(
+                    action="view_once_metadata_deleted",
+                    entity_type="view_once_media_metadata",
+                    entity_id=quoted_id,
+                    details_json={"request_id": request_id, "source_message_id": quoted_id},
+                )
+            )
+            await self.session.flush()
 
         # Keep the newer PrivateMediaArtifact table (if observation or a prior .vvopen
         # ever recorded one for this exact source) in sync with this deletion, rather
         # than leaving an active artifact row behind an OWNER-deleted view_once_media_
-        # metadata record. Same non-fatal posture as the two recording call sites: this
+        # metadata record. Retried even when the metadata row was already deleted:
+        # `delete_by_source` is idempotent, and this is the OWNER's only way to repair
+        # a split state left by an earlier attempt whose artifact cleanup transiently
+        # failed -- otherwise a repeat `.vv delete` on an already-deleted source would
+        # never try again. Same non-fatal posture as the two recording call sites: this
         # must never turn a successful metadata delete into a failure.
         try:
             async with self.session.begin_nested():
@@ -396,6 +439,9 @@ class ViewOnceCommandService:
                 source_message_id=quoted_id,
                 error=str(exc),
             )
+
+        if already_deleted:
+            return self._reply("Zina's metadata for this item was already deleted.")
 
         return self._reply(
             "Zina's metadata for this item was deleted. Zina never stored the media itself, "

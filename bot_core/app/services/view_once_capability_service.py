@@ -129,7 +129,7 @@ class ViewOnceCapabilityService:
         _, id_conflict = cls._consistent_message_id(reply_to)
         if id_conflict:
             return None
-        return cls._size_from_candidates(cls._media_candidates(reply_to))
+        return cls._size_from_candidates(cls._size_candidates(reply_to))
 
     @classmethod
     def message_media_size(cls, payload: Any) -> int | None:
@@ -137,7 +137,23 @@ class ViewOnceCapabilityService:
         rather than a reply/quote snapshot nested under ``replyTo``."""
         if not isinstance(payload, dict):
             return None
-        return cls._size_from_candidates(cls._media_candidates(payload))
+        return cls._size_from_candidates(cls._size_candidates(payload))
+
+    @classmethod
+    def _size_candidates(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """``_media_candidates`` plus the engine-level ``_data`` container itself.
+
+        Matches ``MessageNormalizer._reported_size``, which checks three sources: the
+        top-level ``media`` dict, ``_data.media``, and ``_data`` itself -- some engines
+        report ``fileSize`` directly on ``_data`` rather than nested under its own
+        ``media`` key. ``_media_candidates`` only ever collects dicts found under a
+        ``media`` key, so it alone misses that third source.
+        """
+        candidates = list(cls._media_candidates(payload))
+        data = payload.get("_data")
+        if isinstance(data, dict):
+            candidates.append(data)
+        return candidates
 
     @staticmethod
     def _size_from_candidates(candidates: list[dict[str, Any]]) -> int | None:

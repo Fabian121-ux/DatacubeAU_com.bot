@@ -375,6 +375,32 @@ async def test_repeated_command_message_does_not_queue_two_returns(db_session):
 
 
 @pytest.mark.asyncio
+async def test_retrying_the_same_command_reconciles_a_previously_failed_artifact_write(db_session, monkeypatch):
+    """A command retry (same transport_message_id) must not be the artifact's only
+    chance: `_existing_return`'s dedupe returns before the artifact call is ever
+    reached again, so if the first attempt's artifact write transiently failed, only
+    the existing-return path itself can repair it.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    event = _event(command_id="VV-RETRY")
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _boom)
+    first = await _run(db_session, event, owner)
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+    monkeypatch.undo()
+    second = await _run(db_session, event, owner)
+
+    assert first.outbound_queue_id == second.outbound_queue_id
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.source_message_id == "SRC-1"
+
+
+@pytest.mark.asyncio
 async def test_open_records_metadata_only_provenance_bound_to_owner(db_session):
     """A successful `.vvopen` return also records a PrivateMediaArtifact (roadmap phase 5).
 
@@ -552,6 +578,32 @@ async def test_delete_without_a_recorded_artifact_still_succeeds(db_session):
 
     assert "was deleted" in result.reply_text
     assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_delete_retries_a_previously_failed_artifact_cleanup(db_session, monkeypatch):
+    """A second `.vv delete` on an already-deleted source must retry artifact
+    tombstoning rather than short-circuit before ever reaching it again -- otherwise a
+    transient cleanup failure on the first attempt is permanently unrepairable.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "delete_by_source", _boom)
+    first = await _run(db_session, _event(), owner, operation="delete")
+    assert "was deleted" in first.reply_text
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is None
+
+    monkeypatch.undo()
+    second = await _run(db_session, _event(), owner, operation="delete")
+
+    assert "already deleted" in second.reply_text
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.deleted_at is not None
 
 
 @pytest.mark.asyncio

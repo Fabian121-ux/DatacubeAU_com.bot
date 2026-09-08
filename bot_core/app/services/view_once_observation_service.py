@@ -101,32 +101,18 @@ class ViewOnceObservationService:
             )
             return ViewOnceObservation(False, state, f"observation could not be persisted: {exc}")
 
+        # view_once_media_metadata is the authoritative deletion signal: its own upsert
+        # above is a no-op once deleted (WHERE deleted_at IS NULL), but that alone
+        # doesn't stop this method from continuing on to the artifact call below.
+        # Without this check, a source with no artifact row yet -- a legacy observation
+        # predating this deployment, or one where an earlier artifact write itself
+        # failed -- would have a fresh *active* artifact created for it here, silently
+        # resurrecting metadata the OWNER already deleted via `.vv delete`. This is a
+        # second, independent guard alongside get_or_create_from_observation's own
+        # tombstone check, which only protects a source that already has an artifact
+        # row to find.
         try:
-            # A SAVEPOINT, not the outer transaction: a failure here (including a genuine
-            # unique-constraint race on ux_private_media_artifacts_source) must roll back
-            # only this nested attempt, never poison the already-flushed view_once_media_
-            # metadata upsert or the surrounding ingress transaction.
-            async with self.session.begin_nested():
-                artifact_result = await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
-                    source_message_id=canonical_id,
-                    source_chat_id=chat_id,
-                    source_contact_id=source_contact_id,
-                    transport_provenance="waha_webhook_observation",
-                    media_kind=(
-                        ViewOnceCapabilityService.infer_media_kind(capability.media_type, capability.media_mime)
-                        or "unknown"
-                    ),
-                    media_mime=capability.media_mime,
-                    byte_size=ViewOnceCapabilityService.message_media_size(payload),
-                )
-            if not artifact_result.ok:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "private_media_artifact_observation_failed",
-                    source_message_id=canonical_id,
-                    error=artifact_result.error,
-                )
+            already_deleted = await self._is_deleted(canonical_id)
         except Exception as exc:  # noqa: BLE001 - observation must never break ingress
             log_event(
                 logger,
@@ -135,6 +121,44 @@ class ViewOnceObservationService:
                 source_message_id=canonical_id,
                 error=str(exc),
             )
+            already_deleted = True  # fail closed: skip the artifact write, don't guess
+
+        if not already_deleted:
+            try:
+                # A SAVEPOINT, not the outer transaction: a failure here (including a
+                # genuine unique-constraint race on ux_private_media_artifacts_source)
+                # must roll back only this nested attempt, never poison the already-
+                # flushed view_once_media_metadata upsert or the surrounding ingress
+                # transaction.
+                async with self.session.begin_nested():
+                    artifact_result = await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
+                        source_message_id=canonical_id,
+                        source_chat_id=chat_id,
+                        source_contact_id=source_contact_id,
+                        transport_provenance="waha_webhook_observation",
+                        media_kind=(
+                            ViewOnceCapabilityService.infer_media_kind(capability.media_type, capability.media_mime)
+                            or PrivateMediaArtifactService.UNKNOWN_MEDIA_KIND
+                        ),
+                        media_mime=capability.media_mime,
+                        byte_size=ViewOnceCapabilityService.message_media_size(payload),
+                    )
+                if not artifact_result.ok:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "private_media_artifact_observation_failed",
+                        source_message_id=canonical_id,
+                        error=artifact_result.error,
+                    )
+            except Exception as exc:  # noqa: BLE001 - observation must never break ingress
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "private_media_artifact_observation_failed",
+                    source_message_id=canonical_id,
+                    error=str(exc),
+                )
 
         log_event(
             logger,
@@ -145,6 +169,20 @@ class ViewOnceObservationService:
             media_type=capability.media_type,
         )
         return ViewOnceObservation(True, state, capability.reason)
+
+    async def _is_deleted(self, source_message_id: str) -> bool:
+        """True only when a row exists for this source and is tombstoned.
+
+        No row at all (never observed before) is not deletion -- it must fall through
+        to a normal first-time creation, not be treated as fail-closed.
+        """
+        row = (
+            await self.session.execute(
+                text("SELECT deleted_at FROM view_once_media_metadata WHERE source_message_id = :source_message_id"),
+                {"source_message_id": source_message_id},
+            )
+        ).mappings().first()
+        return row is not None and row["deleted_at"] is not None
 
     async def _upsert(
         self,

@@ -353,5 +353,56 @@ async def test_rejected_artifact_write_is_logged(db_session, monkeypatch, caplog
     assert observation.recorded is True
     assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
     assert "private_media_artifact_observation_failed" in caplog.text
-    assert "simulated validation rejection" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reported_size_under_data_container_is_recorded(db_session):
+    """`MessageNormalizer._reported_size` treats `_data` itself (not just `_data.media`)
+    as a size source for some engines. `_media_candidates` alone only ever collects
+    dicts found under a `media` key, so without also checking `_data` directly this
+    size would be silently missed.
+    """
+    await _observe(
+        db_session,
+        _payload(
+            isViewOnce=True,
+            media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"},
+            _data={"fileSize": 99999},
+        ),
+    )
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.byte_size == 99999
+
+
+@pytest.mark.asyncio
+async def test_metadata_tombstone_with_no_artifact_row_is_honored(db_session):
+    """The exact regression a create-on-no-row branch would cause when no artifact was
+    ever created for a source that view_once_media_metadata already has tombstoned --
+    a legacy observation predating this deployment, or one where an earlier artifact
+    write itself failed. Re-observation must not create a fresh active artifact for a
+    source the OWNER already deleted, even though get_or_create_from_observation's own
+    tombstone check has nothing to find (no artifact row exists at all).
+    """
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO view_once_media_metadata (
+                source_message_id, source_chat_id, media_type, media_mime,
+                capability_state, evidence_source, transport_available, retention_mode,
+                deleted_at
+            ) VALUES (
+                'SRC-1', :chat, 'image', 'image/jpeg',
+                'transient_available', 'waha_payload', true, 'none', now()
+            )
+            """
+        ),
+        {"chat": CHAT},
+    )
+
+    await _observe(
+        db_session,
+        _payload(isViewOnce=True, media={"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}),
+    )
+
     assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []

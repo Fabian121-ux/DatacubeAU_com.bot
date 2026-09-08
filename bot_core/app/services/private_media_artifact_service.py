@@ -51,6 +51,10 @@ class PrivateMediaArtifactService:
 
     ALLOWED_RETENTION_POLICIES = frozenset({"none"})
     ALLOWED_TRANSPORT_PROVENANCES = frozenset({"view_once_command", "waha_webhook_observation"})
+    # A caller may not yet have real evidence of the media category (see
+    # ViewOnceCapabilityService.infer_media_kind). This sentinel marks that row as
+    # backfillable once real evidence arrives, rather than permanently misclassified.
+    UNKNOWN_MEDIA_KIND = "unknown"
     ARTIFACT_ID_BYTES = 24
     MAX_SOURCE_ID_LENGTH = 200
     MAX_CHAT_ID_LENGTH = 120
@@ -188,6 +192,9 @@ class PrivateMediaArtifactService:
         """
         media_mime = str(media_mime).strip() if media_mime is not None else None
         content_hash = str(content_hash).strip() if content_hash is not None else None
+        media_kind = str(media_kind or "").strip()
+        if not media_kind or len(media_kind) > self.MAX_MEDIA_KIND_LENGTH:
+            return PrivateMediaArtifactResult(False, error="invalid media_kind")
 
         existing = await self._find_any_by_source(source_chat_id, source_message_id)
         if existing is not None and existing.deleted_at is not None:
@@ -215,6 +222,13 @@ class PrivateMediaArtifactService:
         if optional_error:
             return PrivateMediaArtifactResult(False, error=optional_error)
 
+        # media_kind is otherwise permanent once set (unlike the fields below, it's
+        # required and non-null), but the UNKNOWN_MEDIA_KIND sentinel exists precisely
+        # to mark a row as not yet classified -- real evidence arriving later (a
+        # command return with a validated kind, for example) must be able to replace
+        # it rather than leave the row permanently misclassified.
+        if existing.media_kind == self.UNKNOWN_MEDIA_KIND and media_kind != self.UNKNOWN_MEDIA_KIND:
+            existing.media_kind = media_kind
         if media_mime and not existing.media_mime:
             existing.media_mime = media_mime
         if content_hash and not existing.content_hash:

@@ -415,6 +415,53 @@ async def test_get_or_create_from_observation_backfills_missing_fields_without_o
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_from_observation_backfills_an_unknown_media_kind(db_session):
+    """UNKNOWN_MEDIA_KIND is a "not yet classified" sentinel, not a permanent value --
+    real evidence arriving later (a command return with a validated kind, say) must be
+    able to replace it, unlike the other backfilled fields which are first-write-wins.
+    """
+    service = PrivateMediaArtifactService(db_session)
+    first = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind=PrivateMediaArtifactService.UNKNOWN_MEDIA_KIND,
+    )
+
+    result = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="image",
+    )
+
+    assert result.artifact_id == first.artifact_id
+    artifact = await service.get(result.artifact_id)
+    assert artifact.media_kind == "image"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_from_observation_never_overwrites_a_known_media_kind(db_session):
+    service = PrivateMediaArtifactService(db_session)
+    first = await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="waha_webhook_observation",
+        media_kind="image",
+    )
+
+    await service.get_or_create_from_observation(
+        source_message_id="SRC-1",
+        source_chat_id="2348000000001@c.us",
+        transport_provenance="view_once_command",
+        media_kind="video",
+    )
+
+    artifact = await service.get(first.artifact_id)
+    assert artifact.media_kind == "image"
+
+
+@pytest.mark.asyncio
 async def test_get_or_create_from_observation_treats_a_deletion_tombstone_as_a_durable_no_op(db_session):
     """A deleted source must stay deleted, never silently resurrect as a fresh active row.
 
