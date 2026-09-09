@@ -95,6 +95,44 @@ class OutboundMessageLibraryService:
         self.session = session
 
     # ------------------------------------------------------------------------------
+    # Locked reads
+    # ------------------------------------------------------------------------------
+    #
+    # Every method below that checks a lifecycle flag (is_enabled/disabled_at/
+    # deleted_at) before deciding whether to mutate or reject must read through
+    # here, not session.get()/a plain select(): this project's sessions use
+    # expire_on_commit=False, so a plain read returns whatever object this
+    # session's identity map already cached for that primary key without
+    # applying another session's committed change. FOR UPDATE additionally
+    # serializes against a *concurrent* mutation (not just a stale cache), and
+    # populate_existing=True is required alongside it -- FOR UPDATE alone
+    # re-runs the query, but the identity map still wins over its fresh result
+    # unless populate_existing forces the cached object's attributes to be
+    # overwritten. Missing populate_existing here was itself a bug (round 12):
+    # it silently defeated the FOR UPDATE lock round 11 added to create_variant()
+    # and record_variant_usage() for exactly the same reason.
+
+    async def _locked_message_set(self, message_set_id: int) -> OutboundMessageSet | None:
+        return (
+            await self.session.execute(
+                select(OutboundMessageSet)
+                .where(OutboundMessageSet.id == message_set_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
+    async def _locked_variant(self, variant_id: int) -> OutboundMessageVariant | None:
+        return (
+            await self.session.execute(
+                select(OutboundMessageVariant)
+                .where(OutboundMessageVariant.id == variant_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
+    # ------------------------------------------------------------------------------
     # Message sets
     # ------------------------------------------------------------------------------
 
@@ -205,8 +243,8 @@ class OutboundMessageLibraryService:
         return list((await self.session.execute(stmt)).scalars().all())
 
     async def disable_message_set(self, message_set_id: int, *, request_id: str | None = None) -> LibraryResult:
-        message_set = await self.get_message_set(message_set_id)
-        if message_set is None:
+        message_set = await self._locked_message_set(message_set_id)
+        if message_set is None or message_set.deleted_at is not None:
             return LibraryResult(False, error="message set not found")
         if message_set.disabled_at is not None:
             return LibraryResult(True, id=message_set_id)
@@ -245,7 +283,7 @@ class OutboundMessageLibraryService:
         return LibraryResult(True, id=message_set_id)
 
     async def delete_message_set(self, message_set_id: int, *, request_id: str | None = None) -> LibraryResult:
-        message_set = await self.session.get(OutboundMessageSet, message_set_id)
+        message_set = await self._locked_message_set(message_set_id)
         if message_set is None:
             return LibraryResult(False, error="message set not found")
         if message_set.deleted_at is not None:
@@ -379,21 +417,7 @@ class OutboundMessageLibraryService:
         # the set and finish cascading its *existing* children, and only then would
         # A's insert land -- a new, never-cascaded, fully enabled variant under a
         # disabled set.
-        message_set = (
-            await self.session.execute(
-                select(OutboundMessageSet)
-                .where(OutboundMessageSet.id == message_set_id)
-                .with_for_update()
-                # FOR UPDATE alone re-runs the query but the identity map still
-                # returns whatever object this session already loaded for that
-                # primary key without applying the freshly locked column values --
-                # found while adding the identical lock to record_variant_usage()
-                # (round 11): a caller that fetched this set earlier in the same
-                # session (e.g. via get_message_set()) would otherwise still see the
-                # stale is_enabled/disabled_at this lock exists to protect against.
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
+        message_set = await self._locked_message_set(message_set_id)
         if message_set is None or message_set.deleted_at is not None:
             return LibraryResult(False, error="message set not found")
         if message_set.disabled_at is not None:
@@ -503,8 +527,8 @@ class OutboundMessageLibraryService:
         return list((await self.session.execute(stmt)).scalars().all())
 
     async def disable_variant(self, variant_id: int, *, request_id: str | None = None) -> LibraryResult:
-        variant = await self.get_variant(variant_id)
-        if variant is None:
+        variant = await self._locked_variant(variant_id)
+        if variant is None or variant.deleted_at is not None:
             return LibraryResult(False, error="variant not found")
         if variant.disabled_at is not None:
             return LibraryResult(True, id=variant_id)
@@ -525,7 +549,7 @@ class OutboundMessageLibraryService:
         return LibraryResult(True, id=variant_id)
 
     async def delete_variant(self, variant_id: int, *, request_id: str | None = None) -> LibraryResult:
-        variant = await self.session.get(OutboundMessageVariant, variant_id)
+        variant = await self._locked_variant(variant_id)
         if variant is None:
             return LibraryResult(False, error="variant not found")
         if variant.deleted_at is not None:
@@ -582,7 +606,6 @@ class OutboundMessageLibraryService:
 
         variables = variables or {}
         required = set(variant.required_variables or [])
-        allowed = required | set(variant.optional_variables or [])
 
         # Defense in depth, same order as create_variant(): a maintenance script or
         # direct ORM edit could change template_body after creation without going
@@ -602,11 +625,18 @@ class OutboundMessageLibraryService:
         if malformed:
             return RenderResult(False, error=f"template contains malformed variable placeholder(s) {malformed!r}")
 
+        # create_variant() enforces tokens_in_body == required_variables exactly, so
+        # an optional variable is *metadata only* and can never legitimately appear
+        # as a literal {{token}} in the body -- a subset check against
+        # required | optional would therefore let a tampered body reference a
+        # declared-optional name that _is_blank()/missing (below) never requires,
+        # and _substitute() would then raise a plain KeyError on it instead of
+        # returning a fail-closed RenderResult. Re-enforce the exact match here too.
         tokens_in_body = set(_TOKEN_PATTERN.findall(variant.template_body))
-        if not tokens_in_body <= allowed:
+        if tokens_in_body != required:
             # Defense in depth: creation already enforces this, but never render a
             # template whose placeholders drifted outside its declared contract.
-            return RenderResult(False, error="template contains undeclared variable(s)")
+            return RenderResult(False, error="template contains undeclared or missing variable(s)")
 
         def _is_blank(value: Any) -> bool:
             if value is None:
@@ -658,20 +688,7 @@ class OutboundMessageLibraryService:
         # This also reads directly from the database rather than the session's
         # identity map, so a concurrently hard-deleted row is a plain None here, not
         # the InvalidRequestError session.refresh() would raise.
-        variant = (
-            await self.session.execute(
-                select(OutboundMessageVariant)
-                .where(OutboundMessageVariant.id == variant_id)
-                .with_for_update()
-                # FOR UPDATE alone re-runs the query but SQLAlchemy's identity map
-                # still returns whatever object this session already loaded for that
-                # primary key without applying the freshly queried column values --
-                # the exact expire_on_commit=False staleness this fix exists to close.
-                # populate_existing=True forces the row just locked to overwrite the
-                # cached object's attributes instead of being discarded.
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
+        variant = await self._locked_variant(variant_id)
         if variant is None:
             return LibraryResult(False, error="variant not found")
         if variant.message_set_id != message_set_id:
@@ -752,6 +769,26 @@ class OutboundMessageLibraryService:
             ).scalar_one_or_none()
             if existing is None:
                 return LibraryResult(False, error="outbound_queue_id usage conflict")
+            # The conflict alone only proves *some* row already claims this
+            # outbound_queue_id -- not that it's a retry of *this* selection. If a
+            # caller first recorded variant A against this queue row and later,
+            # separately, recorded variant B against the same row (a bug elsewhere,
+            # or two different selection attempts racing), treating B's call as a
+            # successful idempotent no-op would silently attribute B's delivery to
+            # A in the analytics this table exists to keep accurate. Only an exact
+            # match on the row's immutable selection identity is a genuine retry.
+            if (
+                existing.message_set_id != message_set_id
+                or existing.variant_id != variant_id
+                or existing.contact_id != contact_id
+            ):
+                return LibraryResult(
+                    False,
+                    error=(
+                        f"outbound_queue_id {outbound_queue_id!r} is already recorded against a "
+                        "different selection"
+                    ),
+                )
             return LibraryResult(True, id=existing.id)
         return LibraryResult(True, id=usage.id)
 

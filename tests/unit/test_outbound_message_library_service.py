@@ -16,7 +16,14 @@ import os
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models.schema import AuditLog, Contact, OutboundMessage, OutboundMessageVariant, OutboundVariantUsage
+from app.models.schema import (
+    AuditLog,
+    Contact,
+    OutboundMessage,
+    OutboundMessageSet,
+    OutboundMessageVariant,
+    OutboundVariantUsage,
+)
 from app.services.outbound_message_library_service import OutboundMessageLibraryService
 
 
@@ -1402,3 +1409,153 @@ async def test_create_variant_locked_read_sees_a_set_disabled_by_another_session
     result = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
     assert result.ok is False
     assert "disabled" in (result.error or "")
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 12 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_disable_message_set_sees_a_disable_committed_by_another_session(db_session):
+    """Regression: disable_message_set() read the set through get_message_set(), a
+    plain cached get -- with expire_on_commit=False, a session that already loaded
+    this set (e.g. to display it) would still see disabled_at=None after another
+    session disabled and committed it, missing the idempotent guard, overwriting
+    the original disabled_at/updated_at, and emitting a duplicate audit event."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    # Load it into this session's identity map first, same as a real caller would.
+    message_set = await service.get_message_set(set_id)
+    assert message_set is not None
+    await db_session.commit()
+
+    async def _disable_and_capture(other_session):
+        other_service = OutboundMessageLibraryService(other_session)
+        result = await other_service.disable_message_set(set_id)
+        assert result.ok is True
+
+    await _run_in_second_session(_disable_and_capture)
+
+    original_disabled_at = (
+        await db_session.execute(
+            OutboundMessageSet.__table__.select().where(OutboundMessageSet.id == set_id)
+        )
+    ).mappings().one()["disabled_at"]
+    assert original_disabled_at is not None
+
+    # A second disable_message_set() call in *this* session must recognize the
+    # set is already disabled (idempotent no-op), not silently overwrite the
+    # timestamp and emit a second audit event.
+    result = await service.disable_message_set(set_id)
+    assert result.ok is True
+
+    audits = (
+        await db_session.execute(
+            AuditLog.__table__.select().where(AuditLog.action == "outbound_message_set_disabled")
+        )
+    ).fetchall()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_variant_sees_a_delete_committed_by_another_session(db_session):
+    """Regression: delete_variant() read the row through a plain session.get(),
+    which -- with expire_on_commit=False -- returns this session's already-cached
+    object without a fresh query. A variant already loaded here (e.g. to check its
+    label) and then deleted by another session would still look active here,
+    missing the idempotent guard and re-running the delete/audit-log path."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+    await db_session.commit()
+
+    async def _delete(other_session):
+        await OutboundMessageLibraryService(other_session).delete_variant(created.id)
+
+    await _run_in_second_session(_delete)
+
+    result = await service.delete_variant(created.id)
+    assert result.ok is True
+
+    audits = (
+        await db_session.execute(
+            AuditLog.__table__.select().where(AuditLog.action == "outbound_message_variant_deleted")
+        )
+    ).fetchall()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_render_fails_closed_instead_of_crashing_on_a_tampered_optional_token(db_session):
+    """Regression: create_variant() enforces tokens_in_body == required_variables
+    exactly, so a declared-optional variable can never legitimately appear as a
+    literal {{token}} in the body. render()'s subset check (tokens_in_body <=
+    required | optional) missed that invariant, so a body tampered with after
+    creation (a maintenance script or direct ORM edit) to reference a declared
+    but unsupplied optional token passed validation and then crashed
+    _substitute() with a plain KeyError instead of returning a fail-closed
+    RenderResult."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi {{first_name}}.",
+        required_variables=["first_name"],
+        optional_variables=["nickname"],
+        status="approved",
+    )
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+
+    variant.template_body = "Hi {{first_name}}, {{nickname}}."
+    await db_session.flush()
+
+    result = await service.render(variant, {"first_name": "Ada"})
+    assert result.ok is False
+    assert result.text is None
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_idempotency_key_reuse_for_a_different_selection(db_session):
+    """Regression: the round-11 idempotency fix treated any existing row for the
+    same outbound_queue_id as a successful retry, without checking that its
+    message_set_id/variant_id/contact_id actually matched the new call. Recording
+    variant B against a queue row already claimed by variant A silently returned
+    A's usage id as "success", permanently misattributing the delivery in
+    per-variant analytics instead of surfacing the conflict."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant_a = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    variant_b = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hello.", status="approved"
+    )
+    queue_row = OutboundMessage(chat_id="15550000010@c.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    first = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant_a.id, outbound_queue_id=queue_row.id
+    )
+    assert first.ok is True
+
+    conflicting = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant_b.id, outbound_queue_id=queue_row.id
+    )
+    assert conflicting.ok is False
+    assert "different selection" in (conflicting.error or "")
+
+    rows = (
+        await db_session.execute(
+            OutboundVariantUsage.__table__.select().where(
+                OutboundVariantUsage.outbound_queue_id == queue_row.id
+            )
+        )
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0].variant_id == variant_a.id
