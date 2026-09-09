@@ -270,17 +270,22 @@ async def test_deleted_default_is_not_resurrected_by_the_special_answer_fallback
     regardless of *why* it was missing -- so deleting a seeded default (e.g. "fabian")
     had zero observable effect on that exact phrase-matched answer, silently undoing
     the OWNER's delete. Each phrase below must stop returning the deleted entry's own
-    stale text once it is gone. `answer()` may still fall through to a legitimate,
-    differently-worded match from some other, non-deleted entry (that is the intended
-    job of the scored-fallback layer, not a regression) -- this only pins down that the
-    *specific* resurrected default text is gone.
+    stale text once it is gone.
+
+    A later round found that `answer()` could still leak the deleted fact through a
+    *different* door: once `_special_answer` refused, `answer()` fell through to its
+    scored-match loop, where the still-active "projects" entry -- whose own answer
+    text separately lists every project by name -- could win and re-state the exact
+    fact that was just deleted. `_explicit_target_key` now refuses outright, before
+    scoring, whenever a query unambiguously targets one specific unavailable key --
+    so these assertions are `is None`, not just "not the old text".
     """
     service = IdentityRegistryService(db_session)
     await service.ensure_defaults_from_profile(PROFILE)
 
     assert await service.answer("who is fabian") == "Fabian is the owner and creator I assist."
     await service.delete("fabian")
-    assert await service.answer("who is fabian") != "Fabian is the owner and creator I assist."
+    assert await service.answer("who is fabian") is None
 
     assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
     await service.delete("zina")
@@ -289,11 +294,9 @@ async def test_deleted_default_is_not_resurrected_by_the_special_answer_fallback
     datacube_answer = "Datacube AU is an AI-powered assistant and knowledge automation project created by Fabian."
     assert await service.answer("what is datacube") == datacube_answer
     await service.delete("datacube_au")
-    # The old hardcoded _special_answer fallback ("...educational intelligence platform
-    # founded by...") must not appear either, on top of the real entry's answer above.
-    result = await service.answer("what is datacube")
-    assert result != datacube_answer
-    assert result is None or "educational intelligence platform" not in result
+    # Must not leak the old hardcoded _special_answer literal, the real entry's own
+    # answer, NOR the "projects" entry's answer (which separately mentions Datacube AU).
+    assert await service.answer("what is datacube") is None
 
 
 @pytest.mark.asyncio
@@ -305,3 +308,29 @@ async def test_special_answer_still_serves_non_deleted_defaults_after_an_unrelat
     # "zina"/"zinax" were never deleted -- unrelated deletions must not suppress them.
     assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
     assert "ZinaX" in (await service.answer("what is zinax") or "")
+
+
+@pytest.mark.asyncio
+async def test_unavailable_default_keys_includes_disabled_not_only_deleted(db_session):
+    """A default that is merely disabled (not deleted) must also count as
+
+    "unavailable" -- otherwise reviving a tombstoned key via the admin API with
+    `enabled=False` would clear the tombstone and immediately look "never
+    configured" again to `_special_answer`, resurrecting the hardcoded default text
+    for a key the OWNER just asked to keep off.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    assert await service.unavailable_default_keys() == set()
+
+    zina = await service.get_by_key("zina")
+    zina.is_enabled = False
+    await db_session.flush()
+
+    assert "zina" in await service.unavailable_default_keys()
+    assert await service.answer("who are you?") is None
+
+    await service.delete("fabian")
+    unavailable = await service.unavailable_default_keys()
+    assert {"zina", "fabian"} <= unavailable
