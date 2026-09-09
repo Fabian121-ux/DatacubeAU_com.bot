@@ -260,3 +260,48 @@ async def test_enabled_entries_excludes_deleted_rows(db_session):
 
     entries = await service.enabled_entries()
     assert all(entry.registry_key != "projects" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_deleted_default_is_not_resurrected_by_the_special_answer_fallback(db_session):
+    """Regression (Codex review on PR #47, landed after merge): `_special_answer`'s
+
+    hardcoded fallback text fired whenever no active entry existed for a default key,
+    regardless of *why* it was missing -- so deleting a seeded default (e.g. "fabian")
+    had zero observable effect on that exact phrase-matched answer, silently undoing
+    the OWNER's delete. Each phrase below must stop returning the deleted entry's own
+    stale text once it is gone. `answer()` may still fall through to a legitimate,
+    differently-worded match from some other, non-deleted entry (that is the intended
+    job of the scored-fallback layer, not a regression) -- this only pins down that the
+    *specific* resurrected default text is gone.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    assert await service.answer("who is fabian") == "Fabian is the owner and creator I assist."
+    await service.delete("fabian")
+    assert await service.answer("who is fabian") != "Fabian is the owner and creator I assist."
+
+    assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
+    await service.delete("zina")
+    assert await service.answer("who are you?") is None
+
+    datacube_answer = "Datacube AU is an AI-powered assistant and knowledge automation project created by Fabian."
+    assert await service.answer("what is datacube") == datacube_answer
+    await service.delete("datacube_au")
+    # The old hardcoded _special_answer fallback ("...educational intelligence platform
+    # founded by...") must not appear either, on top of the real entry's answer above.
+    result = await service.answer("what is datacube")
+    assert result != datacube_answer
+    assert result is None or "educational intelligence platform" not in result
+
+
+@pytest.mark.asyncio
+async def test_special_answer_still_serves_non_deleted_defaults_after_an_unrelated_delete(db_session):
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    await service.delete("fabian")
+
+    # "zina"/"zinax" were never deleted -- unrelated deletions must not suppress them.
+    assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
+    assert "ZinaX" in (await service.answer("what is zinax") or "")

@@ -1561,7 +1561,17 @@ async def upsert_identity_registry(
             .limit(1)
         )
     ).scalar_one_or_none()
+    tombstoned_row = None
     if not row:
+        tombstoned_row = (
+            await db.execute(
+                select(IdentityRegistryEntry)
+                .where(IdentityRegistryEntry.registry_key == key)
+                .where(IdentityRegistryEntry.deleted_at.is_not(None))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if not row and not tombstoned_row:
         if not payload.name or not payload.description or not payload.answer:
             raise HTTPException(status_code=400, detail="name, description, and answer are required for a new identity registry entry")
         row = IdentityRegistryEntry(
@@ -1581,6 +1591,26 @@ async def upsert_identity_registry(
             updated_at=utcnow(),
         )
         db.add(row)
+    elif tombstoned_row:
+        # registry_key carries a global unique constraint regardless of lifecycle state,
+        # so a deleted row must be revived in place rather than inserted alongside --
+        # a second insert with the same key would crash with an IntegrityError.
+        if not payload.name or not payload.description or not payload.answer:
+            raise HTTPException(status_code=400, detail="name, description, and answer are required to recreate a deleted identity registry entry")
+        row = tombstoned_row
+        row.deleted_at = None
+        row.category = payload.category or "Identity"
+        row.entity_type = payload.entity_type
+        row.name = payload.name
+        row.description = payload.description
+        row.aliases = payload.aliases or []
+        row.keywords = payload.keywords or []
+        row.entities = payload.entities or []
+        row.answer = payload.answer
+        row.facts_json = payload.facts_json or {}
+        row.is_enabled = True if payload.enabled is None else payload.enabled
+        row.source = payload.source or "admin_dashboard"
+        row.updated_at = utcnow()
     else:
         for field in ("category", "entity_type", "name", "description", "aliases", "keywords", "entities", "answer", "facts_json", "source"):
             value = getattr(payload, field)

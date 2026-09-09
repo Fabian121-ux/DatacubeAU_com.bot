@@ -16,16 +16,23 @@ class IdentityRegistryService:
 
     SEARCH_LIMIT = 50
 
+    #: registry keys `_special_answer` will otherwise substitute a hardcoded default
+    #: for when no active entry exists -- used to tell "never seeded" apart from
+    #: "the OWNER intentionally deleted this" so a deletion can't be silently undone
+    #: by a hardcoded fallback.
+    _DEFAULT_FALLBACK_KEYS = ("zina", "fabian", "datacube_au", "zinax", "projects", "services")
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def answer(self, message_text: str) -> str | None:
         normalized = FAQService.semantic_normalize(message_text)
         entries = await self.enabled_entries()
-        if not entries:
+        deleted_keys = await self._deleted_default_keys()
+        if not entries and not deleted_keys:
             return None
 
-        special = self._special_answer(normalized, entries)
+        special = self._special_answer(normalized, entries, deleted_keys)
         if special:
             return special
 
@@ -52,6 +59,16 @@ class IdentityRegistryService:
             )
         ).scalars().all()
         return [row for row in rows if hasattr(row, "registry_key")]
+
+    async def _deleted_default_keys(self) -> set[str]:
+        rows = (
+            await self.session.execute(
+                select(IdentityRegistryEntry.registry_key)
+                .where(IdentityRegistryEntry.registry_key.in_(self._DEFAULT_FALLBACK_KEYS))
+                .where(IdentityRegistryEntry.deleted_at.is_not(None))
+            )
+        ).scalars().all()
+        return set(rows)
 
     async def get_by_key(self, registry_key: str) -> IdentityRegistryEntry | None:
         """Fetch a single entry by key, including disabled ones, excluding deleted ones."""
@@ -293,7 +310,17 @@ class IdentityRegistryService:
         }
 
     @staticmethod
-    def _special_answer(normalized: str, entries: list[IdentityRegistryEntry]) -> str | None:
+    def _special_answer(
+        normalized: str, entries: list[IdentityRegistryEntry], deleted_keys: set[str] | None = None
+    ) -> str | None:
+        """Phrase-matched shortcuts for the most common identity questions.
+
+        `deleted_keys` names default registry keys the OWNER has explicitly deleted.
+        For those, this returns None instead of the hardcoded fallback text below --
+        an intentional deletion must not be silently undone by substituting the same
+        default fact back in just because no active row remains to answer from.
+        """
+        deleted_keys = deleted_keys or set()
         by_key = {entry.registry_key: entry for entry in entries}
         owner = by_key.get("fabian")
         owner_name = owner.name if owner else "Fabian"
@@ -301,30 +328,46 @@ class IdentityRegistryService:
         assistant_name = assistant.name if assistant else "Zina"
 
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
-            return assistant.answer if assistant else f"I am {assistant_name}, {owner_name}'s AI assistant."
+            if assistant:
+                return assistant.answer
+            return None if "zina" in deleted_keys else f"I am {assistant_name}, {owner_name}'s AI assistant."
         if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you", "who create zina", "who own zina")):
+            if "zina" in deleted_keys or "fabian" in deleted_keys:
+                return None
             return f"{owner_name} created {assistant_name}."
         if "why were you create" in normalized or "why do you exist" in normalized:
+            if "zina" in deleted_keys:
+                return None
             return (
                 f"{assistant_name} was created to help {owner_name} manage memory, project context, "
                 "knowledge retrieval, WhatsApp conversations, and controlled AI access."
             )
         if "who is fabian" in normalized:
-            return owner.answer if owner else f"{owner_name} is the owner and creator I assist."
+            if owner:
+                return owner.answer
+            return None if "fabian" in deleted_keys else f"{owner_name} is the owner and creator I assist."
         if "project" in normalized and "fabian" in normalized:
             projects = by_key.get("projects")
-            return projects.answer if projects else f"{owner_name}'s core projects include Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway."
+            if projects:
+                return projects.answer
+            return None if "projects" in deleted_keys else f"{owner_name}'s core projects include Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway."
         if "service" in normalized and ("fabian" in normalized or "offer" in normalized or "provide" in normalized):
             services = by_key.get("services")
-            return services.answer if services else f"{owner_name} focuses on AI-assisted systems, automation tools, and productivity-focused projects."
+            if services:
+                return services.answer
+            return None if "services" in deleted_keys else f"{owner_name} focuses on AI-assisted systems, automation tools, and productivity-focused projects."
         if "datacube" in normalized:
             datacube = by_key.get("datacube_au")
+            if "datacube_au" in deleted_keys:
+                return None
             if "own" in normalized or "found" in normalized or "create" in normalized:
                 return f"Datacube AU is owned by {owner_name}."
             return datacube.answer if datacube else f"Datacube AU is an AI-powered educational intelligence platform founded by {owner_name}."
         if "zinax" in normalized:
             zinax = by_key.get("zinax")
-            return zinax.answer if zinax else f"ZinaX is a project in {owner_name}'s AI assistant and automation ecosystem."
+            if zinax:
+                return zinax.answer
+            return None if "zinax" in deleted_keys else f"ZinaX is a project in {owner_name}'s AI assistant and automation ecosystem."
         return None
 
     @staticmethod
