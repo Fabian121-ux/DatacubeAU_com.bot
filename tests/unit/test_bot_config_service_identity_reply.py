@@ -20,12 +20,16 @@ deleted-key checks (round 2's fix) never even ran. Fixed by
 before scoring, whenever a query unambiguously targets one specific default key that
 is unavailable.
 
+**Round 4 finding**: the round-3 fix only covered `_special_answer`'s own pre-canned
+phrases (e.g. "who *are you*"). A bare named-entity query like "who is zina?" or
+"what is zina" matches none of those phrases but is just as identity-routed in
+practice, and leaked through the same "projects entry lists every name" door. Fixed
+by also treating a bare "zina"/"fabian" mention as targeting that key.
+
 These tests exercise `identity_reply()` directly, since that is the actual
 production path the round-2 reviewer pointed out the original tests were missing.
-With the round-3 fix, most of these are now true end-to-end tests (no mocking): the
-registry layer itself no longer leaks. The one exception is a bare "moxiz" query
-outside the registry's own explicit-target set for a case in `_project_identity_reply`
-that has no `_special_answer` counterpart at all -- covered separately below.
+With the round-3/4 fixes, all of these are now true end-to-end tests (no mocking):
+the registry layer itself no longer leaks for any of them.
 """
 
 from __future__ import annotations
@@ -52,6 +56,25 @@ async def test_identity_reply_honors_deleted_zina_end_to_end(db_session):
     # The unconditional final catch-all must also honor the deletion, not just the
     # dedicated "who are you" phrase branch.
     assert await bot_config.identity_reply("some unmatched message") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_deleted_zina_for_named_entity_queries_too(db_session):
+    """Regression for the round-4 finding: "who is zina?"/"what is zina" match none
+
+    of `_special_answer`'s pre-canned phrases (only "who *are you*" etc do), so they
+    need the bare-name fallback in `_explicit_target_keys`, not just the phrase list.
+    """
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    before = await bot_config.identity_reply("who is zina?")
+    assert before and before != BotConfigService._DELETED_FALLBACK_MESSAGE
+
+    await registry.delete("zina")
+    assert await bot_config.identity_reply("who is zina?") == BotConfigService._DELETED_FALLBACK_MESSAGE
+    assert await bot_config.identity_reply("what is zina") == BotConfigService._DELETED_FALLBACK_MESSAGE
 
 
 @pytest.mark.asyncio

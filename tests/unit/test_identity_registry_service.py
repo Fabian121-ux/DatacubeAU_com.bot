@@ -311,6 +311,28 @@ async def test_special_answer_still_serves_non_deleted_defaults_after_an_unrelat
 
 
 @pytest.mark.asyncio
+async def test_named_entity_queries_are_blocked_too_not_only_the_specific_phrases(db_session):
+    """Regression (Codex, round 4 on PR #50): "who is zina?"/"what is zina" match no
+
+    `_special_answer` phrase branch at all (only "what is *your* name"/"who are
+    *you*" do), so they were missed by the first version of `_explicit_target_keys`
+    and still leaked through the "projects" entry's scored answer after deleting
+    "zina". A bare mention of "zina"/"fabian" by name must be treated as targeting
+    that key too, not just the specific pre-canned phrases.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    await service.delete("zina")
+
+    assert await service.answer("who is zina?") is None
+    assert await service.answer("what is zina") is None
+    assert await service.answer("tell me about fabian and zina") is None
+
+    # A query naming only the non-deleted party must still work normally.
+    assert await service.answer("who is fabian") == "Fabian is the owner and creator I assist."
+
+
+@pytest.mark.asyncio
 async def test_unavailable_default_keys_includes_disabled_not_only_deleted(db_session):
     """A default that is merely disabled (not deleted) must also count as
 

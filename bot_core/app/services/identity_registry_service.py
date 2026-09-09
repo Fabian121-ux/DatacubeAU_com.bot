@@ -125,6 +125,15 @@ class IdentityRegistryService:
         mention the same name or share a keyword (e.g. the "projects" entry's own
         summary answer lists every project by name; the "zina" entry's own keywords
         include "created" and "built").
+
+        The specific phrase branches above are checked first so their more precise
+        semantics win (e.g. "who created you" needing *both* keys). Below that, a
+        bare mention of "zina" or "fabian" by name is *also* treated as targeting
+        that key -- e.g. "who is zina?" or "what is zina" match no phrase above (only
+        "what is *your* name"/"who are *you*" do) but are just as identity-routed in
+        practice (see `IntentClassifier._is_identity_question`), and the same
+        "projects entry lists every name" leak applies to them too. Both can be
+        returned together (e.g. "tell me about fabian and zina").
         """
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
             return frozenset({"zina"})
@@ -144,7 +153,12 @@ class IdentityRegistryService:
             return frozenset({"zinax"})
         if "moxiz" in normalized:
             return frozenset({"moxiz_gateway"})
-        return frozenset()
+        named: set[str] = set()
+        if "zina" in normalized:
+            named.add("zina")
+        if "fabian" in normalized:
+            named.add("fabian")
+        return frozenset(named)
 
     async def get_by_key(self, registry_key: str) -> IdentityRegistryEntry | None:
         """Fetch a single entry by key, including disabled ones, excluding deleted ones."""
