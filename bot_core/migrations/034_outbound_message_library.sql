@@ -98,5 +98,14 @@ CREATE TABLE IF NOT EXISTS outbound_variant_usage (
 CREATE INDEX IF NOT EXISTS ix_outbound_variant_usage_contact_set
     ON outbound_variant_usage (contact_id, message_set_id, created_at DESC);
 
+-- A retried record_variant_usage() call for the same queued delivery must not be
+-- counted twice: without this, a producer retry after a transient failure (or a
+-- duplicate selection-engine call) would insert a second independent usage row for
+-- one outbound_queue row, double-counting the selection and leaving only one of the
+-- duplicates eligible to receive its final send result via update_usage_send_result().
+CREATE UNIQUE INDEX IF NOT EXISTS ux_outbound_variant_usage_queue
+    ON outbound_variant_usage (outbound_queue_id)
+    WHERE outbound_queue_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS ix_outbound_variant_usage_variant
     ON outbound_variant_usage (variant_id, created_at DESC);

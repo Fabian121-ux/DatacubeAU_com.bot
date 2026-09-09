@@ -1244,3 +1244,161 @@ async def test_render_fails_closed_when_variant_is_hard_deleted_concurrently(db_
     result = await service.render(variant)
     assert result.ok is False
     assert result.text is None
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 11 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_invalid_optional_variable_names(db_session):
+    """Regression: required_variables is validated implicitly by its exact-match
+    comparison against the tokens actually found in template_body, but
+    optional_variables has no such downstream check -- nothing in create_variant
+    ever compares it to the body. A value that can never represent a real
+    {{token}} (e.g. a hyphenated name) previously passed silently and persisted as
+    malformed metadata for the future personalization resolver/selection engine."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+
+    rejected = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi there.",
+        optional_variables=["first-name"],
+    )
+    assert rejected.ok is False
+    assert "optional_variables" in (rejected.error or "")
+
+    accepted = await service.create_variant(
+        message_set_id=set_id,
+        label="B",
+        template_body="Hi {{first_name}}, welcome.",
+        required_variables=["first_name"],
+        optional_variables=["nickname"],
+    )
+    assert accepted.ok is True
+
+
+@pytest.mark.asyncio
+async def test_render_revalidates_a_tampered_template_body(db_session):
+    """Regression: render()'s undeclared-token subset check only recognizes a
+    well-formed {{token}}; it silently ignores a malformed or unmatched delimiter.
+    create_variant() enforces this at creation time, but a maintenance script or
+    direct ORM edit could change template_body afterward without going through
+    that validation at all, and render() never re-checked for it."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi {{first_name}}.",
+        required_variables=["first_name"],
+        status="approved",
+    )
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+
+    variant.template_body = "Hi {{first-name}}."
+    await db_session.flush()
+
+    malformed = await service.render(variant, {"first_name": "Ada"})
+    assert malformed.ok is False
+    assert "malformed" in (malformed.error or "")
+
+    variant.template_body = "Hi {{first_name"
+    await db_session.flush()
+
+    unmatched = await service.render(variant, {"first_name": "Ada"})
+    assert unmatched.ok is False
+    assert "unmatched" in (unmatched.error or "")
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_non_string_selection_reason(db_session):
+    """Regression: selection_reason from a JSON-facing caller could be a dict or
+    list; assigning it directly to the Text column raised a bind/type error at
+    flush() instead of returning the documented fail-closed LibraryResult, leaving
+    the session requiring rollback."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+
+    result = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_reason={"why": "top score"}
+    )
+    assert result.ok is False
+    assert "selection_reason" in (result.error or "")
+
+    ok = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, selection_reason="highest deterministic score"
+    )
+    assert ok.ok is True
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_is_idempotent_for_the_same_queue_row(db_session):
+    """Regression: neither the service nor the schema enforced uniqueness on
+    outbound_queue_id, so a producer retry (or a duplicate selection-engine call)
+    with the same queued delivery inserted a second, independent usage row --
+    double-counting the selection and leaving only one of the duplicates able to
+    receive its final send result via update_usage_send_result()."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    queue_row = OutboundMessage(chat_id="15550000009@c.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    first = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert first.ok is True
+
+    retry = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert retry.ok is True
+    assert retry.id == first.id
+
+    rows = (
+        await db_session.execute(
+            OutboundVariantUsage.__table__.select().where(
+                OutboundVariantUsage.outbound_queue_id == queue_row.id
+            )
+        )
+    ).fetchall()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_variant_locked_read_sees_a_set_disabled_by_another_session(db_session):
+    """Regression: FOR UPDATE re-runs the query, but SQLAlchemy's identity map
+    still returns whatever object this session already loaded for that primary
+    key without applying the freshly locked row's column values -- found while
+    adding the identical lock to record_variant_usage() in round 11. A caller
+    that fetched the message set earlier in this session (e.g. via
+    get_message_set(), the same thing a real caller checking "is this set usable"
+    first would do) still saw is_enabled=True/disabled_at=None here even though
+    another session had already disabled it, defeating the very lock this read
+    exists to enforce."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    # Load it into this session's identity map first, same as a real caller would.
+    message_set = await service.get_message_set(set_id)
+    assert message_set is not None
+    await db_session.commit()
+
+    async def _disable(other_session):
+        await OutboundMessageLibraryService(other_session).disable_message_set(set_id)
+
+    await _run_in_second_session(_disable)
+
+    result = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    assert result.ok is False
+    assert "disabled" in (result.error or "")

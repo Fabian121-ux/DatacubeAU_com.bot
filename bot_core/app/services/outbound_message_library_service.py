@@ -333,6 +333,20 @@ class OutboundMessageLibraryService:
         template_body = str(template_body or "").strip()
         required_variables = sorted({str(v).strip() for v in (required_variables or []) if str(v).strip()})
         optional_variables = sorted({str(v).strip() for v in (optional_variables or []) if str(v).strip()})
+
+        # required_variables is validated implicitly below by the exact-match
+        # comparison against the tokens actually found in template_body ("first-name"
+        # could never equal a real {{token}}, so a bogus entry always fails that
+        # check). optional_variables has no such downstream check -- nothing compares
+        # it against template_body -- so a value that can never represent a real
+        # {{token}} would otherwise pass silently and persist as malformed metadata
+        # for the future personalization resolver and selection engine.
+        invalid_optional = [v for v in optional_variables if not _VALID_TOKEN_CONTENT.match(v)]
+        if invalid_optional:
+            return LibraryResult(
+                False, error=f"optional_variables contains invalid token name(s) {invalid_optional!r}"
+            )
+
         media_kind = str(media_kind).strip() if media_kind is not None else None
         media_mime = str(media_mime).strip() if media_mime is not None else None
         language = str(language).strip() if language is not None else None
@@ -367,7 +381,17 @@ class OutboundMessageLibraryService:
         # disabled set.
         message_set = (
             await self.session.execute(
-                select(OutboundMessageSet).where(OutboundMessageSet.id == message_set_id).with_for_update()
+                select(OutboundMessageSet)
+                .where(OutboundMessageSet.id == message_set_id)
+                .with_for_update()
+                # FOR UPDATE alone re-runs the query but the identity map still
+                # returns whatever object this session already loaded for that
+                # primary key without applying the freshly locked column values --
+                # found while adding the identical lock to record_variant_usage()
+                # (round 11): a caller that fetched this set earlier in the same
+                # session (e.g. via get_message_set()) would otherwise still see the
+                # stale is_enabled/disabled_at this lock exists to protect against.
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if message_set is None or message_set.deleted_at is not None:
@@ -560,6 +584,24 @@ class OutboundMessageLibraryService:
         required = set(variant.required_variables or [])
         allowed = required | set(variant.optional_variables or [])
 
+        # Defense in depth, same order as create_variant(): a maintenance script or
+        # direct ORM edit could change template_body after creation without going
+        # through this service's validation at all. The undeclared-token subset check
+        # below only catches a *recognized* {{token}}; it silently ignores a
+        # malformed or unmatched delimiter (e.g. "{{first-name}}" or a dangling
+        # "{{first_name" with no closing brace), so both must be re-checked here too,
+        # not just at creation time.
+        unmatched_remainder = _LOOSE_BRACE_PATTERN.sub("", variant.template_body)
+        if "{{" in unmatched_remainder or "}}" in unmatched_remainder:
+            return RenderResult(False, error="template contains unmatched variable delimiter(s)")
+        malformed = [
+            span
+            for span in _LOOSE_BRACE_PATTERN.findall(variant.template_body)
+            if not _VALID_TOKEN_CONTENT.match(span)
+        ]
+        if malformed:
+            return RenderResult(False, error=f"template contains malformed variable placeholder(s) {malformed!r}")
+
         tokens_in_body = set(_TOKEN_PATTERN.findall(variant.template_body))
         if not tokens_in_body <= allowed:
             # Defense in depth: creation already enforces this, but never render a
@@ -602,20 +644,35 @@ class OutboundMessageLibraryService:
         source_automation = str(source_automation).strip() if source_automation is not None else None
         if source_automation is not None and len(source_automation) > self.MAX_SOURCE_AUTOMATION_LENGTH:
             return LibraryResult(False, error="invalid source_automation")
+        if selection_reason is not None and not isinstance(selection_reason, str):
+            return LibraryResult(False, error="invalid selection_reason")
 
-        variant = await self.session.get(OutboundMessageVariant, variant_id)
+        # A locked read (SELECT ... FOR UPDATE), not session.get()/refresh(): this
+        # eligibility check and the usage insert below are not atomic on their own,
+        # so a concurrent disable_variant()/delete_variant() could commit between the
+        # two -- an UPDATE against this same row -- and this call would still record
+        # the now-retired variant as an eligible selection. Postgres blocks that
+        # concurrent UPDATE against a FOR-UPDATE-locked row until this transaction
+        # commits or rolls back, serializing the check with the write instead of
+        # merely reading a value that could go stale the instant after it's read.
+        # This also reads directly from the database rather than the session's
+        # identity map, so a concurrently hard-deleted row is a plain None here, not
+        # the InvalidRequestError session.refresh() would raise.
+        variant = (
+            await self.session.execute(
+                select(OutboundMessageVariant)
+                .where(OutboundMessageVariant.id == variant_id)
+                .with_for_update()
+                # FOR UPDATE alone re-runs the query but SQLAlchemy's identity map
+                # still returns whatever object this session already loaded for that
+                # primary key without applying the freshly queried column values --
+                # the exact expire_on_commit=False staleness this fix exists to close.
+                # populate_existing=True forces the row just locked to overwrite the
+                # cached object's attributes instead of being discarded.
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if variant is None:
-            return LibraryResult(False, error="variant not found")
-        # session.get() returns an already-cached object without a fresh query if
-        # this session loaded this row before -- same expire_on_commit=False
-        # staleness risk render() guards against. A concurrent hard delete (
-        # maintenance/retention cleanup) is the same fail-closed outcome as any
-        # other now-ineligible variant, not an unhandled exception.
-        try:
-            await self.session.refresh(variant)
-        except InvalidRequestError:
-            # refresh() raises InvalidRequestError ("Could not refresh instance"),
-            # not a plain empty result, when the row was concurrently hard-deleted.
             return LibraryResult(False, error="variant not found")
         if variant.message_set_id != message_set_id:
             return LibraryResult(False, error="variant does not belong to message_set_id")
@@ -672,8 +729,30 @@ class OutboundMessageLibraryService:
             selection_reason=selection_reason,
             source_automation=source_automation,
         )
-        self.session.add(usage)
-        await self.session.flush()
+        # A retried call for the same outbound_queue_id (a producer retry after a
+        # transient failure, or a duplicate selection-engine call) must not double-
+        # count the selection: the partial unique index on outbound_queue_id makes
+        # the second insert raise IntegrityError, contained to just this insert by a
+        # SAVEPOINT so it doesn't poison the whole session. Return the existing
+        # row's id as a successful, idempotent no-op rather than a fail-closed error
+        # -- the selection genuinely was already recorded.
+        try:
+            async with self.session.begin_nested():
+                self.session.add(usage)
+                await self.session.flush()
+        except IntegrityError:
+            if outbound_queue_id is None:
+                raise
+            existing = (
+                await self.session.execute(
+                    select(OutboundVariantUsage).where(
+                        OutboundVariantUsage.outbound_queue_id == outbound_queue_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                return LibraryResult(False, error="outbound_queue_id usage conflict")
+            return LibraryResult(True, id=existing.id)
         return LibraryResult(True, id=usage.id)
 
     async def update_usage_send_result(self, usage_id: int, send_result: str) -> LibraryResult:
