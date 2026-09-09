@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
     BigInteger,
     Boolean,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    event,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -703,12 +705,13 @@ class OutboundVariantUsage(Base):
         ),
         # variant_id-belongs-to-message_set_id is enforced at the database level
         # by a BEFORE INSERT/UPDATE trigger (migration 034,
-        # trg_outbound_variant_usage_check_set_pairing), not a composite foreign
-        # key: an earlier attempt at a composite FK correctly rejected a
-        # mismatched pairing, but its single ON DELETE SET NULL action for the
-        # whole tuple meant hard-deleting *only* a variant also nulled
-        # message_set_id, discarding that usage row's still-valid set
-        # attribution even though the set itself was untouched. The trigger
+        # trg_outbound_variant_usage_check_set_pairing, mirrored below via an
+        # after_create DDL event so Base.metadata.create_all() installs it too),
+        # not a composite foreign key: an earlier attempt at a composite FK
+        # correctly rejected a mismatched pairing, but its single ON DELETE SET
+        # NULL action for the whole tuple meant hard-deleting *only* a variant
+        # also nulled message_set_id, discarding that usage row's still-valid
+        # set attribution even though the set itself was untouched. The trigger
         # enforces the same invariant on write without changing what the two
         # independent single-column foreign keys below do on delete.
     )
@@ -730,6 +733,69 @@ class OutboundVariantUsage(Base):
     send_result: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+# Mirrors migration 034's trg_outbound_variant_usage_check_set_pairing trigger.
+# Base.metadata.create_all() (tests/conftest.py's setup fixture, bypassing
+# migrations entirely on a schema with no prior tables) creates this table's
+# columns and constraints from the ORM metadata above, but a plain CREATE TABLE
+# has no way to also carry a trigger -- so without this event, a genuinely
+# fresh create_all()-only database would silently omit the set/variant pairing
+# invariant record_variant_usage() depends on. Attaching the DDL to this
+# table's own after_create event (rather than a session-wide event) means it
+# only fires when create_all() actually creates outbound_variant_usage, and is
+# a no-op on a database where migrations already created it first (CI's own
+# setup: migrations run before pytest's create_all(), so checkfirst=True skips
+# an already-existing table and this event never fires there).
+#
+# Three separate DDL events, not one multi-statement string: the asyncpg driver
+# executes DDL via prepared statements, which reject "cannot insert multiple
+# commands into a prepared statement" -- unlike psql, which runs migration files
+# as a single multi-statement script.
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_check_outbound_variant_usage_set_pairing()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF NEW.variant_id IS NOT NULL AND NEW.message_set_id IS NOT NULL THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM outbound_message_variants
+                    WHERE id = NEW.variant_id AND message_set_id = NEW.message_set_id
+                ) THEN
+                    RAISE EXCEPTION
+                        'outbound_variant_usage.variant_id %% does not belong to message_set_id %%',
+                        NEW.variant_id, NEW.message_set_id
+                        USING ERRCODE = '23514';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    ),
+)
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_variant_usage_check_set_pairing ON outbound_variant_usage"),
+)
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_variant_usage_check_set_pairing
+        BEFORE INSERT OR UPDATE OF variant_id, message_set_id ON outbound_variant_usage
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_check_outbound_variant_usage_set_pairing()
+        """
+    ),
+)
 
 
 class WahaOutage(Base):

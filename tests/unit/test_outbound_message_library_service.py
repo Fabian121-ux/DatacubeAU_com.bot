@@ -1804,6 +1804,88 @@ async def test_database_rejects_a_variant_paired_with_a_different_sets_id(db_ses
 
 
 @pytest.mark.asyncio
+async def test_set_pairing_trigger_is_installed_by_create_all_alone():
+    """Regression: trg_outbound_variant_usage_check_set_pairing only existed in
+    migration 034's raw SQL, with nothing mirroring it into the ORM metadata that
+    Base.metadata.create_all() uses. tests/conftest.py's own setup fixture never
+    exposed this gap because CI always applies every migration before pytest's
+    create_all() runs (which then no-ops on tables that already exist) -- but a
+    genuinely fresh database built via create_all() alone, with no migrations run
+    first, would silently accept a variant paired with the wrong message set. This
+    builds such a database directly, in a disposable schema, and proves the
+    invariant holds without any migration ever running."""
+    from sqlalchemy import text
+    from app.db import Base
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url)
+    schema = "test_create_all_only_pairing"
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        await engine.dispose()
+        pytest.skip(f"test database is unavailable: {exc}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+            await conn.execute(text(f'SET search_path TO "{schema}"'))
+            await conn.run_sync(
+                Base.metadata.create_all,
+                tables=[
+                    Contact.__table__,
+                    OutboundMessage.__table__,
+                    OutboundMessageSet.__table__,
+                    OutboundMessageVariant.__table__,
+                    OutboundVariantUsage.__table__,
+                ],
+            )
+
+            await conn.execute(
+                text(
+                    "INSERT INTO outbound_message_sets (set_key, name, description, category) "
+                    "VALUES ('set_a', 'Set A', 'd', 'c'), ('set_b', 'Set B', 'd', 'c')"
+                )
+            )
+            set_a_id, set_b_id = (
+                await conn.execute(text("SELECT id FROM outbound_message_sets ORDER BY set_key"))
+            ).scalars().all()
+            await conn.execute(
+                text(
+                    "INSERT INTO outbound_message_variants (message_set_id, label, template_body) "
+                    "VALUES (:set_id, 'A', 'Hi.')"
+                ),
+                {"set_id": set_a_id},
+            )
+            variant_id = (
+                await conn.execute(text("SELECT id FROM outbound_message_variants"))
+            ).scalar_one()
+
+            # A savepoint, not the outer transaction directly: the trigger's
+            # RAISE EXCEPTION aborts whatever transaction the failing statement
+            # ran in, and this connection still needs to drop the schema in its
+            # own finally block below.
+            with pytest.raises(Exception, match="does not belong to"):
+                async with conn.begin_nested():
+                    await conn.execute(
+                        text(
+                            "INSERT INTO outbound_variant_usage (message_set_id, variant_id) "
+                            "VALUES (:set_id, :variant_id)"
+                        ),
+                        {"set_id": set_b_id, "variant_id": variant_id},
+                    )
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_database_rejects_a_non_finite_selection_score(db_session):
     """Regression: record_variant_usage() rejects NaN/infinite selection_score
     before insert, but the database column had no equivalent constraint, so a
