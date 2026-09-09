@@ -333,6 +333,57 @@ async def test_named_entity_queries_are_blocked_too_not_only_the_specific_phrase
 
 
 @pytest.mark.asyncio
+async def test_compound_queries_naming_multiple_targets_are_blocked_on_any_deleted_one(db_session):
+    """Regression (Codex, round 6 on PR #50): `_explicit_target_keys` used to
+
+    short-circuit on the first matching branch, so a compound query like "what is
+    Fabian's Datacube project?" matched only the "project"+"fabian" branch
+    (returning {"projects"}) and never noticed "datacube" was *also* explicitly
+    named -- deleting "datacube_au" alone didn't block it, and `_special_answer`'s
+    "projects" branch then leaked the still-active projects summary (which lists
+    Datacube AU by name). Every matching condition must now be accumulated, not
+    just the first one.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    before = await service.answer("what is fabian's datacube project?")
+    assert "Datacube AU" in before or before is not None
+
+    await service.delete("datacube_au")
+    assert await service.answer("what is fabian's datacube project?") is None
+
+    # A compound query naming only still-available targets must be unaffected.
+    assert await service.answer("what are fabian's projects") is not None
+
+
+@pytest.mark.asyncio
+async def test_scored_match_does_not_disturb_backfill_eligibility(db_session):
+    """Regression (Codex, round 6 on PR #50): `answer()`'s scored-match branch used
+
+    to advance `updated_at` on every successful lookup as a side effect of a mere
+    read, which made migration 035's `updated_at = created_at` backfill-eligibility
+    check permanently (and incorrectly) treat any row ever served this way as
+    "edited". Serving an answer must not touch `updated_at` -- only an actual
+    content edit (via `upsert_identity_registry`) should.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    moxiz = await service.get_by_key("moxiz_gateway")
+    assert moxiz.updated_at == moxiz.created_at  # backfill-eligible before the read
+
+    # "moxiz" has no _special_answer branch -- this can only be served via the
+    # scored-match loop, exactly the path that used to touch updated_at.
+    result = await service.answer("what is moxiz gateway")
+    assert result is not None
+
+    await db_session.refresh(moxiz)
+    # Still backfill-eligible: migration 035's actual criterion is
+    # `updated_at = created_at`, which a mere read/lookup must not disturb.
+    assert moxiz.updated_at == moxiz.created_at
+
+
+@pytest.mark.asyncio
 async def test_unavailable_default_keys_includes_disabled_not_only_deleted(db_session):
     """A default that is merely disabled (not deleted) must also count as
 

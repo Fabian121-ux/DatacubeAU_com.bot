@@ -67,8 +67,12 @@ class IdentityRegistryService:
                 best_entry = entry
                 best_score = score
         if best_entry and best_score >= 0.62:
-            best_entry.updated_at = utcnow()
-            await self.session.flush()
+            # Matching and returning an answer is a read, not a content edit -- do not
+            # advance updated_at here. Migration 035's backfill (and any future
+            # provenance logic) relies on updated_at == created_at meaning "this
+            # row's content has never been edited since creation"; touching it on a
+            # mere lookup would permanently and incorrectly disqualify an otherwise
+            # untouched system default from ever being backfilled again.
             return best_entry.answer
         return None
 
@@ -126,39 +130,42 @@ class IdentityRegistryService:
         summary answer lists every project by name; the "zina" entry's own keywords
         include "created" and "built").
 
-        The specific phrase branches above are checked first so their more precise
-        semantics win (e.g. "who created you" needing *both* keys). Below that, a
-        bare mention of "zina" or "fabian" by name is *also* treated as targeting
-        that key -- e.g. "who is zina?" or "what is zina" match no phrase above (only
-        "what is *your* name"/"who are *you*" do) but are just as identity-routed in
-        practice (see `IntentClassifier._is_identity_question`), and the same
-        "projects entry lists every name" leak applies to them too. Both can be
-        returned together (e.g. "tell me about fabian and zina").
+        Every condition below is checked and its key(s) accumulated -- not a
+        first-match short-circuit -- so a compound query naming more than one thing
+        (e.g. "what is Fabian's Datacube project?", which matches both the
+        "project"+"fabian" branch *and* a bare "datacube" mention) is refused if
+        *any* named target is unavailable, not just whichever branch happened to be
+        checked first. A bare mention of "zina" or "fabian" by name is also treated
+        as targeting that key -- e.g. "who is zina?" or "what is zina" match no
+        specific phrase above (only "what is *your* name"/"who are *you*" do) but
+        are just as identity-routed in practice (see
+        `IntentClassifier._is_identity_question`), and the same "projects entry
+        lists every name" leak applies to them too.
         """
+        targets: set[str] = set()
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
-            return frozenset({"zina"})
+            targets.add("zina")
         if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you", "who create zina", "who own zina")):
-            return frozenset({"zina", "fabian"})
+            targets.update({"zina", "fabian"})
         if "why were you create" in normalized or "why do you exist" in normalized:
-            return frozenset({"zina"})
+            targets.add("zina")
         if "who is fabian" in normalized:
-            return frozenset({"fabian"})
+            targets.add("fabian")
         if "project" in normalized and "fabian" in normalized:
-            return frozenset({"projects"})
+            targets.add("projects")
         if "service" in normalized and ("fabian" in normalized or "offer" in normalized or "provide" in normalized):
-            return frozenset({"services"})
+            targets.add("services")
         if "datacube" in normalized:
-            return frozenset({"datacube_au"})
+            targets.add("datacube_au")
         if "zinax" in normalized:
-            return frozenset({"zinax"})
+            targets.add("zinax")
         if "moxiz" in normalized:
-            return frozenset({"moxiz_gateway"})
-        named: set[str] = set()
+            targets.add("moxiz_gateway")
         if "zina" in normalized:
-            named.add("zina")
+            targets.add("zina")
         if "fabian" in normalized:
-            named.add("fabian")
-        return frozenset(named)
+            targets.add("fabian")
+        return frozenset(targets)
 
     async def get_by_key(self, registry_key: str) -> IdentityRegistryEntry | None:
         """Fetch a single entry by key, including disabled ones, excluding deleted ones."""
@@ -357,9 +364,15 @@ class IdentityRegistryService:
         for item in defaults:
             if item["registry_key"] in existing:
                 continue
+            # A single shared timestamp, not two separate utcnow() calls: those can
+            # differ by a few microseconds, which would make created_at != updated_at
+            # for a freshly-seeded row that was never actually edited -- exactly the
+            # signal migration 035's backfill (and any future provenance logic)
+            # relies on to distinguish "never touched" from "admin-edited".
+            seeded_at = utcnow()
             self.session.add(
                 IdentityRegistryEntry(
-                    **item, source="system_default", is_enabled=True, created_at=utcnow(), updated_at=utcnow()
+                    **item, source="system_default", is_enabled=True, created_at=seeded_at, updated_at=seeded_at
                 )
             )
         await self.session.flush()
