@@ -16,11 +16,23 @@ class IdentityRegistryService:
 
     SEARCH_LIMIT = 50
 
-    #: registry keys `_special_answer` will otherwise substitute a hardcoded default
-    #: for when no active entry exists -- used to tell "never seeded" apart from
-    #: "the OWNER intentionally deleted this" so a deletion can't be silently undone
-    #: by a hardcoded fallback.
-    _DEFAULT_FALLBACK_KEYS = ("zina", "fabian", "datacube_au", "zinax", "projects", "services")
+    #: registry keys some hardcoded fallback -- `_special_answer` below, and
+    #: `BotConfigService.identity_reply()`'s own separate legacy fallback -- will
+    #: otherwise substitute a default answer for when no active entry exists. Used to
+    #: tell "never seeded" apart from "the OWNER intentionally deleted this" so a
+    #: deletion can't be silently undone by either hardcoded fallback layer. This is
+    #: every key `ensure_defaults_from_profile` seeds, since both fallback layers
+    #: reference some subset of them.
+    _DEFAULT_FALLBACK_KEYS = (
+        "zina",
+        "fabian",
+        "services",
+        "datacube_au",
+        "zinax",
+        "moxiz_gateway",
+        "projects",
+        "skills",
+    )
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -28,7 +40,7 @@ class IdentityRegistryService:
     async def answer(self, message_text: str) -> str | None:
         normalized = FAQService.semantic_normalize(message_text)
         entries = await self.enabled_entries()
-        deleted_keys = await self._deleted_default_keys()
+        deleted_keys = await self.deleted_default_keys()
         if not entries and not deleted_keys:
             return None
 
@@ -60,7 +72,13 @@ class IdentityRegistryService:
         ).scalars().all()
         return [row for row in rows if hasattr(row, "registry_key")]
 
-    async def _deleted_default_keys(self) -> set[str]:
+    async def deleted_default_keys(self) -> set[str]:
+        """Default registry keys the OWNER has explicitly tombstoned.
+
+        Public so any caller with its own hardcoded identity fallback (e.g.
+        `BotConfigService.identity_reply()`) can also suppress a deleted default
+        instead of only `_special_answer` honoring the deletion.
+        """
         rows = (
             await self.session.execute(
                 select(IdentityRegistryEntry.registry_key)

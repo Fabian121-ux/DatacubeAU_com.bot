@@ -203,14 +203,23 @@ class BotConfigService:
             f"I help answer questions about {profile['owner_name']}, his projects, and Datacube AU."
         )
 
+    #: Returned in place of any hardcoded fallback below whose fact the OWNER has
+    #: explicitly deleted from the Identity Registry -- matches the phrasing
+    #: `IdentityRegistryService.resolve_references` already uses for an unknown key,
+    #: so a deletion reads the same way everywhere instead of silently reappearing.
+    _DELETED_FALLBACK_MESSAGE = "I do not have an active identity record for that."
+
     async def identity_reply(self, message_text: str) -> str:
         profile = await self.get_identity_profile()
+        deleted_keys: set[str] = set()
         try:
             from app.services.identity_registry_service import IdentityRegistryService
 
-            registry_answer = await IdentityRegistryService(self.session).answer(message_text)
+            registry_service = IdentityRegistryService(self.session)
+            registry_answer = await registry_service.answer(message_text)
             if registry_answer:
                 return registry_answer
+            deleted_keys = await registry_service.deleted_default_keys()
         except Exception:
             # Registry reads are best-effort during migration/bootstrap; bot_config remains the fallback.
             pass
@@ -219,17 +228,27 @@ class BotConfigService:
         owner_name = profile["owner_name"] or "Fabian"
 
         if any(phrase in normalized for phrase in ("what is your name", "whats your name", "who are you", "what are you")):
+            if "zina" in deleted_keys:
+                return self._DELETED_FALLBACK_MESSAGE
             return f"I am {assistant_name}, {owner_name}'s AI assistant."
         if any(phrase in normalized for phrase in ("who created you", "who built you", "who created zina")):
+            if "zina" in deleted_keys or "fabian" in deleted_keys:
+                return self._DELETED_FALLBACK_MESSAGE
             return f"{owner_name} created me."
         if any(phrase in normalized for phrase in ("why were you created", "why do you exist")):
+            if "zina" in deleted_keys:
+                return self._DELETED_FALLBACK_MESSAGE
             return (
                 f"I was created to help {owner_name} manage memory, project context, knowledge retrieval, "
                 "WhatsApp conversations, and controlled AI access."
             )
         if "who is fabian" in normalized:
+            if "fabian" in deleted_keys:
+                return self._DELETED_FALLBACK_MESSAGE
             return profile["owner_bio"] or f"{owner_name} is the owner and creator I assist."
         if "projects" in normalized and "fabian" in normalized:
+            if "projects" in deleted_keys:
+                return self._DELETED_FALLBACK_MESSAGE
             return (
                 "Fabian's core projects are:\n\n"
                 "• Datacube AU\n"
@@ -237,14 +256,21 @@ class BotConfigService:
                 "• ZinaX\n"
                 "• Moxiz Gateway"
             )
-        project_answer = self._project_identity_reply(normalized, owner_name)
+        project_answer = self._project_identity_reply(normalized, owner_name, deleted_keys)
         if project_answer:
             return project_answer
+        if "zina" in deleted_keys:
+            return self._DELETED_FALLBACK_MESSAGE
         return f"I am {assistant_name}, {owner_name}'s AI assistant."
 
-    @staticmethod
-    def _project_identity_reply(normalized: str, owner_name: str) -> str | None:
+    @classmethod
+    def _project_identity_reply(
+        cls, normalized: str, owner_name: str, deleted_keys: set[str] | None = None
+    ) -> str | None:
+        deleted_keys = deleted_keys or set()
         if "datacube" in normalized:
+            if "datacube_au" in deleted_keys:
+                return cls._DELETED_FALLBACK_MESSAGE
             if "owner" in normalized or "owns" in normalized or "founder" in normalized or "founded" in normalized:
                 return f"Datacube AU is owned by {owner_name}."
             return (
@@ -257,10 +283,16 @@ class BotConfigService:
                 f"Founder:\n{owner_name}"
             )
         if "zinax" in normalized:
+            if "zinax" in deleted_keys:
+                return cls._DELETED_FALLBACK_MESSAGE
             return "*ZinaX*\n\nA project in Fabian's AI assistant and automation ecosystem."
         if "moxiz" in normalized:
+            if "moxiz_gateway" in deleted_keys:
+                return cls._DELETED_FALLBACK_MESSAGE
             return "*Moxiz Gateway*\n\nA gateway project in Fabian's broader automation ecosystem."
         if "zina" in normalized:
+            if "zina" in deleted_keys:
+                return cls._DELETED_FALLBACK_MESSAGE
             return (
                 "*Zina*\n\n"
                 "Fabian's personal AI operating system inside WhatsApp, built for memory, project intelligence, "
