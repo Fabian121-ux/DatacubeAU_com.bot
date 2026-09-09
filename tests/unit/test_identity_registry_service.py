@@ -333,6 +333,30 @@ async def test_named_entity_queries_are_blocked_too_not_only_the_specific_phrase
 
 
 @pytest.mark.asyncio
+async def test_deleting_zina_does_not_suppress_an_unrelated_zinax_query(db_session):
+    """Regression (Codex, round 7 on PR #50): the bare "zina" target check used
+
+    plain substring matching, and "zina" is itself a substring of "zinax" -- so
+    `_explicit_target_keys("what is zinax")` incorrectly returned {"zina", "zinax"}
+    and an unrelated "zina" tombstone blocked a ZinaX query that has nothing to do
+    with it, discarding the still-active (possibly administrator-customized) ZinaX
+    answer in favor of the generic fallback. Fixed with a word-boundary regex.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    await service.delete("zina")
+
+    # "zinax" was never deleted -- a query naming only it must be unaffected by the
+    # unrelated "zina" tombstone.
+    result = await service.answer("what is zinax")
+    assert result is not None
+    assert "ZinaX" in result
+
+    # A query about "zina" itself (word boundary, not "zinax") must still be blocked.
+    assert await service.answer("who is zina?") is None
+
+
+@pytest.mark.asyncio
 async def test_compound_queries_naming_multiple_targets_are_blocked_on_any_deleted_one(db_session):
     """Regression (Codex, round 6 on PR #50): `_explicit_target_keys` used to
 

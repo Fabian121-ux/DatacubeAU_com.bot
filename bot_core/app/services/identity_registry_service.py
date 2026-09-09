@@ -145,7 +145,9 @@ class IdentityRegistryService:
         targets: set[str] = set()
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
             targets.add("zina")
-        if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you", "who create zina", "who own zina")):
+        if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you")) or re.search(
+            r"\bwho (?:create|own) zina\b", normalized
+        ):
             targets.update({"zina", "fabian"})
         if "why were you create" in normalized or "why do you exist" in normalized:
             targets.add("zina")
@@ -161,7 +163,12 @@ class IdentityRegistryService:
             targets.add("zinax")
         if "moxiz" in normalized:
             targets.add("moxiz_gateway")
-        if "zina" in normalized:
+        # Word-boundary, not substring: "zina" is itself a substring of "zinax", so a
+        # plain `"zina" in normalized` check would incorrectly treat any ZinaX query
+        # as also targeting "zina" -- an unrelated "zina" tombstone would then block a
+        # ZinaX query it has nothing to do with, discarding a still-active (possibly
+        # administrator-customized) ZinaX answer in favor of the generic fallback.
+        if re.search(r"\bzina\b", normalized):
             targets.add("zina")
         if "fabian" in normalized:
             targets.add("fabian")
