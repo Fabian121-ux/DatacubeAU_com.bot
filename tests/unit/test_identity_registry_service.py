@@ -260,3 +260,174 @@ async def test_enabled_entries_excludes_deleted_rows(db_session):
 
     entries = await service.enabled_entries()
     assert all(entry.registry_key != "projects" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_deleted_default_is_not_resurrected_by_the_special_answer_fallback(db_session):
+    """Regression (Codex review on PR #47, landed after merge): `_special_answer`'s
+
+    hardcoded fallback text fired whenever no active entry existed for a default key,
+    regardless of *why* it was missing -- so deleting a seeded default (e.g. "fabian")
+    had zero observable effect on that exact phrase-matched answer, silently undoing
+    the OWNER's delete. Each phrase below must stop returning the deleted entry's own
+    stale text once it is gone.
+
+    A later round found that `answer()` could still leak the deleted fact through a
+    *different* door: once `_special_answer` refused, `answer()` fell through to its
+    scored-match loop, where the still-active "projects" entry -- whose own answer
+    text separately lists every project by name -- could win and re-state the exact
+    fact that was just deleted. `_explicit_target_key` now refuses outright, before
+    scoring, whenever a query unambiguously targets one specific unavailable key --
+    so these assertions are `is None`, not just "not the old text".
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    assert await service.answer("who is fabian") == "Fabian is the owner and creator I assist."
+    await service.delete("fabian")
+    assert await service.answer("who is fabian") is None
+
+    assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
+    await service.delete("zina")
+    assert await service.answer("who are you?") is None
+
+    datacube_answer = "Datacube AU is an AI-powered assistant and knowledge automation project created by Fabian."
+    assert await service.answer("what is datacube") == datacube_answer
+    await service.delete("datacube_au")
+    # Must not leak the old hardcoded _special_answer literal, the real entry's own
+    # answer, NOR the "projects" entry's answer (which separately mentions Datacube AU).
+    assert await service.answer("what is datacube") is None
+
+
+@pytest.mark.asyncio
+async def test_special_answer_still_serves_non_deleted_defaults_after_an_unrelated_delete(db_session):
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    await service.delete("fabian")
+
+    # "zina"/"zinax" were never deleted -- unrelated deletions must not suppress them.
+    assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
+    assert "ZinaX" in (await service.answer("what is zinax") or "")
+
+
+@pytest.mark.asyncio
+async def test_named_entity_queries_are_blocked_too_not_only_the_specific_phrases(db_session):
+    """Regression (Codex, round 4 on PR #50): "who is zina?"/"what is zina" match no
+
+    `_special_answer` phrase branch at all (only "what is *your* name"/"who are
+    *you*" do), so they were missed by the first version of `_explicit_target_keys`
+    and still leaked through the "projects" entry's scored answer after deleting
+    "zina". A bare mention of "zina"/"fabian" by name must be treated as targeting
+    that key too, not just the specific pre-canned phrases.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    await service.delete("zina")
+
+    assert await service.answer("who is zina?") is None
+    assert await service.answer("what is zina") is None
+    assert await service.answer("tell me about fabian and zina") is None
+
+    # A query naming only the non-deleted party must still work normally.
+    assert await service.answer("who is fabian") == "Fabian is the owner and creator I assist."
+
+
+@pytest.mark.asyncio
+async def test_deleting_zina_does_not_suppress_an_unrelated_zinax_query(db_session):
+    """Regression (Codex, round 7 on PR #50): the bare "zina" target check used
+
+    plain substring matching, and "zina" is itself a substring of "zinax" -- so
+    `_explicit_target_keys("what is zinax")` incorrectly returned {"zina", "zinax"}
+    and an unrelated "zina" tombstone blocked a ZinaX query that has nothing to do
+    with it, discarding the still-active (possibly administrator-customized) ZinaX
+    answer in favor of the generic fallback. Fixed with a word-boundary regex.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    await service.delete("zina")
+
+    # "zinax" was never deleted -- a query naming only it must be unaffected by the
+    # unrelated "zina" tombstone.
+    result = await service.answer("what is zinax")
+    assert result is not None
+    assert "ZinaX" in result
+
+    # A query about "zina" itself (word boundary, not "zinax") must still be blocked.
+    assert await service.answer("who is zina?") is None
+
+
+@pytest.mark.asyncio
+async def test_compound_queries_naming_multiple_targets_are_blocked_on_any_deleted_one(db_session):
+    """Regression (Codex, round 6 on PR #50): `_explicit_target_keys` used to
+
+    short-circuit on the first matching branch, so a compound query like "what is
+    Fabian's Datacube project?" matched only the "project"+"fabian" branch
+    (returning {"projects"}) and never noticed "datacube" was *also* explicitly
+    named -- deleting "datacube_au" alone didn't block it, and `_special_answer`'s
+    "projects" branch then leaked the still-active projects summary (which lists
+    Datacube AU by name). Every matching condition must now be accumulated, not
+    just the first one.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    before = await service.answer("what is fabian's datacube project?")
+    assert "Datacube AU" in before or before is not None
+
+    await service.delete("datacube_au")
+    assert await service.answer("what is fabian's datacube project?") is None
+
+    # A compound query naming only still-available targets must be unaffected.
+    assert await service.answer("what are fabian's projects") is not None
+
+
+@pytest.mark.asyncio
+async def test_scored_match_does_not_disturb_backfill_eligibility(db_session):
+    """Regression (Codex, round 6 on PR #50): `answer()`'s scored-match branch used
+
+    to advance `updated_at` on every successful lookup as a side effect of a mere
+    read, which made migration 035's `updated_at = created_at` backfill-eligibility
+    check permanently (and incorrectly) treat any row ever served this way as
+    "edited". Serving an answer must not touch `updated_at` -- only an actual
+    content edit (via `upsert_identity_registry`) should.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+    moxiz = await service.get_by_key("moxiz_gateway")
+    assert moxiz.updated_at == moxiz.created_at  # backfill-eligible before the read
+
+    # "moxiz" has no _special_answer branch -- this can only be served via the
+    # scored-match loop, exactly the path that used to touch updated_at.
+    result = await service.answer("what is moxiz gateway")
+    assert result is not None
+
+    await db_session.refresh(moxiz)
+    # Still backfill-eligible: migration 035's actual criterion is
+    # `updated_at = created_at`, which a mere read/lookup must not disturb.
+    assert moxiz.updated_at == moxiz.created_at
+
+
+@pytest.mark.asyncio
+async def test_unavailable_default_keys_includes_disabled_not_only_deleted(db_session):
+    """A default that is merely disabled (not deleted) must also count as
+
+    "unavailable" -- otherwise reviving a tombstoned key via the admin API with
+    `enabled=False` would clear the tombstone and immediately look "never
+    configured" again to `_special_answer`, resurrecting the hardcoded default text
+    for a key the OWNER just asked to keep off.
+    """
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    assert await service.unavailable_default_keys() == set()
+
+    zina = await service.get_by_key("zina")
+    zina.is_enabled = False
+    await db_session.flush()
+
+    assert "zina" in await service.unavailable_default_keys()
+    assert await service.answer("who are you?") is None
+
+    await service.delete("fabian")
+    unavailable = await service.unavailable_default_keys()
+    assert {"zina", "fabian"} <= unavailable
