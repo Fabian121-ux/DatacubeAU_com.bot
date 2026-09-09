@@ -11,6 +11,7 @@ against rows shaped like that legacy state.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,51 @@ async def test_backfill_does_not_overwrite_a_row_that_already_has_a_source_or_ty
     ).mappings().first()
     assert row["source"] == "admin_dashboard"
     assert row["entity_type"] == "custom_type"
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_mislabel_a_legacy_row_edited_before_source_existed(db_session):
+    """Regression (Codex review on this same PR): a default key an administrator
+
+    customized through the pre-existing upsert endpoint *before* migration 033 even
+    added the `source` column also has `source IS NULL` -- matching by `registry_key`
+    alone would mislabel that real admin-authored content as "system_default".
+    `upsert_identity_registry` only ever advances `updated_at`, never `created_at`,
+    so `updated_at != created_at` reliably marks a row as edited since creation,
+    regardless of how long ago. Such a row must be left NULL (ambiguous), not
+    backfilled.
+    """
+    created = utcnow() - timedelta(days=400)
+    edited = utcnow() - timedelta(days=10)
+    db_session.add(
+        IdentityRegistryEntry(
+            registry_key="datacube_au",
+            category="Datacube AU",
+            name="Datacube AU",
+            description="admin customized this before migration 033 existed",
+            aliases=[],
+            keywords=[],
+            entities=[],
+            answer="admin customized this before migration 033 existed",
+            facts_json={},
+            is_enabled=True,
+            source=None,
+            entity_type=None,
+            created_at=created,
+            updated_at=edited,
+        )
+    )
+    await db_session.flush()
+
+    await _apply_migration(db_session)
+
+    row = (
+        await db_session.execute(
+            text("SELECT source, entity_type FROM identity_registry WHERE registry_key = 'datacube_au'")
+        )
+    ).mappings().first()
+    assert row["source"] is None
+    assert row["entity_type"] is None
 
 
 @pytest.mark.asyncio
