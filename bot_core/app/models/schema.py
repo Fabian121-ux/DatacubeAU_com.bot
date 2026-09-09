@@ -11,9 +11,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -619,6 +622,12 @@ class OutboundMessageVariant(Base):
     __table_args__ = (
         CheckConstraint("weight BETWEEN 1 AND 100", name="ck_outbound_message_variants_weight_bounded"),
         CheckConstraint("status IN ('draft', 'approved')", name="ck_outbound_message_variants_status"),
+        # id alone is already unique (primary key); this composite is purely so
+        # OutboundVariantUsage's (variant_id, message_set_id) foreign key below has
+        # something to reference -- it lets the database, not just the service,
+        # reject a usage row pairing a real variant with a message_set_id belonging
+        # to a *different* set.
+        UniqueConstraint("id", "message_set_id", name="ux_outbound_message_variants_id_set"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -658,6 +667,45 @@ class OutboundVariantUsage(Base):
         CheckConstraint(
             "send_result IN ('pending', 'sent', 'failed', 'blocked')",
             name="ck_outbound_variant_usage_send_result",
+        ),
+        # The service already rejects NaN/infinite selection_score before insert,
+        # but that's only enforced for callers going through
+        # record_variant_usage() -- a seed, maintenance script, or direct ORM
+        # insert has no equivalent guard. "x = x" is false only for NaN; the range
+        # comparison excludes +/-Infinity. Both are finite-value checks with no
+        # PostgreSQL isnan()/isfinite() built-in needed.
+        CheckConstraint(
+            "selection_score IS NULL OR ("
+            "selection_score = selection_score "
+            "AND selection_score > '-Infinity'::double precision "
+            "AND selection_score < 'Infinity'::double precision"
+            ")",
+            name="ck_outbound_variant_usage_selection_score_finite",
+        ),
+        # Mirrors migration 034's partial unique index: a retried
+        # record_variant_usage() call for the same outbound_queue_id must not
+        # double-count the selection. Declaring it here too (not just in the raw
+        # migration SQL) means a database initialized via Base.metadata.create_all()
+        # -- as tests/conftest.py does, bypassing migrations entirely on a schema
+        # with no prior tables -- still enforces the same idempotency invariant the
+        # service's SAVEPOINT/IntegrityError handling depends on.
+        Index(
+            "ux_outbound_variant_usage_queue",
+            "outbound_queue_id",
+            unique=True,
+            postgresql_where=text("outbound_queue_id IS NOT NULL"),
+        ),
+        # Enforces at the database level what record_variant_usage() already
+        # checks in code: variant_id must actually belong to message_set_id.
+        # MATCH SIMPLE (Postgres's default) means this is only checked when both
+        # columns are non-null, so a hard-deleted variant/set (ON DELETE SET NULL,
+        # applied to both columns together via this same constraint) doesn't
+        # trip it.
+        ForeignKeyConstraint(
+            ["variant_id", "message_set_id"],
+            ["outbound_message_variants.id", "outbound_message_variants.message_set_id"],
+            ondelete="SET NULL",
+            name="fk_outbound_variant_usage_variant_set",
         ),
     )
 

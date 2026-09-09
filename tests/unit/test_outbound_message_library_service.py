@@ -14,6 +14,7 @@ import asyncio
 import os
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.schema import (
@@ -1734,3 +1735,123 @@ async def test_render_fails_closed_on_malformed_required_variables_metadata(db_s
     result = await service.render(variant, {"first_name": "Ada"})
     assert result.ok is False
     assert "required_variables" in (result.error or "")
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 15 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+def test_orm_metadata_declares_the_queue_idempotency_unique_index():
+    """Regression: migration 034 creates ux_outbound_variant_usage_queue, but the
+    mapped table declared only the send_result check. A database initialized
+    through Base.metadata.create_all() with no prior migration -- as
+    tests/conftest.py's setup fixture does when nothing has created the tables
+    yet -- would lack the unique index entirely, letting two concurrent
+    record_variant_usage() calls both pass the advisory lookup and insert
+    duplicate usage rows for one queue delivery."""
+    indexes = {idx.name: idx for idx in OutboundVariantUsage.__table__.indexes}
+    assert "ux_outbound_variant_usage_queue" in indexes
+    assert indexes["ux_outbound_variant_usage_queue"].unique is True
+
+
+@pytest.mark.asyncio
+async def test_list_message_sets_and_list_variants_see_a_disable_committed_by_another_session(db_session):
+    """Regression: list_message_sets()/list_variants_for_set() lacked
+    populate_existing=True. A set/variant this session already cached (e.g. from
+    an earlier get_message_set() call) was reselected correctly by the SQL WHERE,
+    but returned as the identity map's stale Python object -- most visible with
+    include_disabled=True, where a dashboard/management caller would see a set
+    another session just disabled as still active."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    # Load both into this session's identity map first, same as a real caller would.
+    assert await service.get_message_set(set_id) is not None
+    assert await service.get_variant(created.id) is not None
+    await db_session.commit()
+
+    async def _disable_both(other_session):
+        other_service = OutboundMessageLibraryService(other_session)
+        assert (await other_service.disable_variant(created.id)).ok is True
+        assert (await other_service.disable_message_set(set_id)).ok is True
+
+    await _run_in_second_session(_disable_both)
+
+    sets = await service.list_message_sets(include_disabled=True)
+    assert next(s for s in sets if s.id == set_id).disabled_at is not None
+
+    variants = await service.list_variants_for_set(set_id, include_disabled=True)
+    assert next(v for v in variants if v.id == created.id).disabled_at is not None
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_a_variant_paired_with_a_different_sets_id(db_session):
+    """Regression: message_set_id and variant_id on outbound_variant_usage were
+    independent foreign keys with no cross-check, so a direct ORM insert, seed,
+    or maintenance script could pair a real variant with a message_set_id
+    belonging to a *different* set even though record_variant_usage() already
+    rejects that pairing in application code -- corrupting per-set/per-variant
+    analytics grouping for anything that bypasses the service."""
+    service = OutboundMessageLibraryService(db_session)
+    set_a = await _make_set(service, set_key="set_a")
+    set_b = await _make_set(service, set_key="set_b", name="Set B")
+    variant = await service.create_variant(message_set_id=set_a, label="A", template_body="Hi.")
+
+    db_session.add(OutboundVariantUsage(message_set_id=set_b, variant_id=variant.id))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_a_non_finite_selection_score(db_session):
+    """Regression: record_variant_usage() rejects NaN/infinite selection_score
+    before insert, but the database column had no equivalent constraint, so a
+    seed, maintenance script, or direct ORM insert could persist a value that
+    would corrupt any future average/ordering-based selection analytics."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi.")
+
+    db_session.add(
+        OutboundVariantUsage(message_set_id=set_id, variant_id=variant.id, selection_score=float("nan"))
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_retry_survives_a_hard_deleted_variant(db_session):
+    """Regression: message_set_id/variant_id/contact_id are ON DELETE SET NULL, so
+    a supported hard-delete of the variant (maintenance/retention cleanup) nulls
+    those fields on an already-recorded usage row without touching the row
+    itself. A later retry with the *original* ids then failed the identity
+    comparison (a real id against a now-None field) and was reported as a
+    conflict against a "different selection" instead of the same idempotent
+    retry it actually is."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    queue_row = OutboundMessage(chat_id="15550000012@c.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    first = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert first.ok is True
+
+    # Hard-delete the variant directly (the supported maintenance/retention path
+    # these tables' own comments describe) -- ON DELETE SET NULL nulls variant_id
+    # and message_set_id together on the existing usage row.
+    variant_row = await db_session.get(OutboundMessageVariant, variant.id)
+    await db_session.delete(variant_row)
+    await db_session.flush()
+
+    retry = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert retry.ok is True
+    assert retry.id == first.id

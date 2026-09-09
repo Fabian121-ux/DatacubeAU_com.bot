@@ -109,3 +109,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_outbound_variant_usage_queue
 
 CREATE INDEX IF NOT EXISTS ix_outbound_variant_usage_variant
     ON outbound_variant_usage (variant_id, created_at DESC);
+
+-- The service already rejects a NaN/infinite selection_score before insert, but a
+-- seed, maintenance script, or direct insert has no equivalent guard. "x = x" is
+-- false only for NaN; the range comparison excludes +/-Infinity.
+ALTER TABLE outbound_variant_usage
+    ADD CONSTRAINT ck_outbound_variant_usage_selection_score_finite
+    CHECK (
+        selection_score IS NULL OR (
+            selection_score = selection_score
+            AND selection_score > '-Infinity'::double precision
+            AND selection_score < 'Infinity'::double precision
+        )
+    );
+
+-- id alone is already unique (primary key); this composite exists purely so the
+-- foreign key below has something to reference.
+ALTER TABLE outbound_message_variants
+    ADD CONSTRAINT ux_outbound_message_variants_id_set UNIQUE (id, message_set_id);
+
+-- Enforces at the database level what record_variant_usage() already checks in
+-- code: variant_id must actually belong to message_set_id, so a direct insert,
+-- seed, or maintenance script can no longer pair a real variant with a
+-- message_set_id belonging to a *different* set and corrupt per-set/per-variant
+-- analytics grouping. MATCH SIMPLE (Postgres's default for a composite FK) means
+-- this is only checked when both columns are non-null, so a hard-deleted
+-- variant/set -- which SET NULL applies to both columns of together, since this
+-- is one composite constraint -- doesn't trip it.
+ALTER TABLE outbound_variant_usage
+    ADD CONSTRAINT fk_outbound_variant_usage_variant_set
+    FOREIGN KEY (variant_id, message_set_id)
+    REFERENCES outbound_message_variants (id, message_set_id)
+    ON DELETE SET NULL;

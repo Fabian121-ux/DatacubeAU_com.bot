@@ -253,6 +253,14 @@ class OutboundMessageLibraryService:
         if not include_disabled:
             stmt = stmt.where(OutboundMessageSet.is_enabled.is_(True))
         stmt = stmt.order_by(OutboundMessageSet.name.asc())
+        # populate_existing=True: without it, a set this session already cached
+        # (e.g. an earlier get_message_set() call) would be returned with whatever
+        # is_enabled/disabled_at it had then, even though the SQL WHERE above
+        # correctly re-evaluated the row's real current state to decide inclusion
+        # -- most visible with include_disabled=True, where a dashboard/management
+        # caller could see stale lifecycle fields for a set another session just
+        # disabled.
+        stmt = stmt.execution_options(populate_existing=True)
         return list((await self.session.execute(stmt)).scalars().all())
 
     async def disable_message_set(self, message_set_id: int, *, request_id: str | None = None) -> LibraryResult:
@@ -561,6 +569,8 @@ class OutboundMessageLibraryService:
         if only_approved:
             stmt = stmt.where(OutboundMessageVariant.status == "approved")
         stmt = stmt.order_by(OutboundMessageVariant.label.asc())
+        # populate_existing=True: same reasoning as list_message_sets() above.
+        stmt = stmt.execution_options(populate_existing=True)
         return list((await self.session.execute(stmt)).scalars().all())
 
     async def disable_variant(self, variant_id: int, *, request_id: str | None = None) -> LibraryResult:
@@ -734,10 +744,20 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid selection_reason")
 
         def _matches_this_selection(existing: OutboundVariantUsage) -> bool:
+            # message_set_id/variant_id/contact_id are all ON DELETE SET NULL, so a
+            # supported hard-delete of the set/variant/contact (maintenance/
+            # retention cleanup, documented elsewhere in this file) can null out a
+            # field on an *already-recorded* usage row without touching the row
+            # itself. A field that's now None can no longer be compared -- it isn't
+            # evidence the row was a *different* selection, only that this specific
+            # piece of its identity was cleared after the fact. Comparing None
+            # against a real id here would otherwise report an exact retry as a
+            # conflict, breaking the documented idempotency guarantee for exactly
+            # the hard-delete scenario this table's own design already anticipates.
             return (
-                existing.message_set_id == message_set_id
-                and existing.variant_id == variant_id
-                and existing.contact_id == contact_id
+                (existing.message_set_id is None or existing.message_set_id == message_set_id)
+                and (existing.variant_id is None or existing.variant_id == variant_id)
+                and (existing.contact_id is None or existing.contact_id == contact_id)
             )
 
         # Check for an idempotent retry *before* the eligibility check below, not
