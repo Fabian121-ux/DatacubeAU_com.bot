@@ -113,31 +113,72 @@ CREATE INDEX IF NOT EXISTS ix_outbound_variant_usage_variant
 -- The service already rejects a NaN/infinite selection_score before insert, but a
 -- seed, maintenance script, or direct insert has no equivalent guard. "x = x" is
 -- false only for NaN; the range comparison excludes +/-Infinity.
-ALTER TABLE outbound_variant_usage
-    ADD CONSTRAINT ck_outbound_variant_usage_selection_score_finite
-    CHECK (
-        selection_score IS NULL OR (
-            selection_score = selection_score
-            AND selection_score > '-Infinity'::double precision
-            AND selection_score < 'Infinity'::double precision
-        )
-    );
-
--- id alone is already unique (primary key); this composite exists purely so the
--- foreign key below has something to reference.
-ALTER TABLE outbound_message_variants
-    ADD CONSTRAINT ux_outbound_message_variants_id_set UNIQUE (id, message_set_id);
+--
+-- Guarded by a catalog existence check, not a bare ALTER TABLE: this migration
+-- runs outside a transaction (see deploy/scripts/run-migrations.sh, which records
+-- the migration only after the whole file succeeds), so if deployment is
+-- interrupted after this ADD CONSTRAINT commits but before the file finishes, the
+-- next startup re-runs the file from the top and a bare ALTER would fail
+-- immediately on "constraint already exists" -- leaving deployment unable to
+-- self-recover. The IF NOT EXISTS forms below (CREATE INDEX, CREATE OR REPLACE
+-- FUNCTION, DROP TRIGGER IF EXISTS) are already safe to re-run for the same
+-- reason; ADD CONSTRAINT has no such clause in PostgreSQL, so it needs this
+-- explicit guard instead.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'ck_outbound_variant_usage_selection_score_finite'
+    ) THEN
+        ALTER TABLE outbound_variant_usage
+            ADD CONSTRAINT ck_outbound_variant_usage_selection_score_finite
+            CHECK (
+                selection_score IS NULL OR (
+                    selection_score = selection_score
+                    AND selection_score > '-Infinity'::double precision
+                    AND selection_score < 'Infinity'::double precision
+                )
+            );
+    END IF;
+END;
+$$;
 
 -- Enforces at the database level what record_variant_usage() already checks in
 -- code: variant_id must actually belong to message_set_id, so a direct insert,
 -- seed, or maintenance script can no longer pair a real variant with a
 -- message_set_id belonging to a *different* set and corrupt per-set/per-variant
--- analytics grouping. MATCH SIMPLE (Postgres's default for a composite FK) means
--- this is only checked when both columns are non-null, so a hard-deleted
--- variant/set -- which SET NULL applies to both columns of together, since this
--- is one composite constraint -- doesn't trip it.
-ALTER TABLE outbound_variant_usage
-    ADD CONSTRAINT fk_outbound_variant_usage_variant_set
-    FOREIGN KEY (variant_id, message_set_id)
-    REFERENCES outbound_message_variants (id, message_set_id)
-    ON DELETE SET NULL;
+-- analytics grouping.
+--
+-- A trigger, not a composite foreign key: a composite FK's single ON DELETE
+-- action applies to the whole tuple, so hard-deleting *only* a variant would also
+-- null message_set_id on its usage rows even though the parent set is untouched
+-- and still valid -- discarding real, still-correct set attribution from
+-- historical analytics. A trigger enforces the pairing on write only, leaving the
+-- two independent single-column foreign keys below to null exactly (and only)
+-- the column whose own referenced row was actually deleted. ERRCODE 23514
+-- (check_violation) makes this classify as an IntegrityError the same way a real
+-- constraint violation would, for callers/tests that catch IntegrityError.
+CREATE OR REPLACE FUNCTION zina_check_outbound_variant_usage_set_pairing()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.variant_id IS NOT NULL AND NEW.message_set_id IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM outbound_message_variants
+            WHERE id = NEW.variant_id AND message_set_id = NEW.message_set_id
+        ) THEN
+            RAISE EXCEPTION
+                'outbound_variant_usage.variant_id % does not belong to message_set_id %',
+                NEW.variant_id, NEW.message_set_id
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_outbound_variant_usage_check_set_pairing ON outbound_variant_usage;
+CREATE TRIGGER trg_outbound_variant_usage_check_set_pairing
+BEFORE INSERT OR UPDATE OF variant_id, message_set_id ON outbound_variant_usage
+FOR EACH ROW
+EXECUTE FUNCTION zina_check_outbound_variant_usage_set_pairing();

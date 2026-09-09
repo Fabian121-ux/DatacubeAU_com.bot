@@ -1824,11 +1824,13 @@ async def test_database_rejects_a_non_finite_selection_score(db_session):
 async def test_record_variant_usage_retry_survives_a_hard_deleted_variant(db_session):
     """Regression: message_set_id/variant_id/contact_id are ON DELETE SET NULL, so
     a supported hard-delete of the variant (maintenance/retention cleanup) nulls
-    those fields on an already-recorded usage row without touching the row
-    itself. A later retry with the *original* ids then failed the identity
-    comparison (a real id against a now-None field) and was reported as a
-    conflict against a "different selection" instead of the same idempotent
-    retry it actually is."""
+    variant_id on an already-recorded usage row (via its own independent foreign
+    key -- message_set_id is untouched, since the set itself wasn't deleted;
+    round 16 replaced an earlier composite-FK design that incorrectly nulled
+    both together) without touching the row itself. A later retry with the
+    *original* ids then failed the identity comparison (a real id against a
+    now-None field) and was reported as a conflict against a "different
+    selection" instead of the same idempotent retry it actually is."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
     variant = await service.create_variant(
@@ -1844,8 +1846,8 @@ async def test_record_variant_usage_retry_survives_a_hard_deleted_variant(db_ses
     assert first.ok is True
 
     # Hard-delete the variant directly (the supported maintenance/retention path
-    # these tables' own comments describe) -- ON DELETE SET NULL nulls variant_id
-    # and message_set_id together on the existing usage row.
+    # these tables' own comments describe) -- nulls variant_id on the existing
+    # usage row; message_set_id survives since the set itself is untouched.
     variant_row = await db_session.get(OutboundMessageVariant, variant.id)
     await db_session.delete(variant_row)
     await db_session.flush()
@@ -1855,3 +1857,101 @@ async def test_record_variant_usage_retry_survives_a_hard_deleted_variant(db_ses
     )
     assert retry.ok is True
     assert retry.id == first.id
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 16 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_reuse_when_original_selection_is_fully_erased(db_session):
+    """Regression: the round-15 fix treated a None field on the existing usage row
+    as unverifiable rather than mismatched, to let a retry survive a hard-delete
+    of *part* of the original selection. But if the set is hard-deleted (which
+    cascades to its variants), both message_set_id and variant_id null out
+    together, and with no contact ever recorded, contact_id was already None too
+    -- every field becomes a wildcard. A completely different later call (a
+    different set, variant, and contact) then silently claimed the same
+    outbound_queue_id and was reported as a successful "retry" of a selection it
+    had nothing to do with."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    queue_row = OutboundMessage(chat_id="15550000013@c.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    first = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert first.ok is True
+
+    # Hard-delete the set directly -- cascades to the variant, nulling both
+    # message_set_id and variant_id on the existing usage row. contact_id was
+    # never set, so every identity field is now None.
+    set_row = await db_session.get(OutboundMessageSet, set_id)
+    await db_session.delete(set_row)
+    await db_session.flush()
+
+    other_set = await _make_set(service, set_key="other_set", name="Other Set")
+    other_variant = await service.create_variant(
+        message_set_id=other_set, label="B", template_body="Hello.", status="approved"
+    )
+
+    conflicting = await service.record_variant_usage(
+        message_set_id=other_set, variant_id=other_variant.id, outbound_queue_id=queue_row.id
+    )
+    assert conflicting.ok is False
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_refreshes_a_stale_locked_contact(db_session):
+    """Regression: the round-14 fix locked the contact with SELECT ... FOR UPDATE
+    but no populate_existing=True -- the same identity-map gap rounds 12/14 fixed
+    everywhere else in this file. router.py::_apply_contact_identity() routinely
+    updates Contact.chat_id; a contact this session had already cached with a
+    stale (e.g. missing) chat_id would still show that stale value here even
+    under the lock, so the whatsapp_id/chat_id cross-check below could wrongly
+    reject a queue row addressed to the contact's real, current identity."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    contact = Contact(whatsapp_id="15550000014@c.us", display_name="Stale Chat")
+    db_session.add(contact)
+    await db_session.flush()
+    # Load into this session's identity map first, same as a real caller would
+    # (e.g. an earlier lookup in the same request).
+    assert await db_session.get(Contact, contact.id) is not None
+    await db_session.commit()
+
+    async def _set_chat_id(other_session):
+        other_contact = await other_session.get(Contact, contact.id)
+        other_contact.chat_id = "15550000014-group@g.us"
+
+    await _run_in_second_session(_set_chat_id)
+
+    queue_row = OutboundMessage(chat_id="15550000014-group@g.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    result = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, contact_id=contact.id, outbound_queue_id=queue_row.id
+    )
+    assert result.ok is True
+
+
+def test_orm_metadata_declares_the_active_label_unique_index():
+    """Regression: migration 034 declares ux_outbound_message_variants_set_label,
+    but the mapped table ended without the equivalent partial unique index. On a
+    schema initialized purely through Base.metadata.create_all(), two concurrent
+    create_variant() calls could both pass the duplicate-label query and both
+    insert the same active (message_set_id, label) pair, since the database
+    constraint the SAVEPOINT handling relies on would be absent."""
+    indexes = {idx.name: idx for idx in OutboundMessageVariant.__table__.indexes}
+    assert "ux_outbound_message_variants_set_label" in indexes
+    assert indexes["ux_outbound_message_variants_set_label"].unique is True

@@ -754,10 +754,26 @@ class OutboundMessageLibraryService:
             # against a real id here would otherwise report an exact retry as a
             # conflict, breaking the documented idempotency guarantee for exactly
             # the hard-delete scenario this table's own design already anticipates.
-            return (
-                (existing.message_set_id is None or existing.message_set_id == message_set_id)
-                and (existing.variant_id is None or existing.variant_id == variant_id)
-                and (existing.contact_id is None or existing.contact_id == contact_id)
+            #
+            # But if EVERY field has been cleared (e.g. the set was hard-deleted,
+            # cascading to the variant, with no contact ever recorded), nothing
+            # about the original selection survives to verify against at all --
+            # treating an all-null row as an automatic match would let a
+            # completely unrelated later call (a different set, variant, and
+            # contact) silently claim the same outbound_queue_id merely because
+            # the earlier row happened to lose its entire identity (round 16: the
+            # round-15 fix above didn't anticipate this). At least one field must
+            # still carry real, comparable evidence.
+            fields = (
+                (existing.message_set_id, message_set_id),
+                (existing.variant_id, variant_id),
+                (existing.contact_id, contact_id),
+            )
+            if all(existing_value is None for existing_value, _ in fields):
+                return False
+            return all(
+                existing_value is None or existing_value == requested_value
+                for existing_value, requested_value in fields
             )
 
         # Check for an idempotent retry *before* the eligibility check below, not
@@ -829,11 +845,21 @@ class OutboundMessageLibraryService:
         # row up against, the IntegrityError handler below has nothing to recover
         # into and would re-raise, letting a normal concurrent deletion escape this
         # service's fail-closed contract as an unhandled exception. The lock holds
-        # the contact reference stable through the insert instead.
+        # the contact reference stable through the insert instead. populate_existing
+        # =True too: FOR UPDATE alone re-runs the query but the identity map still
+        # wins over its fresh result (the same gap rounds 12/14 fixed elsewhere) --
+        # router.py::_apply_contact_identity() routinely updates Contact.chat_id, so
+        # a contact this session cached earlier could otherwise still show a stale
+        # chat_id here, and the whatsapp_id/chat_id cross-check below would then
+        # wrongly reject a queue row that's actually addressed to this contact's
+        # current identity.
         contact = (
             (
                 await self.session.execute(
-                    select(Contact).where(Contact.id == contact_id).with_for_update()
+                    select(Contact)
+                    .where(Contact.id == contact_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
                 )
             ).scalar_one_or_none()
             if contact_id is not None

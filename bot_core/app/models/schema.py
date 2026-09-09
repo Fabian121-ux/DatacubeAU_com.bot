@@ -11,12 +11,10 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -622,12 +620,20 @@ class OutboundMessageVariant(Base):
     __table_args__ = (
         CheckConstraint("weight BETWEEN 1 AND 100", name="ck_outbound_message_variants_weight_bounded"),
         CheckConstraint("status IN ('draft', 'approved')", name="ck_outbound_message_variants_status"),
-        # id alone is already unique (primary key); this composite is purely so
-        # OutboundVariantUsage's (variant_id, message_set_id) foreign key below has
-        # something to reference -- it lets the database, not just the service,
-        # reject a usage row pairing a real variant with a message_set_id belonging
-        # to a *different* set.
-        UniqueConstraint("id", "message_set_id", name="ux_outbound_message_variants_id_set"),
+        # Mirrors migration 034's partial unique index: a label is only unique
+        # among a set's *active* variants. Declaring it here too means a database
+        # initialized via Base.metadata.create_all() (bypassing migrations, as
+        # tests/conftest.py's setup fixture does on a schema with no prior tables)
+        # still enforces the invariant create_variant()'s SAVEPOINT/IntegrityError
+        # handling depends on -- without it, two concurrent create_variant() calls
+        # could both pass the duplicate-label query and both insert.
+        Index(
+            "ux_outbound_message_variants_set_label",
+            "message_set_id",
+            "label",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -695,18 +701,16 @@ class OutboundVariantUsage(Base):
             unique=True,
             postgresql_where=text("outbound_queue_id IS NOT NULL"),
         ),
-        # Enforces at the database level what record_variant_usage() already
-        # checks in code: variant_id must actually belong to message_set_id.
-        # MATCH SIMPLE (Postgres's default) means this is only checked when both
-        # columns are non-null, so a hard-deleted variant/set (ON DELETE SET NULL,
-        # applied to both columns together via this same constraint) doesn't
-        # trip it.
-        ForeignKeyConstraint(
-            ["variant_id", "message_set_id"],
-            ["outbound_message_variants.id", "outbound_message_variants.message_set_id"],
-            ondelete="SET NULL",
-            name="fk_outbound_variant_usage_variant_set",
-        ),
+        # variant_id-belongs-to-message_set_id is enforced at the database level
+        # by a BEFORE INSERT/UPDATE trigger (migration 034,
+        # trg_outbound_variant_usage_check_set_pairing), not a composite foreign
+        # key: an earlier attempt at a composite FK correctly rejected a
+        # mismatched pairing, but its single ON DELETE SET NULL action for the
+        # whole tuple meant hard-deleting *only* a variant also nulled
+        # message_set_id, discarding that usage row's still-valid set
+        # attribution even though the set itself was untouched. The trigger
+        # enforces the same invariant on write without changing what the two
+        # independent single-column foreign keys below do on delete.
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
