@@ -1559,3 +1559,78 @@ async def test_record_variant_usage_rejects_idempotency_key_reuse_for_a_differen
     ).fetchall()
     assert len(rows) == 1
     assert rows[0].variant_id == variant_a.id
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 13 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_render_rejects_a_non_mapping_variables_argument(db_session):
+    """Regression: `variables = variables or {}` only rescues a falsy value (None,
+    {}). A JSON-facing caller supplying a truthy non-mapping -- an int, a bare
+    string, a list -- reached the membership/indexing checks below and raised a
+    plain TypeError instead of the documented fail-closed RenderResult."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi {{first_name}}.",
+        required_variables=["first_name"],
+        status="approved",
+    )
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+
+    for bad_variables in (1, "first_name", ["first_name"]):
+        result = await service.render(variant, bad_variables)
+        assert result.ok is False
+        assert "mapping" in (result.error or "")
+
+    ok = await service.render(variant, {"first_name": "Ada"})
+    assert ok.ok is True
+
+
+@pytest.mark.asyncio
+async def test_delete_message_set_cascade_preserves_a_concurrently_disabled_childs_timestamp(db_session):
+    """Regression: the cascade's child_variants query in delete_message_set() (and
+    the identical one in disable_message_set()) had no lock/populate_existing.
+    Its WHERE clause only filters deleted_at, not disabled_at, so a child another
+    session concurrently disabled (but hadn't deleted) still matches. If this
+    session had already cached that child (e.g. via get_variant()) with a stale
+    disabled_at=None, `variant.disabled_at = variant.disabled_at or now` saw the
+    stale None and overwrote the real disable timestamp with this cascade's,
+    losing when the child was actually disabled."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    # Load it into this session's identity map first, same as a real caller would.
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+    await db_session.commit()
+
+    async def _disable_child(other_session):
+        result = await OutboundMessageLibraryService(other_session).disable_variant(created.id)
+        assert result.ok is True
+
+    await _run_in_second_session(_disable_child)
+
+    original_disabled_at = (
+        await db_session.execute(
+            OutboundMessageVariant.__table__.select().where(OutboundMessageVariant.id == created.id)
+        )
+    ).mappings().one()["disabled_at"]
+    assert original_disabled_at is not None
+
+    result = await service.delete_message_set(set_id)
+    assert result.ok is True
+
+    refreshed = (
+        await db_session.execute(
+            OutboundMessageVariant.__table__.select().where(OutboundMessageVariant.id == created.id)
+        )
+    ).mappings().one()
+    assert refreshed["deleted_at"] is not None
+    assert refreshed["disabled_at"] == original_disabled_at

@@ -256,14 +256,23 @@ class OutboundMessageLibraryService:
 
         # Cascade to every active child variant, same reasoning as delete_message_set:
         # without this, get_variant()/list_variants_for_set() and render() would still
-        # treat the variant as usable even though its parent set is disabled.
+        # treat the variant as usable even though its parent set is disabled. Locked +
+        # populate_existing for the same reason as _locked_message_set()/
+        # _locked_variant(): without it, a child this session already had cached
+        # (stale, e.g. disabled_at=None) could be returned as-is even though another
+        # session concurrently disabled that specific child and committed first --
+        # `variant.disabled_at or now` would then see the stale None and overwrite the
+        # child's real timestamp with this cascade's.
         child_variants = (
             await self.session.execute(
-                select(OutboundMessageVariant).where(
+                select(OutboundMessageVariant)
+                .where(
                     OutboundMessageVariant.message_set_id == message_set_id,
                     OutboundMessageVariant.deleted_at.is_(None),
                     OutboundMessageVariant.disabled_at.is_(None),
                 )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalars().all()
         for variant in child_variants:
@@ -298,13 +307,19 @@ class OutboundMessageLibraryService:
         # Cascade the tombstone to every active child variant. Without this, a
         # variant under a deleted set stays fetchable via get_variant()/
         # list_variants_for_set() and renderable, so deleting the set would not
-        # actually retire its message content.
+        # actually retire its message content. Locked + populate_existing: same
+        # staleness risk as disable_message_set()'s cascade above -- a concurrently
+        # disabled/deleted child this session had already cached would otherwise have
+        # its real timestamp overwritten by this cascade's.
         child_variants = (
             await self.session.execute(
-                select(OutboundMessageVariant).where(
+                select(OutboundMessageVariant)
+                .where(
                     OutboundMessageVariant.message_set_id == message_set_id,
                     OutboundMessageVariant.deleted_at.is_(None),
                 )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalars().all()
         for variant in child_variants:
@@ -604,6 +619,13 @@ class OutboundMessageLibraryService:
             # children only matters if render() itself also refuses them.
             return RenderResult(False, error="variant is not active")
 
+        # A JSON-facing caller could pass a truthy non-mapping (an int, a bare
+        # string, a list) instead of a dict. "or {}" only rescues a falsy value
+        # (None, {}), so a non-mapping would reach the membership/indexing checks
+        # below and raise a plain TypeError instead of the documented fail-closed
+        # RenderResult.
+        if variables is not None and not isinstance(variables, dict):
+            return RenderResult(False, error="variables must be a mapping")
         variables = variables or {}
         required = set(variant.required_variables or [])
 
