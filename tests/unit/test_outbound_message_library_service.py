@@ -1634,3 +1634,103 @@ async def test_delete_message_set_cascade_preserves_a_concurrently_disabled_chil
     ).mappings().one()
     assert refreshed["deleted_at"] is not None
     assert refreshed["disabled_at"] == original_disabled_at
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 14 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_message_set_and_get_variant_see_a_delete_committed_by_another_session(db_session):
+    """Regression: get_message_set()/get_variant() read through session.get(),
+    which -- with expire_on_commit=False -- returns this session's already-cached
+    object without a fresh query. A set/variant fetched earlier in this session
+    and then soft-deleted by another session would still pass the deleted_at
+    filter here, so a long-lived caller (a dashboard poll, a producer holding the
+    id) would keep treating a deleted row as active."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi there.")
+    # Load both into this session's identity map first, same as a real caller would.
+    assert await service.get_message_set(set_id) is not None
+    assert await service.get_variant(created.id) is not None
+    await db_session.commit()
+
+    async def _delete_both(other_session):
+        other_service = OutboundMessageLibraryService(other_session)
+        assert (await other_service.delete_variant(created.id)).ok is True
+        assert (await other_service.delete_message_set(set_id)).ok is True
+
+    await _run_in_second_session(_delete_both)
+
+    assert await service.get_variant(created.id) is None
+    assert await service.get_message_set(set_id) is None
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_retry_succeeds_after_the_variant_becomes_ineligible(db_session):
+    """Regression: the eligibility check ran before the idempotency lookup, so a
+    delayed producer retry of a call that had already succeeded was rejected as
+    "not eligible" once the variant was disabled in between -- even though the
+    selection genuinely already happened and the retry should just return the
+    existing usage id, not a failure."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    queue_row = OutboundMessage(chat_id="15550000011@c.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    first = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert first.ok is True
+
+    disabled = await service.disable_variant(variant.id)
+    assert disabled.ok is True
+
+    retry = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id=queue_row.id
+    )
+    assert retry.ok is True
+    assert retry.id == first.id
+
+    rows = (
+        await db_session.execute(
+            OutboundVariantUsage.__table__.select().where(
+                OutboundVariantUsage.outbound_queue_id == queue_row.id
+            )
+        )
+    ).fetchall()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_render_fails_closed_on_malformed_required_variables_metadata(db_session):
+    """Regression: the JSONB required_variables column has no shape constraint, so
+    maintenance code or direct ORM use could persist something JSON-valid but not
+    a list of strings (e.g. a list of dicts). create_variant() would never
+    produce that, but render() re-validates persisted data for exactly this
+    bypass scenario -- set() on a list containing an unhashable dict raised a
+    plain TypeError instead of the documented fail-closed RenderResult."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id,
+        label="A",
+        template_body="Hi {{first_name}}.",
+        required_variables=["first_name"],
+        status="approved",
+    )
+    variant = await service.get_variant(created.id)
+    assert variant is not None
+
+    variant.required_variables = [{"name": "first_name"}]
+    await db_session.flush()
+
+    result = await service.render(variant, {"first_name": "Ada"})
+    assert result.ok is False
+    assert "required_variables" in (result.error or "")

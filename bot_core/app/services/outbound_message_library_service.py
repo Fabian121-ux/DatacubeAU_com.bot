@@ -230,7 +230,20 @@ class OutboundMessageLibraryService:
         return LibraryResult(True, id=message_set.id)
 
     async def get_message_set(self, message_set_id: int) -> OutboundMessageSet | None:
-        message_set = await self.session.get(OutboundMessageSet, message_set_id)
+        # Not session.get(): with expire_on_commit=False, a caller holding this
+        # session across a longer-lived read (a dashboard poll, a producer that
+        # fetched the set earlier) would get back the identity map's cached object
+        # even after another session soft-deleted it, so the deleted_at filter below
+        # would evaluate against stale data. populate_existing=True forces this read
+        # to reflect the row's actual current committed state; no lock is taken --
+        # this is a plain lookup, not a lifecycle mutation.
+        message_set = (
+            await self.session.execute(
+                select(OutboundMessageSet)
+                .where(OutboundMessageSet.id == message_set_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if message_set is None or message_set.deleted_at is not None:
             return None
         return message_set
@@ -518,7 +531,16 @@ class OutboundMessageLibraryService:
         return LibraryResult(True, id=variant.id)
 
     async def get_variant(self, variant_id: int) -> OutboundMessageVariant | None:
-        variant = await self.session.get(OutboundMessageVariant, variant_id)
+        # Same reasoning as get_message_set(): populate_existing=True, no lock --
+        # a plain lookup must reflect the row's real current state, not whatever
+        # this session's identity map cached before another session soft-deleted it.
+        variant = (
+            await self.session.execute(
+                select(OutboundMessageVariant)
+                .where(OutboundMessageVariant.id == variant_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if variant is None or variant.deleted_at is not None:
             return None
         return variant
@@ -627,7 +649,19 @@ class OutboundMessageLibraryService:
         if variables is not None and not isinstance(variables, dict):
             return RenderResult(False, error="variables must be a mapping")
         variables = variables or {}
-        required = set(variant.required_variables or [])
+
+        # Defense in depth, same reasoning as the delimiter/exact-match checks
+        # below: the JSONB required_variables column has no shape constraint, so
+        # maintenance code or direct ORM use could persist something JSON-valid but
+        # not a list of strings (e.g. [{"name": "first_name"}]). create_variant()
+        # would never produce that, but render() re-validates persisted template
+        # data specifically because it can't assume every row got there through
+        # create_variant() -- set() on a list containing an unhashable element
+        # (a dict) raises a plain TypeError instead of a fail-closed RenderResult.
+        raw_required = variant.required_variables or []
+        if not isinstance(raw_required, list) or not all(isinstance(v, str) for v in raw_required):
+            return RenderResult(False, error="variant required_variables metadata is invalid")
+        required = set(raw_required)
 
         # Defense in depth, same order as create_variant(): a maintenance script or
         # direct ORM edit could change template_body after creation without going
@@ -699,6 +733,52 @@ class OutboundMessageLibraryService:
         if selection_reason is not None and not isinstance(selection_reason, str):
             return LibraryResult(False, error="invalid selection_reason")
 
+        def _matches_this_selection(existing: OutboundVariantUsage) -> bool:
+            return (
+                existing.message_set_id == message_set_id
+                and existing.variant_id == variant_id
+                and existing.contact_id == contact_id
+            )
+
+        # Check for an idempotent retry *before* the eligibility check below, not
+        # only as the insert-conflict fallback further down: a delayed producer
+        # retry of a call that already succeeded must return the existing usage id
+        # regardless of whether the variant has since been disabled/deleted -- the
+        # selection genuinely already happened and this is not a new one. Checking
+        # eligibility first would reject that retry as "not eligible" even though
+        # nothing new is being recorded. This is an unlocked advisory check (a plain
+        # SELECT can race against a concurrent first insert); the SAVEPOINT-
+        # contained conflict handling around the insert below is the actual
+        # correctness guarantee and reuses the same identity comparison.
+        if outbound_queue_id is not None:
+            existing = (
+                await self.session.execute(
+                    select(OutboundVariantUsage).where(
+                        OutboundVariantUsage.outbound_queue_id == outbound_queue_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if _matches_this_selection(existing):
+                    return LibraryResult(True, id=existing.id)
+                return LibraryResult(
+                    False,
+                    error=(
+                        f"outbound_queue_id {outbound_queue_id!r} is already recorded against a "
+                        "different selection"
+                    ),
+                )
+
+        # Lock the parent set before the child variant. disable_message_set()/
+        # delete_message_set() lock the parent first and then their child variants
+        # (a cascade); locking child-then-parent here, as an earlier version of this
+        # method did, is the opposite order and can deadlock against those paths
+        # under concurrent load -- Postgres aborts one side with an unhandled error
+        # rather than queuing, since neither transaction can ever proceed. The
+        # result isn't otherwise used: this method's own existence/lifecycle
+        # validation is on the variant, not the set.
+        await self._locked_message_set(message_set_id)
+
         # A locked read (SELECT ... FOR UPDATE), not session.get()/refresh(): this
         # eligibility check and the usage insert below are not atomic on their own,
         # so a concurrent disable_variant()/delete_variant() could commit between the
@@ -718,11 +798,27 @@ class OutboundMessageLibraryService:
         # Only an approved, active variant was ever eligible to be selected. A
         # draft/disabled/deleted variant reaching this point (a stale id, a caller
         # bypassing the selection engine) must not be recorded as a real selection --
-        # these rows drive per-variant send-result/reply-rate analytics.
+        # these rows drive per-variant send-result/reply-rate analytics. (A genuine
+        # idempotent retry never reaches here -- it already returned above.)
         if variant.status != "approved" or not variant.is_enabled or variant.disabled_at is not None:
             return LibraryResult(False, error="variant is not an eligible (approved, active) selection")
 
-        contact = await self.session.get(Contact, contact_id) if contact_id is not None else None
+        # Locked, not session.get(): without this, a contact hard-deleted between
+        # this existence check and the insert below would fail the row's contact_id
+        # foreign key at flush() -- with no outbound_queue_id to look an existing
+        # row up against, the IntegrityError handler below has nothing to recover
+        # into and would re-raise, letting a normal concurrent deletion escape this
+        # service's fail-closed contract as an unhandled exception. The lock holds
+        # the contact reference stable through the insert instead.
+        contact = (
+            (
+                await self.session.execute(
+                    select(Contact).where(Contact.id == contact_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if contact_id is not None
+            else None
+        )
         if contact_id is not None and contact is None:
             return LibraryResult(False, error="contact not found")
         outbound_message = (
@@ -799,11 +895,7 @@ class OutboundMessageLibraryService:
             # successful idempotent no-op would silently attribute B's delivery to
             # A in the analytics this table exists to keep accurate. Only an exact
             # match on the row's immutable selection identity is a genuine retry.
-            if (
-                existing.message_set_id != message_set_id
-                or existing.variant_id != variant_id
-                or existing.contact_id != contact_id
-            ):
+            if not _matches_this_selection(existing):
                 return LibraryResult(
                     False,
                     error=(
