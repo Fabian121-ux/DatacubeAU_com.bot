@@ -762,6 +762,13 @@ event.listen(
         LANGUAGE plpgsql
         AS $$
         BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.variant_id IS NULL OR NEW.message_set_id IS NULL THEN
+                    RAISE EXCEPTION
+                        'outbound_variant_usage requires both variant_id and message_set_id on insert'
+                        USING ERRCODE = '23514';
+                END IF;
+            END IF;
             IF NEW.variant_id IS NOT NULL AND NEW.message_set_id IS NOT NULL THEN
                 IF NOT EXISTS (
                     SELECT 1 FROM outbound_message_variants

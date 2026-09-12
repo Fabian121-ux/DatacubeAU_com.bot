@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -961,6 +962,36 @@ async def test_record_variant_usage_rejects_ineligible_variant(db_session):
 
 
 @pytest.mark.asyncio
+async def test_record_variant_usage_rejects_a_deleted_variant_with_inconsistent_flags(db_session):
+    """Regression: the eligibility check only inspected status/is_enabled/
+    disabled_at, not deleted_at. delete_variant() always sets all of these
+    together, but maintenance code or a direct ORM update could soft-delete a
+    variant (set deleted_at) without also synchronizing the redundant
+    is_enabled/disabled_at fields -- the surrounding comment already documents
+    that deleted variants must be rejected, but the check itself did not
+    actually inspect deleted_at, so this inconsistent persisted state slipped
+    through as an eligible selection."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    assert created.ok, created.error
+    variant = await db_session.get(OutboundMessageVariant, created.id)
+
+    # Simulate maintenance code that soft-deletes a variant without going
+    # through delete_variant() and therefore without clearing is_enabled or
+    # setting disabled_at -- exactly the inconsistent state the finding
+    # describes.
+    variant.deleted_at = datetime.now(timezone.utc)
+    await db_session.flush()
+
+    result = await service.record_variant_usage(message_set_id=set_id, variant_id=variant.id)
+    assert result.ok is False
+    assert "not an eligible" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_record_variant_usage_rejects_queue_row_for_a_different_contact(db_session):
     """Regression: contact_id and outbound_queue_id were validated independently for
     existence, so a real contact could be paired with a real OutboundMessage row
@@ -1801,6 +1832,37 @@ async def test_database_rejects_a_variant_paired_with_a_different_sets_id(db_ses
     db_session.add(OutboundVariantUsage(message_set_id=set_b, variant_id=variant.id))
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_a_fresh_usage_row_naming_only_one_id(db_session):
+    """Regression: the set-pairing trigger only validated the pairing when both
+    variant_id and message_set_id were non-null, so a seed, maintenance script,
+    or direct ORM insert naming only one of the two skipped that validation
+    entirely and every foreign key still accepted the row -- producing a usage
+    row that can never be attributed to a real set+variant selection.
+    record_variant_usage() itself always supplies both, so this only protects
+    against something that bypasses the service."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi.")
+
+    # Each failing insert runs in its own SAVEPOINT so the aborted attempt
+    # doesn't take the outer transaction (and set_id/variant with it) down too.
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(OutboundVariantUsage(message_set_id=set_id, variant_id=None))
+            await db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(OutboundVariantUsage(message_set_id=None, variant_id=variant.id))
+            await db_session.flush()
+
+    # A legitimate row naming both still succeeds -- this isn't a blanket
+    # NOT NULL, just an insert-time pairing requirement.
+    db_session.add(OutboundVariantUsage(message_set_id=set_id, variant_id=variant.id))
+    await db_session.flush()
 
 
 @pytest.mark.asyncio

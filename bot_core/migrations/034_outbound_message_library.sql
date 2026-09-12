@@ -162,6 +162,20 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    -- A fresh row must name both a set and a variant: record_variant_usage()
+    -- always supplies both, and a seed/maintenance/direct-ORM insert supplying
+    -- only one would produce a usage row that can never be attributed to a
+    -- real selection. Only INSERT is checked here -- the two independent
+    -- single-column ON DELETE SET NULL foreign keys below legitimately clear
+    -- one field at a time via an UPDATE when the referenced set/variant is
+    -- hard-deleted, and that referential action must keep working.
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.variant_id IS NULL OR NEW.message_set_id IS NULL THEN
+            RAISE EXCEPTION
+                'outbound_variant_usage requires both variant_id and message_set_id on insert'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
     IF NEW.variant_id IS NOT NULL AND NEW.message_set_id IS NOT NULL THEN
         IF NOT EXISTS (
             SELECT 1 FROM outbound_message_variants

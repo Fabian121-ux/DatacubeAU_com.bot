@@ -836,7 +836,17 @@ class OutboundMessageLibraryService:
         # bypassing the selection engine) must not be recorded as a real selection --
         # these rows drive per-variant send-result/reply-rate analytics. (A genuine
         # idempotent retry never reaches here -- it already returned above.)
-        if variant.status != "approved" or not variant.is_enabled or variant.disabled_at is not None:
+        # deleted_at is checked independently of is_enabled/disabled_at: normal
+        # delete_variant() sets all three together, but maintenance code or a direct
+        # ORM update could soft-delete a variant (set deleted_at) without also
+        # synchronizing the redundant is_enabled/disabled_at fields, and this check
+        # must still fail closed against that inconsistent persisted state.
+        if (
+            variant.status != "approved"
+            or not variant.is_enabled
+            or variant.disabled_at is not None
+            or variant.deleted_at is not None
+        ):
             return LibraryResult(False, error="variant is not an eligible (approved, active) selection")
 
         # Locked, not session.get(): without this, a contact hard-deleted between
