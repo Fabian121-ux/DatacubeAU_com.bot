@@ -95,6 +95,20 @@ CREATE TABLE IF NOT EXISTS outbound_variant_usage (
         CHECK (send_result IN ('pending', 'sent', 'failed', 'blocked'))
 );
 
+-- Durable snapshots of contact_id/message_set_id/variant_id as they were at
+-- INSERT time -- deliberately plain columns with no foreign key, so a supported
+-- hard-delete (which nulls the live columns above via ON DELETE SET NULL) can
+-- never touch them. record_variant_usage()'s idempotency check compares against
+-- these, not the live nullable columns: a null live column can't reliably prove
+-- "same selection" vs. "erased selection", and treating it as a wildcard let a
+-- genuinely different later selection silently claim the same outbound_queue_id
+-- (found across three review rounds before this fix). ADD COLUMN IF NOT EXISTS,
+-- not a CREATE TABLE edit: safe to re-run against a database where this table
+-- already exists without these columns.
+ALTER TABLE outbound_variant_usage ADD COLUMN IF NOT EXISTS original_message_set_id BIGINT NULL;
+ALTER TABLE outbound_variant_usage ADD COLUMN IF NOT EXISTS original_variant_id BIGINT NULL;
+ALTER TABLE outbound_variant_usage ADD COLUMN IF NOT EXISTS original_contact_id BIGINT NULL;
+
 CREATE INDEX IF NOT EXISTS ix_outbound_variant_usage_contact_set
     ON outbound_variant_usage (contact_id, message_set_id, created_at DESC);
 

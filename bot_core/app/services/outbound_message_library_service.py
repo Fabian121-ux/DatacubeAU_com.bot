@@ -744,36 +744,26 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid selection_reason")
 
         def _matches_this_selection(existing: OutboundVariantUsage) -> bool:
-            # message_set_id/variant_id/contact_id are all ON DELETE SET NULL, so a
-            # supported hard-delete of the set/variant/contact (maintenance/
-            # retention cleanup, documented elsewhere in this file) can null out a
-            # field on an *already-recorded* usage row without touching the row
-            # itself. A field that's now None can no longer be compared -- it isn't
-            # evidence the row was a *different* selection, only that this specific
-            # piece of its identity was cleared after the fact. Comparing None
-            # against a real id here would otherwise report an exact retry as a
-            # conflict, breaking the documented idempotency guarantee for exactly
-            # the hard-delete scenario this table's own design already anticipates.
-            #
-            # But if EVERY field has been cleared (e.g. the set was hard-deleted,
-            # cascading to the variant, with no contact ever recorded), nothing
-            # about the original selection survives to verify against at all --
-            # treating an all-null row as an automatic match would let a
-            # completely unrelated later call (a different set, variant, and
-            # contact) silently claim the same outbound_queue_id merely because
-            # the earlier row happened to lose its entire identity (round 16: the
-            # round-15 fix above didn't anticipate this). At least one field must
-            # still carry real, comparable evidence.
-            fields = (
-                (existing.message_set_id, message_set_id),
-                (existing.variant_id, variant_id),
-                (existing.contact_id, contact_id),
-            )
-            if all(existing_value is None for existing_value, _ in fields):
-                return False
-            return all(
-                existing_value is None or existing_value == requested_value
-                for existing_value, requested_value in fields
+            # Compares against the durable original_* snapshots, not the live
+            # message_set_id/variant_id/contact_id columns. Those live columns are
+            # ON DELETE SET NULL, so a supported hard-delete of the set/variant/
+            # contact can null one or more of them on an already-recorded usage
+            # row without touching the row itself. Rounds 15 and 16 tried treating
+            # a null live field as "unverifiable, assume match" so a retry could
+            # survive a hard-delete -- round 16 closed the case where *every*
+            # field went null (an all-null wildcard), but round 17 found the
+            # remaining gap: a *partial* erasure (e.g. only variant_id null,
+            # message_set_id still real and matching) still let a genuinely
+            # different variant in the same set claim the same outbound_queue_id,
+            # because the erased field alone was still treated as a wildcard.
+            # The snapshots are plain integers with no foreign key, set once at
+            # insert time and never modified afterward, so this is always an
+            # exact, three-way equality check -- no null-tolerance logic needed,
+            # and no wildcard is possible in any partial- or full-erasure case.
+            return (
+                existing.original_message_set_id == message_set_id
+                and existing.original_variant_id == variant_id
+                and existing.original_contact_id == contact_id
             )
 
         # Check for an idempotent retry *before* the eligibility check below, not
@@ -916,6 +906,13 @@ class OutboundMessageLibraryService:
             message_set_id=message_set_id,
             variant_id=variant_id,
             outbound_queue_id=outbound_queue_id,
+            # Snapshot the request's own ids now, at the one point they're known
+            # to be genuinely correct (validated above) -- see _matches_this_
+            # selection()'s comment for why these must never be re-derived from
+            # the live, nullable columns later.
+            original_message_set_id=message_set_id,
+            original_variant_id=variant_id,
+            original_contact_id=contact_id,
             selection_score=selection_score,
             selection_reason=selection_reason,
             source_automation=source_automation,

@@ -2099,3 +2099,60 @@ def test_orm_metadata_declares_the_active_label_unique_index():
     indexes = {idx.name: idx for idx in OutboundMessageVariant.__table__.indexes}
     assert "ux_outbound_message_variants_set_label" in indexes
     assert indexes["ux_outbound_message_variants_set_label"].unique is True
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for chatgpt-codex-connector review round 17 on PR #49
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_reuse_after_partial_erasure_in_the_same_set(db_session):
+    """Regression: round 16's fix only rejected an existing row where *every*
+    identity field had gone null. After hard-deleting only variant A,
+    message_set_id survives (the set itself is untouched -- round 16 fixed the
+    trigger/FK design specifically so it would), leaving variant_id as the lone
+    null field. Retrying with variant B from that same, still-matching set then
+    passed: message_set_id matched for real, contact_id matched (both None), and
+    the erased variant_id was treated as a wildcard -- so the call returned A's
+    usage id as a "successful retry" of a selection that was actually B, silently
+    misattributing it. The durable original_variant_id snapshot (never nulled by
+    any cascade) closes this for good: no live column is ever compared, so
+    there's no wildcard to exploit."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant_a = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    variant_b = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hello.", status="approved"
+    )
+    queue_row = OutboundMessage(chat_id="15550000015@c.us", message_text="hi")
+    db_session.add(queue_row)
+    await db_session.flush()
+
+    first = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant_a.id, outbound_queue_id=queue_row.id
+    )
+    assert first.ok is True
+
+    # Hard-delete only variant A -- the set survives, so message_set_id stays
+    # live on the existing usage row; only variant_id nulls.
+    variant_a_row = await db_session.get(OutboundMessageVariant, variant_a.id)
+    await db_session.delete(variant_a_row)
+    await db_session.flush()
+
+    conflicting = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant_b.id, outbound_queue_id=queue_row.id
+    )
+    assert conflicting.ok is False
+
+    rows = (
+        await db_session.execute(
+            OutboundVariantUsage.__table__.select().where(
+                OutboundVariantUsage.outbound_queue_id == queue_row.id
+            )
+        )
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0].original_variant_id == variant_a.id

@@ -727,6 +727,17 @@ class OutboundVariantUsage(Base):
     outbound_queue_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("outbound_queue.id", ondelete="SET NULL")
     )
+    # Durable snapshots of the three columns above as they were at INSERT time --
+    # deliberately plain integers with no foreign key, so a supported hard-delete
+    # (which nulls the live columns via ON DELETE SET NULL) can never touch them.
+    # record_variant_usage()'s idempotency check compares against these, not the
+    # live nullable columns: a null live column can't reliably prove "same
+    # selection" vs. "erased selection", and treating it as a wildcard let a
+    # genuinely different later selection silently claim the same
+    # outbound_queue_id (found across three review rounds before this fix).
+    original_message_set_id: Mapped[int | None] = mapped_column(BigInteger)
+    original_variant_id: Mapped[int | None] = mapped_column(BigInteger)
+    original_contact_id: Mapped[int | None] = mapped_column(BigInteger)
     selection_score: Mapped[float | None] = mapped_column(Float)
     selection_reason: Mapped[str | None] = mapped_column(Text)
     source_automation: Mapped[str | None] = mapped_column(String(120))
