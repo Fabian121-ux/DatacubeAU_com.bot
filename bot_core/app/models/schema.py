@@ -3,7 +3,22 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text
+from sqlalchemy import (
+    DDL,
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    event,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -556,6 +571,365 @@ class PrivateMediaArtifact(Base):
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class OutboundMessageSet(Base):
+    """A named, reusable outbound message set (roadmap Phase 17).
+
+    Answers "WHAT COULD ZINA SAY?" only. This model and its variants carry zero
+    outbound authority: no producer or delivery path is wired to it, and selecting a
+    variant never grants send authority (see docs/ZINA_IMPLEMENTATION_ROADMAP.md
+    Phase 17, "Authority separation"). Contact eligibility and send authorization
+    remain entirely owned by `contact_automation_policies` and
+    `OutboundAuthorizationService`.
+    """
+
+    __tablename__ = "outbound_message_sets"
+    __table_args__ = (
+        CheckConstraint(
+            "selection_strategy IN ('deterministic_score')",
+            name="ck_outbound_message_sets_selection_strategy",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    set_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(String(40), nullable=False, server_default=text("'whatsapp'"))
+    primary_language: Mapped[str | None] = mapped_column(String(20))
+    selection_strategy: Mapped[str] = mapped_column(
+        String(40), nullable=False, server_default=text("'deterministic_score'")
+    )
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OutboundMessageVariant(Base):
+    """One approved wording variant within an `OutboundMessageSet` (roadmap Phase 17).
+
+    `required_variables` is the exact, closed set of `{{token}}` names that must
+    appear in `template_body` — enforced at creation time, not just at render time.
+    """
+
+    __tablename__ = "outbound_message_variants"
+    __table_args__ = (
+        CheckConstraint("weight BETWEEN 1 AND 100", name="ck_outbound_message_variants_weight_bounded"),
+        CheckConstraint("status IN ('draft', 'approved')", name="ck_outbound_message_variants_status"),
+        # Mirrors migration 034's partial unique index: a label is only unique
+        # among a set's *active* variants. Declaring it here too means a database
+        # initialized via Base.metadata.create_all() (bypassing migrations, as
+        # tests/conftest.py's setup fixture does on a schema with no prior tables)
+        # still enforces the invariant create_variant()'s SAVEPOINT/IntegrityError
+        # handling depends on -- without it, two concurrent create_variant() calls
+        # could both pass the duplicate-label query and both insert.
+        Index(
+            "ux_outbound_message_variants_set_label",
+            "message_set_id",
+            "label",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_set_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_sets.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(40), nullable=False)
+    template_body: Mapped[str] = mapped_column(Text, nullable=False)
+    required_variables: Mapped[list[str] | None] = mapped_column(JSON)
+    optional_variables: Mapped[list[str] | None] = mapped_column(JSON)
+    media_locator: Mapped[str | None] = mapped_column(Text)
+    media_kind: Mapped[str | None] = mapped_column(String(40))
+    media_mime: Mapped[str | None] = mapped_column(String(160))
+    media_caption: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(String(20))
+    tags: Mapped[list[str] | None] = mapped_column(JSON)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'draft'"))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# Mirrors migration 034's trg_outbound_message_variants_forbid_reparenting
+# trigger (same after_create/create_all() rationale as OutboundVariantUsage's
+# triggers below). message_set_id is fixed at creation time everywhere in
+# OutboundMessageLibraryService -- there is no update method for variants --
+# but nothing else stops a maintenance script or direct ORM update from
+# reassigning an existing variant to a different set. The set-pairing trigger
+# on outbound_variant_usage only fires on that table, not on
+# outbound_message_variants itself, so a reparented variant would silently
+# invalidate every historical usage row's set/variant pairing with no trigger
+# positioned to catch it. Making message_set_id immutable after insert closes
+# this by removing the ability to rewrite the fact in place.
+event.listen(
+    OutboundMessageVariant.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_forbid_outbound_variant_reparenting()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF NEW.message_set_id IS DISTINCT FROM OLD.message_set_id THEN
+                RAISE EXCEPTION
+                    'outbound_message_variants.message_set_id is immutable after insert; create a new variant under the target set instead'
+                    USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    ),
+)
+event.listen(
+    OutboundMessageVariant.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_variants_forbid_reparenting ON outbound_message_variants"),
+)
+event.listen(
+    OutboundMessageVariant.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_variants_forbid_reparenting
+        BEFORE UPDATE OF message_set_id ON outbound_message_variants
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_forbid_outbound_variant_reparenting()
+        """
+    ),
+)
+
+
+class OutboundVariantUsage(Base):
+    """Analytics/audit trail of variant selections (roadmap Phase 17).
+
+    Observability only. This table is never consulted by the P0 delivery fence and
+    cannot grant, imply, or record outbound authority by itself. `message_set_id`/
+    `variant_id` are ON DELETE SET NULL (not CASCADE), so a future hard-delete of
+    library content cannot erase this audit trail's selection reasons/send results.
+    """
+
+    __tablename__ = "outbound_variant_usage"
+    __table_args__ = (
+        CheckConstraint(
+            "send_result IN ('pending', 'sent', 'failed', 'blocked')",
+            name="ck_outbound_variant_usage_send_result",
+        ),
+        # The service already rejects NaN/infinite selection_score before insert,
+        # but that's only enforced for callers going through
+        # record_variant_usage() -- a seed, maintenance script, or direct ORM
+        # insert has no equivalent guard. "x = x" is false only for NaN; the range
+        # comparison excludes +/-Infinity. Both are finite-value checks with no
+        # PostgreSQL isnan()/isfinite() built-in needed.
+        CheckConstraint(
+            "selection_score IS NULL OR ("
+            "selection_score = selection_score "
+            "AND selection_score > '-Infinity'::double precision "
+            "AND selection_score < 'Infinity'::double precision"
+            ")",
+            name="ck_outbound_variant_usage_selection_score_finite",
+        ),
+        # Mirrors migration 034's partial unique index: a retried
+        # record_variant_usage() call for the same outbound_queue_id must not
+        # double-count the selection. Declaring it here too (not just in the raw
+        # migration SQL) means a database initialized via Base.metadata.create_all()
+        # -- as tests/conftest.py does, bypassing migrations entirely on a schema
+        # with no prior tables -- still enforces the same idempotency invariant the
+        # service's SAVEPOINT/IntegrityError handling depends on.
+        Index(
+            "ux_outbound_variant_usage_queue",
+            "outbound_queue_id",
+            unique=True,
+            postgresql_where=text("outbound_queue_id IS NOT NULL"),
+        ),
+        # variant_id-belongs-to-message_set_id is enforced at the database level
+        # by a BEFORE INSERT/UPDATE trigger (migration 034,
+        # trg_outbound_variant_usage_check_set_pairing, mirrored below via an
+        # after_create DDL event so Base.metadata.create_all() installs it too),
+        # not a composite foreign key: an earlier attempt at a composite FK
+        # correctly rejected a mismatched pairing, but its single ON DELETE SET
+        # NULL action for the whole tuple meant hard-deleting *only* a variant
+        # also nulled message_set_id, discarding that usage row's still-valid
+        # set attribution even though the set itself was untouched. The trigger
+        # enforces the same invariant on write without changing what the two
+        # independent single-column foreign keys below do on delete.
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="SET NULL"))
+    message_set_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_sets.id", ondelete="SET NULL")
+    )
+    variant_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("outbound_message_variants.id", ondelete="SET NULL")
+    )
+    outbound_queue_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("outbound_queue.id", ondelete="SET NULL")
+    )
+    # Durable snapshots of the three columns above as they were at INSERT time --
+    # deliberately plain integers with no foreign key, so a supported hard-delete
+    # (which nulls the live columns via ON DELETE SET NULL) can never touch them.
+    # record_variant_usage()'s idempotency check compares against these, not the
+    # live nullable columns: a null live column can't reliably prove "same
+    # selection" vs. "erased selection", and treating it as a wildcard let a
+    # genuinely different later selection silently claim the same
+    # outbound_queue_id (found across three review rounds before this fix).
+    original_message_set_id: Mapped[int | None] = mapped_column(BigInteger)
+    original_variant_id: Mapped[int | None] = mapped_column(BigInteger)
+    original_contact_id: Mapped[int | None] = mapped_column(BigInteger)
+    selection_score: Mapped[float | None] = mapped_column(Float)
+    selection_reason: Mapped[str | None] = mapped_column(Text)
+    source_automation: Mapped[str | None] = mapped_column(String(120))
+    send_result: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+# Mirrors migration 034's trg_outbound_variant_usage_check_set_pairing trigger.
+# Base.metadata.create_all() (tests/conftest.py's setup fixture, bypassing
+# migrations entirely on a schema with no prior tables) creates this table's
+# columns and constraints from the ORM metadata above, but a plain CREATE TABLE
+# has no way to also carry a trigger -- so without this event, a genuinely
+# fresh create_all()-only database would silently omit the set/variant pairing
+# invariant record_variant_usage() depends on. Attaching the DDL to this
+# table's own after_create event (rather than a session-wide event) means it
+# only fires when create_all() actually creates outbound_variant_usage, and is
+# a no-op on a database where migrations already created it first (CI's own
+# setup: migrations run before pytest's create_all(), so checkfirst=True skips
+# an already-existing table and this event never fires there).
+#
+# Three separate DDL events, not one multi-statement string: the asyncpg driver
+# executes DDL via prepared statements, which reject "cannot insert multiple
+# commands into a prepared statement" -- unlike psql, which runs migration files
+# as a single multi-statement script.
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_check_outbound_variant_usage_set_pairing()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.variant_id IS NULL OR NEW.message_set_id IS NULL THEN
+                    RAISE EXCEPTION
+                        'outbound_variant_usage requires both variant_id and message_set_id on insert'
+                        USING ERRCODE = '23514';
+                END IF;
+            END IF;
+            IF NEW.variant_id IS NOT NULL AND NEW.message_set_id IS NOT NULL THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM outbound_message_variants
+                    WHERE id = NEW.variant_id AND message_set_id = NEW.message_set_id
+                ) THEN
+                    RAISE EXCEPTION
+                        'outbound_variant_usage.variant_id %% does not belong to message_set_id %%',
+                        NEW.variant_id, NEW.message_set_id
+                        USING ERRCODE = '23514';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    ),
+)
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_variant_usage_check_set_pairing ON outbound_variant_usage"),
+)
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_variant_usage_check_set_pairing
+        BEFORE INSERT OR UPDATE OF variant_id, message_set_id ON outbound_variant_usage
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_check_outbound_variant_usage_set_pairing()
+        """
+    ),
+)
+
+
+# Mirrors migration 034's trg_outbound_variant_usage_freeze_original_ids trigger
+# (same after_create/create_all() rationale as the pairing trigger above). A
+# direct ORM/SQL insert can supply message_set_id/variant_id/contact_id while
+# leaving original_message_set_id/original_variant_id/original_contact_id at
+# their column default of NULL -- the pairing trigger above only validates the
+# live IDs, not the snapshot columns. That row would still consume the queue's
+# partial unique index, but a later genuine record_variant_usage() retry with
+# the same outbound_queue_id compares its ids against these null snapshots and
+# is wrongly rejected as a conflicting selection instead of recognized as the
+# same one. Deriving the snapshot from the live columns in the database itself,
+# on every INSERT, closes that gap regardless of what a caller (or a future
+# code path that forgets to set original_* explicitly) supplies. The second
+# clause makes the snapshot immutable after insert -- there's an existing
+# ON DELETE SET NULL update on the live columns, but that never touches
+# original_*, so any change to those on an UPDATE can only be a maintenance/
+# direct-ORM edit rewriting history, not a normal referential action.
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_freeze_outbound_variant_usage_original_ids()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                NEW.original_message_set_id := NEW.message_set_id;
+                NEW.original_variant_id := NEW.variant_id;
+                NEW.original_contact_id := NEW.contact_id;
+            ELSIF TG_OP = 'UPDATE' THEN
+                IF NEW.original_message_set_id IS DISTINCT FROM OLD.original_message_set_id
+                    OR NEW.original_variant_id IS DISTINCT FROM OLD.original_variant_id
+                    OR NEW.original_contact_id IS DISTINCT FROM OLD.original_contact_id
+                THEN
+                    RAISE EXCEPTION
+                        'outbound_variant_usage original_*_id snapshot columns are immutable after insert'
+                        USING ERRCODE = '23514';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    ),
+)
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_variant_usage_freeze_original_ids ON outbound_variant_usage"),
+)
+event.listen(
+    OutboundVariantUsage.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_variant_usage_freeze_original_ids
+        BEFORE INSERT OR UPDATE ON outbound_variant_usage
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_freeze_outbound_variant_usage_original_ids()
+        """
+    ),
+)
 
 
 class WahaOutage(Base):
