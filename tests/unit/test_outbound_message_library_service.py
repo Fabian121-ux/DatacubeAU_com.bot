@@ -1985,6 +1985,28 @@ async def test_database_freezes_the_original_selection_snapshot_on_insert(db_ses
 
 
 @pytest.mark.asyncio
+async def test_database_forbids_reparenting_a_variant_to_a_different_set(db_session):
+    """Regression: message_set_id is fixed at creation time everywhere in
+    OutboundMessageLibraryService -- there is no update method for variants --
+    but nothing enforced that at the database level. A maintenance script or
+    direct ORM update reassigning an existing variant to a different set would
+    leave both of a usage row's independent foreign keys individually valid
+    while silently invalidating the set/variant pairing every historical usage
+    row for that variant recorded, since the set-pairing trigger only fires on
+    outbound_variant_usage, not on outbound_message_variants itself."""
+    service = OutboundMessageLibraryService(db_session)
+    set_a = await _make_set(service, set_key="set_a")
+    set_b = await _make_set(service, set_key="set_b", name="Set B")
+    variant = await service.create_variant(message_set_id=set_a, label="A", template_body="Hi.")
+    assert variant.ok, variant.error
+
+    variant_row = await db_session.get(OutboundMessageVariant, variant.id)
+    variant_row.message_set_id = set_b
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
 async def test_set_pairing_trigger_is_installed_by_create_all_alone():
     """Regression: trg_outbound_variant_usage_check_set_pairing only existed in
     migration 034's raw SQL, with nothing mirroring it into the ORM metadata that

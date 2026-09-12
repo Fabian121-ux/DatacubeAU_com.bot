@@ -252,3 +252,37 @@ CREATE TRIGGER trg_outbound_variant_usage_freeze_original_ids
 BEFORE INSERT OR UPDATE ON outbound_variant_usage
 FOR EACH ROW
 EXECUTE FUNCTION zina_freeze_outbound_variant_usage_original_ids();
+
+-- A variant's message_set_id is fixed at creation time everywhere in this
+-- service -- there is no update method for variants, and create_variant() is
+-- the only place that ever writes it. The set-pairing trigger above only
+-- fires on outbound_variant_usage, not on outbound_message_variants itself,
+-- so nothing stops a maintenance script or direct ORM update from reassigning
+-- an existing variant to a different set. Both of a usage row's independent
+-- foreign keys would remain individually valid after that, but the pairing
+-- they jointly recorded (this variant belonged to that set, at selection
+-- time) would now be silently wrong for every historical usage row referring
+-- to the reparented variant -- corrupting per-set/per-variant analytics with
+-- no trigger anywhere positioned to catch it. Making message_set_id immutable
+-- after insert closes this the same way the usage table's own immutable
+-- snapshot does: by removing the ability to rewrite the fact in place, rather
+-- than trying to reconcile every row that recorded it after the fact.
+CREATE OR REPLACE FUNCTION zina_forbid_outbound_variant_reparenting()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.message_set_id IS DISTINCT FROM OLD.message_set_id THEN
+        RAISE EXCEPTION
+            'outbound_message_variants.message_set_id is immutable after insert; create a new variant under the target set instead'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_outbound_message_variants_forbid_reparenting ON outbound_message_variants;
+CREATE TRIGGER trg_outbound_message_variants_forbid_reparenting
+BEFORE UPDATE OF message_set_id ON outbound_message_variants
+FOR EACH ROW
+EXECUTE FUNCTION zina_forbid_outbound_variant_reparenting();

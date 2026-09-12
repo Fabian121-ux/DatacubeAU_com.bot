@@ -661,6 +661,57 @@ class OutboundMessageVariant(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# Mirrors migration 034's trg_outbound_message_variants_forbid_reparenting
+# trigger (same after_create/create_all() rationale as OutboundVariantUsage's
+# triggers below). message_set_id is fixed at creation time everywhere in
+# OutboundMessageLibraryService -- there is no update method for variants --
+# but nothing else stops a maintenance script or direct ORM update from
+# reassigning an existing variant to a different set. The set-pairing trigger
+# on outbound_variant_usage only fires on that table, not on
+# outbound_message_variants itself, so a reparented variant would silently
+# invalidate every historical usage row's set/variant pairing with no trigger
+# positioned to catch it. Making message_set_id immutable after insert closes
+# this by removing the ability to rewrite the fact in place.
+event.listen(
+    OutboundMessageVariant.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_forbid_outbound_variant_reparenting()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF NEW.message_set_id IS DISTINCT FROM OLD.message_set_id THEN
+                RAISE EXCEPTION
+                    'outbound_message_variants.message_set_id is immutable after insert; create a new variant under the target set instead'
+                    USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    ),
+)
+event.listen(
+    OutboundMessageVariant.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_variants_forbid_reparenting ON outbound_message_variants"),
+)
+event.listen(
+    OutboundMessageVariant.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_variants_forbid_reparenting
+        BEFORE UPDATE OF message_set_id ON outbound_message_variants
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_forbid_outbound_variant_reparenting()
+        """
+    ),
+)
+
+
 class OutboundVariantUsage(Base):
     """Analytics/audit trail of variant selections (roadmap Phase 17).
 
