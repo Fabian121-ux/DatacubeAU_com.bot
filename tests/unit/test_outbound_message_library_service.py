@@ -1946,6 +1946,45 @@ async def test_database_rejects_a_fresh_usage_row_naming_only_one_id(db_session)
 
 
 @pytest.mark.asyncio
+async def test_database_freezes_the_original_selection_snapshot_on_insert(db_session):
+    """Regression: original_message_set_id/original_variant_id/original_contact_id
+    are plain nullable columns with no database-level guarantee of their own --
+    only record_variant_usage() ever populated them. A direct ORM/SQL insert that
+    names a real message_set_id/variant_id/outbound_queue_id but leaves these
+    snapshot columns at their column default of NULL would still consume the
+    outbound_queue_id partial unique index, so a later genuine
+    record_variant_usage() retry for that same queue row would compare its ids
+    against the null snapshot and be wrongly rejected as a conflicting selection
+    instead of recognized as the same one. The database must derive the
+    snapshot itself from the live columns at INSERT time, regardless of what a
+    caller supplies, and refuse to let it be rewritten afterward."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    assert variant.ok, variant.error
+
+    # A direct ORM insert, bypassing record_variant_usage() entirely and
+    # supplying no original_* values at all.
+    usage = OutboundVariantUsage(message_set_id=set_id, variant_id=variant.id)
+    db_session.add(usage)
+    await db_session.flush()
+    await db_session.refresh(usage)
+    assert usage.original_message_set_id == set_id
+    assert usage.original_variant_id == variant.id
+    assert usage.original_contact_id is None
+
+    # The snapshot is frozen after insert: a direct attempt to rewrite it
+    # (maintenance code, a bug, or an attacker with write access) must fail
+    # closed rather than silently corrupt the retry-matching identity.
+    usage.original_variant_id = variant.id + 999
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            await db_session.flush()
+
+
+@pytest.mark.asyncio
 async def test_set_pairing_trigger_is_installed_by_create_all_alone():
     """Regression: trg_outbound_variant_usage_check_set_pairing only existed in
     migration 034's raw SQL, with nothing mirroring it into the ORM metadata that

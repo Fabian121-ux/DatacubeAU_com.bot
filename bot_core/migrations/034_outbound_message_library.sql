@@ -210,3 +210,45 @@ CREATE TRIGGER trg_outbound_variant_usage_check_set_pairing
 BEFORE INSERT OR UPDATE OF variant_id, message_set_id ON outbound_variant_usage
 FOR EACH ROW
 EXECUTE FUNCTION zina_check_outbound_variant_usage_set_pairing();
+
+-- A direct ORM/SQL insert can supply message_set_id/variant_id/contact_id while
+-- leaving original_message_set_id/original_variant_id/original_contact_id at
+-- their column default of NULL -- the pairing trigger above only validates the
+-- live IDs, not the snapshot columns. That row would still consume the queue's
+-- partial unique index above, but a later genuine record_variant_usage() retry
+-- with the same outbound_queue_id compares its ids against these null
+-- snapshots and is wrongly rejected as a conflicting selection instead of
+-- recognized as the same one. Deriving the snapshot from the live columns in
+-- the database itself, on every INSERT, closes that gap regardless of what a
+-- caller supplies. The UPDATE branch makes the snapshot immutable afterward --
+-- the live columns' own ON DELETE SET NULL action never touches original_*, so
+-- any change to those on an UPDATE can only be a maintenance/direct-ORM edit
+-- rewriting history, not a normal referential action.
+CREATE OR REPLACE FUNCTION zina_freeze_outbound_variant_usage_original_ids()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.original_message_set_id := NEW.message_set_id;
+        NEW.original_variant_id := NEW.variant_id;
+        NEW.original_contact_id := NEW.contact_id;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF NEW.original_message_set_id IS DISTINCT FROM OLD.original_message_set_id
+            OR NEW.original_variant_id IS DISTINCT FROM OLD.original_variant_id
+            OR NEW.original_contact_id IS DISTINCT FROM OLD.original_contact_id
+        THEN
+            RAISE EXCEPTION
+                'outbound_variant_usage original_*_id snapshot columns are immutable after insert'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_outbound_variant_usage_freeze_original_ids ON outbound_variant_usage;
+CREATE TRIGGER trg_outbound_variant_usage_freeze_original_ids
+BEFORE INSERT OR UPDATE ON outbound_variant_usage
+FOR EACH ROW
+EXECUTE FUNCTION zina_freeze_outbound_variant_usage_original_ids();
