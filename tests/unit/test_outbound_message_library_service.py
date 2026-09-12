@@ -992,6 +992,86 @@ async def test_record_variant_usage_rejects_a_deleted_variant_with_inconsistent_
 
 
 @pytest.mark.asyncio
+async def test_record_variant_usage_rejects_usage_for_an_inactive_parent_set(db_session):
+    """Regression: record_variant_usage() locked the parent message set (for
+    correct lock ordering against disable_message_set()/delete_message_set())
+    but discarded the result without ever inspecting its lifecycle state.
+    Normal disable_message_set()/delete_message_set() cascade their tombstone
+    onto every active child variant, so the variant's own eligibility check
+    would usually also catch this -- but that cascade is this service's own
+    invariant, not something the database enforces. Maintenance code or a
+    direct ORM update that disables/deletes a set without touching its
+    children must still be rejected here, the same fail-closed posture as the
+    inconsistent-flags variant check above."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    assert variant.ok, variant.error
+
+    message_set = await db_session.get(OutboundMessageSet, set_id)
+    message_set.disabled_at = datetime.now(timezone.utc)
+    message_set.is_enabled = False
+    await db_session.flush()
+
+    disabled_result = await service.record_variant_usage(message_set_id=set_id, variant_id=variant.id)
+    assert disabled_result.ok is False
+    assert "not active" in (disabled_result.error or "")
+
+    message_set.disabled_at = None
+    message_set.is_enabled = True
+    message_set.deleted_at = datetime.now(timezone.utc)
+    await db_session.flush()
+
+    deleted_result = await service.record_variant_usage(message_set_id=set_id, variant_id=variant.id)
+    assert deleted_result.ok is False
+    assert "not active" in (deleted_result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_non_integer_primary_key_parameters(db_session):
+    """Regression: message_set_id/variant_id/contact_id/outbound_queue_id were
+    bound straight into a SQL WHERE/equality with no runtime type check. A
+    JSON-facing caller passing a str/list/dict for one of these hit a raw
+    asyncpg DataError from inside execute() -- not an IntegrityError, so not
+    caught by the SAVEPOINT handling around the insert -- escaping this
+    service's documented fail-closed LibraryResult contract as an unhandled
+    exception instead."""
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    assert variant.ok, variant.error
+
+    bad_set_id = await service.record_variant_usage(message_set_id="1 OR 1=1", variant_id=variant.id)
+    assert bad_set_id.ok is False
+    assert "invalid message_set_id" in (bad_set_id.error or "")
+
+    bad_variant_id = await service.record_variant_usage(message_set_id=set_id, variant_id=[variant.id])
+    assert bad_variant_id.ok is False
+    assert "invalid variant_id" in (bad_variant_id.error or "")
+
+    bad_contact_id = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, contact_id="not-an-id"
+    )
+    assert bad_contact_id.ok is False
+    assert "invalid contact_id" in (bad_contact_id.error or "")
+
+    bad_queue_id = await service.record_variant_usage(
+        message_set_id=set_id, variant_id=variant.id, outbound_queue_id={"id": 1}
+    )
+    assert bad_queue_id.ok is False
+    assert "invalid outbound_queue_id" in (bad_queue_id.error or "")
+
+    # bool is an int subclass in Python but is never a valid primary key value.
+    bad_bool_id = await service.record_variant_usage(message_set_id=set_id, variant_id=True)
+    assert bad_bool_id.ok is False
+    assert "invalid variant_id" in (bad_bool_id.error or "")
+
+
+@pytest.mark.asyncio
 async def test_record_variant_usage_rejects_queue_row_for_a_different_contact(db_session):
     """Regression: contact_id and outbound_queue_id were validated independently for
     existence, so a real contact could be paired with a real OutboundMessage row

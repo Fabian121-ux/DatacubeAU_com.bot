@@ -742,6 +742,26 @@ class OutboundMessageLibraryService:
             return LibraryResult(False, error="invalid source_automation")
         if selection_reason is not None and not isinstance(selection_reason, str):
             return LibraryResult(False, error="invalid selection_reason")
+        # Every id below is bound straight into a SQL WHERE/equality against a BIGINT
+        # column. The type hints above document the contract but nothing enforces it
+        # at runtime -- a JSON-facing caller (a producer, an admin endpoint) can hand
+        # this a str/list/dict. asyncpg has no implicit-cast fallback for that: it
+        # raises a raw DataError from inside execute(), which is not an IntegrityError
+        # and so is not caught by the SAVEPOINT handling below, escaping this
+        # service's documented fail-closed LibraryResult contract as an unhandled
+        # exception instead. bool is deliberately excluded even though it's an int
+        # subclass, same convention as the weight/selection_score checks elsewhere in
+        # this file: True/False are never valid primary key values.
+        if not isinstance(message_set_id, int) or isinstance(message_set_id, bool):
+            return LibraryResult(False, error="invalid message_set_id")
+        if not isinstance(variant_id, int) or isinstance(variant_id, bool):
+            return LibraryResult(False, error="invalid variant_id")
+        if contact_id is not None and (not isinstance(contact_id, int) or isinstance(contact_id, bool)):
+            return LibraryResult(False, error="invalid contact_id")
+        if outbound_queue_id is not None and (
+            not isinstance(outbound_queue_id, int) or isinstance(outbound_queue_id, bool)
+        ):
+            return LibraryResult(False, error="invalid outbound_queue_id")
 
         def _matches_this_selection(existing: OutboundVariantUsage) -> bool:
             # Compares against the durable original_* snapshots, not the live
@@ -801,9 +821,23 @@ class OutboundMessageLibraryService:
         # method did, is the opposite order and can deadlock against those paths
         # under concurrent load -- Postgres aborts one side with an unhandled error
         # rather than queuing, since neither transaction can ever proceed. The
-        # result isn't otherwise used: this method's own existence/lifecycle
-        # validation is on the variant, not the set.
-        await self._locked_message_set(message_set_id)
+        # The result *is* now used (see the lifecycle check right below) -- it isn't
+        # only a lock-ordering placeholder.
+        message_set = await self._locked_message_set(message_set_id)
+        if message_set is None:
+            return LibraryResult(False, error="message set not found")
+        # Same defense-in-depth as the variant.deleted_at check below and as
+        # create_variant()'s own message_set.disabled_at/deleted_at check: normal
+        # disable_message_set()/delete_message_set() cascade their tombstone onto
+        # every active child variant in the same transaction, so today the variant's
+        # own eligibility check a few lines down would also catch this. But that
+        # cascade is this service's own invariant, not a database-enforced one -- a
+        # maintenance script or direct ORM/SQL update disabling a set without also
+        # updating its children would leave an approved, still-"active" variant
+        # under an inactive set, and this check must fail closed against that
+        # inconsistent persisted state rather than trust the cascade held.
+        if message_set.deleted_at is not None or message_set.disabled_at is not None:
+            return LibraryResult(False, error="message set is not active")
 
         # A locked read (SELECT ... FOR UPDATE), not session.get()/refresh(): this
         # eligibility check and the usage insert below are not atomic on their own,
