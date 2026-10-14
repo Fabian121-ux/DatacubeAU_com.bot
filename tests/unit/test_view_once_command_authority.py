@@ -63,6 +63,14 @@ class _RecordingClient:
         return self._record("send_file", chat_id, {"url": media_url, "mimetype": mimetype, "caption": caption})
 
 
+
+@pytest.fixture(autouse=True)
+def _configure_waha_private_media_origin(monkeypatch):
+    """Existing media fixtures use WAHA's internal service origin."""
+    monkeypatch.setattr("app.services.view_once_command_service.settings.waha_service_url", "http://waha:3000")
+    monkeypatch.setattr("app.services.view_once_command_service.settings.waha_base_url", "")
+
+
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
 STRANGER_ID = "2348000000009@c.us"

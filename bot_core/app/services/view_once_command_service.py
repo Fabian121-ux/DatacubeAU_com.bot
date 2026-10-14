@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
 
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.admin_management_service import AdminManagementService
@@ -490,7 +493,61 @@ class ViewOnceCommandService:
 
     @classmethod
     def _is_trusted_locator(cls, media_url: str) -> bool:
-        return cls._TRUSTED_MEDIA_PATH in str(media_url or "")
+        """Only accept WAHA file capabilities from explicitly configured origins.
+
+        Decode path escapes repeatedly to reject double-encoded traversal and
+        fail closed on control characters URL parsers may otherwise strip.
+        """
+        if (
+            not isinstance(media_url, str)
+            or not media_url
+            or len(media_url) > 2048
+            or "\\" in media_url
+            or any(ord(char) < 32 or ord(char) == 127 for char in media_url)
+        ):
+            return False
+        try:
+            locator = urlsplit(media_url)
+            if (
+                locator.scheme.lower() not in {"http", "https"}
+                or not locator.hostname
+                or locator.username is not None
+                or locator.password is not None
+                or locator.fragment
+            ):
+                return False
+            path = locator.path
+            for _ in range(6):
+                decoded = unquote(path)
+                if decoded == path:
+                    break
+                path = decoded
+            else:
+                return False
+            if (
+                not path.startswith(cls._TRUSTED_MEDIA_PATH)
+                or path == cls._TRUSTED_MEDIA_PATH
+                or "%" in path
+                or "\\" in path
+                or any(ord(char) < 32 or ord(char) == 127 for char in path)
+                or any(part in {".", ".."} for part in path.split("/"))
+            ):
+                return False
+            for configured_url in (settings.waha_service_url, settings.waha_base_url):
+                if not configured_url:
+                    continue
+                origin = urlsplit(str(configured_url).strip())
+                if (
+                    origin.scheme.lower() == locator.scheme.lower()
+                    and origin.hostname == locator.hostname
+                    and origin.port == locator.port
+                    and origin.username is None
+                    and origin.password is None
+                ):
+                    return True
+        except ValueError:
+            return False
+        return False
 
     @staticmethod
     def _quoted_source_message_id(payload: Any) -> str | None:

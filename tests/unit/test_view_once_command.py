@@ -22,6 +22,14 @@ from app.services.view_once_command_service import ViewOnceCommandService
 from app.workers import background_workers
 
 
+
+@pytest.fixture(autouse=True)
+def _configure_waha_private_media_origin(monkeypatch):
+    """Existing media fixtures use WAHA's internal service origin."""
+    monkeypatch.setattr("app.services.view_once_command_service.settings.waha_service_url", "http://waha:3000")
+    monkeypatch.setattr("app.services.view_once_command_service.settings.waha_base_url", "")
+
+
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
 TRUSTED_URL = "http://waha:3000/api/files/view-once.jpg"
@@ -723,3 +731,42 @@ async def test_retain_on_remains_unavailable(db_session):
         await db_session.execute(text("SELECT DISTINCT retention_mode FROM view_once_media_metadata"))
     ).scalars().all()
     assert modes == ["none"]
+
+# --------------------------------------------------------------------------------------
+# WAHA media locator trust boundary (PR #48 P0 regression)
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("locator", "allowed"),
+    [
+        ("http://waha:3000/api/files/abc.jpg", True),
+        ("http://waha:3000/api/files/abc.jpg?token=ok", True),
+        ("https://evil.invalid/path/api/files/abc.jpg", False),
+        ("https://evil.invalid/api/files/abc.jpg", False),
+        ("http://waha:3000.evil.invalid/api/files/abc.jpg", False),
+        ("http://waha:3000@evil.invalid/api/files/abc.jpg", False),
+        ("http://waha:3000/redirect/api/files/abc.jpg", False),
+        ("http://waha:3000/api/files/", False),
+        ("http://waha:3000/api/files/../secret.jpg", False),
+        ("http://waha:3000/api/files/%2e%2e/secret.jpg", False),
+        ("http://waha:3000/api/files/a.jpg#fragment", False),
+        ("http://waha:3001/api/files/a.jpg", False),
+        ("file:///api/files/abc.jpg", False),
+        ("http://waha:3000/api/files/%252e%252e/secret.jpg", False),
+        ("http://waha:3000/api/files/%25252e%25252e/secret.jpg", False),
+        ("http://waha:3000/api/files/%5c..%5csecret.jpg", False),
+        ("http://waha:3000/api/files/%00abc.jpg", False),
+        ("http://waha:3000/api/files/a.jpg\n", False),
+        ("http://waha:3000/api/files/a.jpg\t", False),
+        ("http://waha:3000/api/files/a.jpg\\extra", False),
+    ],
+)
+def test_private_media_locator_requires_exact_configured_waha_origin(locator, allowed):
+    assert ViewOnceCommandService._is_trusted_locator(locator) is allowed
+
+
+def test_private_media_locator_allows_explicit_public_waha_origin(monkeypatch):
+    monkeypatch.setattr("app.services.view_once_command_service.settings.waha_base_url", "https://waha.example.com")
+    assert ViewOnceCommandService._is_trusted_locator("https://waha.example.com/api/files/abc.jpg")
+    assert not ViewOnceCommandService._is_trusted_locator("https://attacker.example.com/api/files/abc.jpg")
+
