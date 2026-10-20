@@ -20,11 +20,41 @@ from app.services.outbound_authorization_service import OutboundAuthorizationSer
 from app.services.private_media_artifact_service import PrivateMediaArtifactResult, PrivateMediaArtifactService
 from app.services.view_once_command_service import ViewOnceCommandService
 from app.workers import background_workers
+from app.services.waha_client import WahaClientError
 
 
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
 TRUSTED_URL = "http://waha:3000/api/files/view-once.jpg"
+
+
+class _SessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _RecordingClient:
+    def __init__(self, failure=None):
+        self.calls = []
+        self.failure = failure
+
+    async def send_image(self, chat_id, *, media_url, mimetype, caption=None, filename=None):
+        self.calls.append((chat_id, media_url, mimetype, caption, filename))
+        if self.failure is not None:
+            raise self.failure
+        return {"id": "mock-view-once-return"}
+
+
+async def _deliver(db_session, monkeypatch, client):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_ID)
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    return await background_workers._deliver_due_outbound_messages(client)
 
 
 def _owner(permission="owner", primary=True):
@@ -726,3 +756,100 @@ async def test_retain_on_remains_unavailable(db_session):
         await db_session.execute(text("SELECT DISTINCT retention_mode FROM view_once_media_metadata"))
     ).scalars().all()
     assert modes == ["none"]
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_view_once_return_only_after_waha_success(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    before = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert before is None
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    after = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert row.status == "sent"
+    assert len(client.calls) == 1
+    assert after is not None
+    audits = (
+        await db_session.execute(select(AuditLog).where(AuditLog.action == "view_once_returned_to_owner"))
+    ).scalars().all()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_deleted_view_once_source_blocks_pending_owner_return_before_waha(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    # Exercise the real OWNER deletion path after queueing but before worker dispatch.
+    await _run(db_session, _event(command_id="VV-DEL"), owner, operation="delete")
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "deleted" in (row.error_message or "").lower()
+    returned = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert returned is None
+
+
+@pytest.mark.asyncio
+async def test_uncertain_view_once_return_does_not_mark_returned_or_retry(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+    client = _RecordingClient(failure=WahaClientError("connection closed before response"))
+
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert len(client.calls) == 1
+    assert row.status == "deferred"
+    assert "automatic replay blocked" in (row.error_message or "")
+    returned = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert returned is None
+
+    await _deliver(db_session, monkeypatch, client)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_owner_view_once_source_id_is_bound_to_payload_stamp(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+    original = dict(row.formatting_json)
+
+    assert OutboundAuthorizationService.owner_payload_matches(row)
+    row.formatting_json = {**original, "source_message_id": "SRC-OTHER"}
+    assert not OutboundAuthorizationService.owner_payload_matches(row)
+    row.formatting_json = {**original, "source": "other"}
+    assert not OutboundAuthorizationService.owner_payload_matches(row)
