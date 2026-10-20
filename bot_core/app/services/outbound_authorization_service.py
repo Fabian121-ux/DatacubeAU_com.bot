@@ -151,11 +151,19 @@ class OutboundAuthorizationService:
         `content_hash_for_message` unchanged, because there the recipient is already
         bound by the durable approval row.
         """
+        payload = {
+            "chat_id": str(getattr(message, "chat_id", "") or ""),
+            "content": cls.content_hash_for_message(message),
+        }
+        metadata = getattr(message, "formatting_json", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if metadata.get("source") == "owner_view_once":
+            # A queued view-once return is bound to the exact source record as well as
+            # the outbound payload, so changing/removing this marker cannot bypass the
+            # worker's final source-deletion fence.
+            payload["view_once_source_message_id"] = str(metadata.get("source_message_id") or "")
         preimage = json.dumps(
-            {
-                "chat_id": str(getattr(message, "chat_id", "") or ""),
-                "content": cls.content_hash_for_message(message),
-            },
+            payload,
             separators=(",", ":"),
             sort_keys=True,
             ensure_ascii=False,
