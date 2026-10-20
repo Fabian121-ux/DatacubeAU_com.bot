@@ -351,7 +351,7 @@ Audited before writing any code (2026-09-08): `owner_command_service.py::_queue_
 
 Purely additive, zero behavior change, nothing wired into any producer or delivery path — same safety shape as `PrivateMediaArtifactService` (PR #44):
 
-- **Migration 034** (`bot_core/migrations/034_outbound_message_library.sql`): three new tables.
+- **Migration 036** (`bot_core/migrations/036_outbound_message_library.sql`): three new tables. This is deliberately ordered after PR #48's 034 and PR #50's 035; the integrated fresh/upgrade migration chain must be verified before any merge.
   - `outbound_message_sets` — `set_key` (unique), `name`, `description`, `category`, `purpose`, `channel`, `primary_language`, `selection_strategy` (closed allowlist, currently only `deterministic_score`), `created_by` (provenance), `is_enabled`, timestamps, `disabled_at`/`deleted_at`.
   - `outbound_message_variants` — FK to its set, `label` (unique per active set), `template_body`, `required_variables`/`optional_variables` (JSON), optional media locator/kind/MIME/caption, `language`, `tags`, bounded `weight` (1–100, for future bounded A/B weighting among *equivalent eligible* variants), `status` (closed allowlist: `draft`/`approved` — only `approved` is meant to ever be selected once a selection engine exists), lifecycle fields.
   - `outbound_variant_usage` — analytics/audit trail only (contact, set, variant, `outbound_queue_id`, `selection_score`, `selection_reason`, `source_automation`, `send_result`). Never consulted by the delivery fence; cannot grant authority.
