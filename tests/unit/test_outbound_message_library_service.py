@@ -2325,3 +2325,69 @@ async def test_record_variant_usage_rejects_set_disabled_by_is_enabled_flag_only
     assert "message set is not active" in (result.error or "")
     rows = (await db_session.execute(OutboundVariantUsage.__table__.select())).fetchall()
     assert rows == []
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for the 2026-10-21 outbound-library hardening pass
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_variant_rejects_parent_disabled_by_is_enabled_flag_only(db_session):
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    parent = await db_session.get(OutboundMessageSet, set_id)
+    parent.is_enabled = False
+    await db_session.flush()
+
+    result = await service.create_variant(message_set_id=set_id, label="A", template_body="Hello.")
+    assert result.ok is False
+    assert "disabled" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_render_rejects_variant_when_parent_set_is_disabled_without_child_cascade(db_session):
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hello.", status="approved"
+    )
+    variant = await service.get_variant(created.id)
+    parent = await db_session.get(OutboundMessageSet, set_id)
+    parent.is_enabled = False
+    await db_session.flush()
+
+    result = await service.render(variant)
+    assert result.ok is False
+    assert "message set is not active" in (result.error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_required_variables", ["", {}, 0, False])
+async def test_render_rejects_falsy_malformed_required_variables_metadata(db_session, bad_required_variables):
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hello.", status="approved"
+    )
+    variant = await service.get_variant(created.id)
+    variant.required_variables = bad_required_variables
+    await db_session.flush()
+
+    result = await service.render(variant)
+    assert result.ok is False
+    assert "required_variables" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_update_usage_send_result_rejects_invalid_usage_ids(db_session):
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hello.")
+    usage = await service.record_variant_usage(message_set_id=set_id, variant_id=variant.id)
+    assert usage.ok is True
+
+    for bad_usage_id in ("1", ["1"], {"id": usage.id}, True):
+        result = await service.update_usage_send_result(bad_usage_id, "sent")
+        assert result.ok is False
+        assert "usage_id" in (result.error or "")

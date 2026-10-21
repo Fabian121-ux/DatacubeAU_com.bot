@@ -456,7 +456,7 @@ class OutboundMessageLibraryService:
         message_set = await self._locked_message_set(message_set_id)
         if message_set is None or message_set.deleted_at is not None:
             return LibraryResult(False, error="message set not found")
-        if message_set.disabled_at is not None:
+        if message_set.disabled_at is not None or not message_set.is_enabled:
             return LibraryResult(False, error="message set is disabled")
 
         overlap = set(required_variables) & set(optional_variables)
@@ -651,6 +651,25 @@ class OutboundMessageLibraryService:
             # children only matters if render() itself also refuses them.
             return RenderResult(False, error="variant is not active")
 
+        # The parent set is an independent lifecycle authority. A direct ORM or
+        # maintenance update can retire it without cascading to its child rows, so
+        # refresh the parent from PostgreSQL rather than trusting the session identity
+        # map before exposing reusable message content.
+        message_set = (
+            await self.session.execute(
+                select(OutboundMessageSet)
+                .where(OutboundMessageSet.id == variant.message_set_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if (
+            message_set is None
+            or message_set.deleted_at is not None
+            or message_set.disabled_at is not None
+            or not message_set.is_enabled
+        ):
+            return RenderResult(False, error="message set is not active")
+
         # A JSON-facing caller could pass a truthy non-mapping (an int, a bare
         # string, a list) instead of a dict. "or {}" only rescues a falsy value
         # (None, {}), so a non-mapping would reach the membership/indexing checks
@@ -668,7 +687,7 @@ class OutboundMessageLibraryService:
         # data specifically because it can't assume every row got there through
         # create_variant() -- set() on a list containing an unhashable element
         # (a dict) raises a plain TypeError instead of a fail-closed RenderResult.
-        raw_required = variant.required_variables or []
+        raw_required = variant.required_variables if variant.required_variables is not None else []
         if not isinstance(raw_required, list) or not all(isinstance(v, str) for v in raw_required):
             return RenderResult(False, error="variant required_variables metadata is invalid")
         required = set(raw_required)
@@ -994,6 +1013,8 @@ class OutboundMessageLibraryService:
         return LibraryResult(True, id=usage.id)
 
     async def update_usage_send_result(self, usage_id: int, send_result: str) -> LibraryResult:
+        if not isinstance(usage_id, int) or isinstance(usage_id, bool):
+            return LibraryResult(False, error="invalid usage_id")
         if not isinstance(send_result, str) or send_result not in self.ALLOWED_SEND_RESULTS:
             return LibraryResult(
                 False, error=f"send_result {send_result!r} is not valid; only {sorted(self.ALLOWED_SEND_RESULTS)}"
