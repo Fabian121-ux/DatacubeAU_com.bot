@@ -836,7 +836,7 @@ class OutboundMessageLibraryService:
         # updating its children would leave an approved, still-"active" variant
         # under an inactive set, and this check must fail closed against that
         # inconsistent persisted state rather than trust the cascade held.
-        if message_set.deleted_at is not None or message_set.disabled_at is not None:
+        if message_set.deleted_at is not None or message_set.disabled_at is not None or not message_set.is_enabled:
             return LibraryResult(False, error="message set is not active")
 
         # A locked read (SELECT ... FOR UPDATE), not session.get()/refresh(): this

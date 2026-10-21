@@ -2297,3 +2297,31 @@ async def test_record_variant_usage_rejects_reuse_after_partial_erasure_in_the_s
     ).fetchall()
     assert len(rows) == 1
     assert rows[0].original_variant_id == variant_a.id
+
+
+@pytest.mark.asyncio
+async def test_record_variant_usage_rejects_set_disabled_by_is_enabled_flag_only(db_session):
+    """A disabled parent set must fail closed even if maintenance code changes only
+    the canonical is_enabled flag and leaves disabled_at unset. list_message_sets()
+    already treats is_enabled=False as inactive; usage recording must agree rather than
+    creating analytics for content that cannot be selected through normal listing.
+    """
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi there.", status="approved"
+    )
+
+    message_set = await db_session.get(OutboundMessageSet, set_id)
+    message_set.is_enabled = False
+    await db_session.flush()
+
+    result = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        selection_reason="must not record a disabled set",
+    )
+    assert result.ok is False
+    assert "message set is not active" in (result.error or "")
+    rows = (await db_session.execute(OutboundVariantUsage.__table__.select())).fetchall()
+    assert rows == []
