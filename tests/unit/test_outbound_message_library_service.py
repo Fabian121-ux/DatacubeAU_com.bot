@@ -2383,7 +2383,9 @@ async def test_render_rejects_falsy_malformed_required_variables_metadata(db_ses
 async def test_update_usage_send_result_rejects_invalid_usage_ids(db_session):
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hello.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hello.", status="approved"
+    )
     usage = await service.record_variant_usage(message_set_id=set_id, variant_id=variant.id)
     assert usage.ok is True
 
