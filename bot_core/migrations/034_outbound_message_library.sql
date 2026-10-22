@@ -1,3 +1,0 @@
--- Superseded by bot_core/migrations/036_outbound_message_library.sql.
--- This no-op stub prevents the outbound library DDL from running twice while the
--- cross-PR migration sequence is reviewed. Remove this legacy path before merge.
