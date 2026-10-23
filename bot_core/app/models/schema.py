@@ -643,13 +643,13 @@ event.listen(
         CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_registry_delete()
         RETURNS trigger
         LANGUAGE plpgsql
-        AS $
+        AS $$
         BEGIN
             RAISE EXCEPTION
                 'outbound message set key reservations are permanent'
                 USING ERRCODE = '23514';
         END;
-        $
+        $$
         """
     ),
 )
@@ -678,7 +678,7 @@ event.listen(
         CREATE OR REPLACE FUNCTION zina_reserve_outbound_message_set_key()
         RETURNS trigger
         LANGUAGE plpgsql
-        AS $
+        AS $$
         BEGIN
             IF EXISTS (
                 SELECT 1 FROM outbound_message_set_keys WHERE set_key = NEW.set_key
@@ -689,7 +689,7 @@ event.listen(
             INSERT INTO outbound_message_set_keys (set_key) VALUES (NEW.set_key);
             RETURN NEW;
         END;
-        $
+        $$
         """
     ),
 )
@@ -718,7 +718,7 @@ event.listen(
         CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_change()
         RETURNS trigger
         LANGUAGE plpgsql
-        AS $
+        AS $$
         BEGIN
             IF NEW.set_key IS DISTINCT FROM OLD.set_key THEN
                 RAISE EXCEPTION
@@ -727,7 +727,7 @@ event.listen(
             END IF;
             RETURN NEW;
         END;
-        $
+        $$
         """
     ),
 )
@@ -756,7 +756,7 @@ event.listen(
         CREATE OR REPLACE FUNCTION zina_retire_outbound_message_set_key()
         RETURNS trigger
         LANGUAGE plpgsql
-        AS $
+        AS $$
         BEGIN
             UPDATE outbound_message_set_keys
             SET retired_at = COALESCE(retired_at, NOW())
@@ -767,7 +767,7 @@ event.listen(
             END IF;
             RETURN OLD;
         END;
-        $
+        $$
         """
     ),
 )
