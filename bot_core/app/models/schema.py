@@ -671,6 +671,45 @@ event.listen(
     ),
 )
 event.listen(
+    OutboundMessageSetKey.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_registry_key_change()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $zina$
+        BEGIN
+            IF NEW.set_key IS DISTINCT FROM OLD.set_key THEN
+                RAISE EXCEPTION 'outbound message set key reservations are immutable'
+                    USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+        END;
+        $zina$
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSetKey.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_set_key_registry_immutable_key ON outbound_message_set_keys"),
+)
+event.listen(
+    OutboundMessageSetKey.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_set_key_registry_immutable_key
+        BEFORE UPDATE OF set_key ON outbound_message_set_keys
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_forbid_outbound_message_set_key_registry_key_change()
+        """
+    ),
+)
+
+
+event.listen(
     OutboundMessageSet.__table__,
     "after_create",
     DDL(
