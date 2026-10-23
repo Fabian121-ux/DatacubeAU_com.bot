@@ -710,6 +710,18 @@ async def test_hard_delete_of_set_preserves_usage_history_via_set_null(db_sessio
             await db_session.flush()
     assert await db_session.get(OutboundMessageSetKey, "lead_follow_up") is not None
 
+    # A raw UPDATE cannot rename a retired reservation and thereby release the
+    # original key for reuse after the set row has been hard-deleted.
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            await db_session.execute(
+                OutboundMessageSetKey.__table__.update()
+                .where(OutboundMessageSetKey.set_key == "lead_follow_up")
+                .values(set_key="renamed_lead_follow_up")
+            )
+    assert await db_session.get(OutboundMessageSetKey, "lead_follow_up") is not None
+    assert await db_session.get(OutboundMessageSetKey, "renamed_lead_follow_up") is None
+
 
 # ------------------------------------------------------------------------------------
 # Regressions for chatgpt-codex-connector review round 4 on PR #49
