@@ -53,6 +53,38 @@ def validated_database_url() -> str:
     # this check, ?host=, ?port=, or ?database= can override the values validated above.
     if parsed.query:
         raise SystemExit("Refusing DB-leakage audit: query parameters are not allowed.")
+
+    # The workflow applies SQL migrations through DATABASE_URL_SYNC but pytest and this
+    # audit use DATABASE_URL. If those variables ever drift to different databases, tests
+    # could pass against a schema created by fixtures while the migrations were applied
+    # elsewhere, and the leakage audit would inspect the wrong database. Validate both
+    # targets before creating an engine and require the same exact endpoint/database.
+    sync_value = os.environ.get("DATABASE_URL_SYNC", "")
+    if not sync_value:
+        raise SystemExit("Refusing DB-leakage audit: DATABASE_URL_SYNC is required.")
+    sync_parsed = urlparse(sync_value)
+    sync_database = sync_parsed.path.lstrip("/")
+    if sync_parsed.scheme != "postgresql":
+        raise SystemExit("Refusing DB-leakage audit: DATABASE_URL_SYNC must use a PostgreSQL URL.")
+    if sync_parsed.hostname not in {"localhost", "127.0.0.1", "::1"} or sync_database != "datacube_bot_test":
+        raise SystemExit(
+            "Refusing DB-leakage audit: DATABASE_URL_SYNC must point to the same isolated local "
+            "datacube_bot_test database."
+        )
+    try:
+        sync_port = sync_parsed.port
+    except ValueError as exc:
+        raise SystemExit("Refusing DB-leakage audit: DATABASE_URL_SYNC must use a valid PostgreSQL port.") from exc
+    if sync_port not in {None, 5432}:
+        raise SystemExit("Refusing DB-leakage audit: expected the disposable PostgreSQL port 5432.")
+    if sync_parsed.query:
+        raise SystemExit("Refusing DB-leakage audit: query parameters are not allowed.")
+    if (sync_parsed.hostname, sync_port or 5432, sync_database) != (
+        parsed.hostname, port or 5432, database
+    ):
+        raise SystemExit(
+            "Refusing DB-leakage audit: DATABASE_URL and DATABASE_URL_SYNC must target the same database endpoint."
+        )
     return value
 
 
