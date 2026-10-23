@@ -179,11 +179,13 @@ PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
 docker compose --env-file .env.production build
 ```
 
-9. Start the stack. The `migrate` service runs migrations and seed SQL automatically before the API starts:
+9. Start the stack. The `migrate` service runs migrations and default configuration seeds automatically before the API starts. Local fixture seeds (for example, the sample DM/group identities in `001_local_seed.sql`) are skipped by default so a redeploy cannot reset their enabled flags, cooldowns, or group reply mode.
 
 ```bash
 docker compose --env-file .env.production up -d
 ```
+
+Only on a **disposable development/test database**, set `RUN_LOCAL_SEEDS=true` on the migration service to explicitly apply `*_local_seed.sql` fixtures. Do not enable this option for production. The normal `002_default_config.sql` seed remains enabled and uses conflict-safe inserts, preserving existing configuration.
 
 10. Run the end-to-end smoke check:
 
