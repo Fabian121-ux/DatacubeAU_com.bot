@@ -44,7 +44,7 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM outbound_message_set_keys WHERE set_key = NEW.set_key
     ) THEN
-        RAISE EXCEPTION 'outbound message set key % has already been reserved', NEW.set_key
+        RAISE EXCEPTION 'outbound message set key has already been reserved'
             USING ERRCODE = '23505', CONSTRAINT = 'outbound_message_set_keys_pkey';
     END IF;
     INSERT INTO outbound_message_set_keys (set_key) VALUES (NEW.set_key);
@@ -87,7 +87,7 @@ BEGIN
     SET retired_at = COALESCE(retired_at, NOW())
     WHERE set_key = OLD.set_key;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'missing reservation for outbound message set key %', OLD.set_key
+        RAISE EXCEPTION 'missing reservation for outbound message set key'
             USING ERRCODE = '23503';
     END IF;
     RETURN OLD;
