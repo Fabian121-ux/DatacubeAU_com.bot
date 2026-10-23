@@ -111,11 +111,11 @@ printf '%s\n' "$second_output" | grep -Fq "Skipping local-only seed 001_local_se
 
 # Explicitly prove recorded migrations are checksum-skipped while the safe default
 # configuration seed is still re-applied on each runner invocation.
-printf '%s\\n' "$second_output" | grep -Fq "Skipping recorded migration 001_init.sql" || {
+printf '%s\n' "$second_output" | grep -Fq "Skipping recorded migration 001_init.sql" || {
   echo "The second deployment did not skip its recorded migration checksum." >&2
   exit 1
 }
-printf '%s\\n' "$second_output" | grep -Fq "Applying seed 002_default_config.sql" || {
+printf '%s\n' "$second_output" | grep -Fq "Applying seed 002_default_config.sql" || {
   echo "The second deployment did not re-run the default configuration seed." >&2
   exit 1
 }
