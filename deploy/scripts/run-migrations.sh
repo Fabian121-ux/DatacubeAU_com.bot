@@ -6,6 +6,17 @@ if [ -z "${DATABASE_URL_SYNC:-}" ]; then
   exit 1
 fi
 
+# Local fixture identities must never be rewritten by a normal production deploy.
+# RUN_LOCAL_SEEDS is an explicit opt-in for disposable development/test environments.
+RUN_LOCAL_SEEDS="${RUN_LOCAL_SEEDS:-false}"
+case "$RUN_LOCAL_SEEDS" in
+  true|false) ;;
+  *)
+    echo "RUN_LOCAL_SEEDS must be exactly 'true' or 'false'." >&2
+    exit 1
+    ;;
+esac
+
 APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
@@ -119,7 +130,19 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
 done
 
 for seed in "$SEEDS_DIR"/*.sql; do
-  echo "Applying seed $(basename "$seed")"
+  [ -f "$seed" ] || continue
+  seed_name="$(basename "$seed")"
+
+  case "$seed_name" in
+    *_local_seed.sql)
+      if [ "$RUN_LOCAL_SEEDS" != "true" ]; then
+        echo "Skipping local-only seed $seed_name (set RUN_LOCAL_SEEDS=true to opt in)"
+        continue
+      fi
+      ;;
+  esac
+
+  echo "Applying seed $seed_name"
   psql_cmd -f "$seed"
 done
 
