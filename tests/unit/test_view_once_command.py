@@ -335,6 +335,8 @@ async def test_available_view_once_media_queues_owner_targeted_row(
     assert row.media_type == expected_kind
     assert row.formatting_json["media_mime"] == mimetype
     assert row.formatting_json["source_message_id"] == "SRC-1"
+    assert row.formatting_json["source_chat_id"] == PEER_ID
+    assert row.formatting_json["command_message_id"] == "VV-CMD-1"
     assert result.outbound_queue_id == row.id
 
 
@@ -841,7 +843,7 @@ async def test_uncertain_view_once_return_does_not_mark_returned_or_retry(db_ses
 
 
 @pytest.mark.asyncio
-async def test_owner_view_once_source_id_is_bound_to_payload_stamp(db_session):
+async def test_owner_view_once_source_identity_and_command_are_bound_to_payload_stamp(db_session):
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
     await _run(db_session, _event(), owner)
@@ -849,7 +851,46 @@ async def test_owner_view_once_source_id_is_bound_to_payload_stamp(db_session):
     original = dict(row.formatting_json)
 
     assert OutboundAuthorizationService.owner_payload_matches(row)
-    row.formatting_json = {**original, "source_message_id": "SRC-OTHER"}
-    assert not OutboundAuthorizationService.owner_payload_matches(row)
-    row.formatting_json = {**original, "source": "other"}
-    assert not OutboundAuthorizationService.owner_payload_matches(row)
+    for key, value in (
+        ("source_message_id", "SRC-OTHER"),
+        ("source_chat_id", "2348000000009@c.us"),
+        ("command_message_id", "VV-OTHER"),
+        ("source", "other"),
+    ):
+        row.formatting_json = {**original, key: value}
+        assert not OutboundAuthorizationService.owner_payload_matches(row), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "expected_reason"),
+    [
+        ("source_chat_id", "2348000000009@c.us", "source chat"),
+        ("command_message_id", "", "command message id"),
+    ],
+)
+async def test_worker_fails_closed_on_invalid_view_once_source_binding(
+    db_session, monkeypatch, field, value, expected_reason
+):
+    """Even a freshly stamped malformed row cannot bypass the final source fence."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    metadata = dict(row.formatting_json)
+    metadata[field] = value
+    row.formatting_json = metadata
+    # Simulate a producer that stamps a malformed row: digest binding alone is not
+    # enough; the worker must still validate required IDs and authoritative source chat.
+    row.formatting_json = OutboundAuthorizationService.stamp_owner_payload(row)
+    await db_session.flush()
+    assert OutboundAuthorizationService.owner_payload_matches(row)
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert expected_reason in (row.error_message or "").lower()

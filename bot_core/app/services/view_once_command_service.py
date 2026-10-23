@@ -191,6 +191,7 @@ class ViewOnceCommandService:
             "command": self.COMMAND,
             "command_message_id": transport_message_id,
             "source_message_id": quoted_id,
+            "source_chat_id": record["source_chat_id"],
             **decision.media.queue_metadata(),
         }
         queued = OutboundMessage(

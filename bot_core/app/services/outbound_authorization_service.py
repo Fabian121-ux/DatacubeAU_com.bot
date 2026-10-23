@@ -158,10 +158,12 @@ class OutboundAuthorizationService:
         metadata = getattr(message, "formatting_json", None)
         metadata = metadata if isinstance(metadata, dict) else {}
         if metadata.get("source") == "owner_view_once":
-            # A queued view-once return is bound to the exact source record as well as
-            # the outbound payload, so changing/removing this marker cannot bypass the
-            # worker's final source-deletion fence.
+            # Bind the exact quoted source and the exact OWNER command that requested
+            # the return. The worker independently compares source_chat_id against the
+            # authoritative metadata row immediately before dispatch.
             payload["view_once_source_message_id"] = str(metadata.get("source_message_id") or "")
+            payload["view_once_source_chat_id"] = str(metadata.get("source_chat_id") or "")
+            payload["view_once_command_message_id"] = str(metadata.get("command_message_id") or "")
         preimage = json.dumps(
             payload,
             separators=(",", ":"),

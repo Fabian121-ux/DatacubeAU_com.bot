@@ -312,18 +312,28 @@ async def _lock_owner_view_once_source(session, message: OutboundMessage) -> tup
     source_message_id = metadata.get("source_message_id")
     if not isinstance(source_message_id, str) or not source_message_id.strip():
         return False, "owner view-once return missing exact source message id"
+    source_chat_id = metadata.get("source_chat_id")
+    if not isinstance(source_chat_id, str) or not source_chat_id.strip():
+        return False, "owner view-once return missing exact source chat id"
+    command_message_id = metadata.get("command_message_id")
+    if not isinstance(command_message_id, str) or not command_message_id.strip():
+        return False, "owner view-once return missing exact command message id"
+
     result = await session.execute(
         text(
             """
-            SELECT source_message_id FROM view_once_media_metadata
+            SELECT source_message_id, source_chat_id FROM view_once_media_metadata
             WHERE source_message_id = :source_message_id AND deleted_at IS NULL
             FOR UPDATE
             """
         ),
         {"source_message_id": source_message_id},
     )
-    if result.scalar_one_or_none() is None:
+    source = result.mappings().one_or_none()
+    if source is None:
         return False, "view-once source was deleted or is no longer active before dispatch"
+    if str(source["source_chat_id"] or "") != source_chat_id:
+        return False, "view-once source chat does not match authoritative metadata before dispatch"
     return True, ""
 
 
