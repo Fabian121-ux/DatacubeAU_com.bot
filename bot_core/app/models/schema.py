@@ -972,7 +972,7 @@ event.listen(
         CREATE OR REPLACE FUNCTION zina_freeze_outbound_variant_usage_selection_ids()
         RETURNS trigger
         LANGUAGE plpgsql
-        AS $
+        AS $zina$
         BEGIN
             IF NEW.message_set_id IS DISTINCT FROM OLD.message_set_id AND NEW.message_set_id IS NOT NULL THEN
                 RAISE EXCEPTION 'outbound_variant_usage message_set_id is immutable after insert'
@@ -992,7 +992,7 @@ event.listen(
             END IF;
             RETURN NEW;
         END;
-        $
+        $zina$
         """
     ),
 )
