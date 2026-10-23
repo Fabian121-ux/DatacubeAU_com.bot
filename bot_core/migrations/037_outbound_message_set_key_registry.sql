@@ -116,3 +116,24 @@ CREATE TRIGGER trg_outbound_message_set_key_registry_no_delete
 BEFORE DELETE ON outbound_message_set_keys
 FOR EACH ROW
 EXECUTE FUNCTION zina_forbid_outbound_message_set_key_registry_delete();
+-- A retired reservation is permanent: direct UPDATE must not rename the registry
+-- primary key after its message-set row has been physically deleted.
+CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_registry_key_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+    IF NEW.set_key IS DISTINCT FROM OLD.set_key THEN
+        RAISE EXCEPTION 'outbound message set key reservations are immutable'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS trg_outbound_message_set_key_registry_immutable_key ON outbound_message_set_keys;
+CREATE TRIGGER trg_outbound_message_set_key_registry_immutable_key
+BEFORE UPDATE OF set_key ON outbound_message_set_keys
+FOR EACH ROW
+EXECUTE FUNCTION zina_forbid_outbound_message_set_key_registry_key_change();
+
