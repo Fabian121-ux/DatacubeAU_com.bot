@@ -2393,3 +2393,131 @@ async def test_update_usage_send_result_rejects_invalid_usage_ids(db_session):
         result = await service.update_usage_send_result(bad_usage_id, "sent")
         assert result.ok is False
         assert "usage_id" in (result.error or "")
+
+
+
+# ------------------------------------------------------------------------------------
+# Regressions for database-enforced outbound usage invariants (2026-10-23)
+# ------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "variant_status,variant_enabled,variant_disabled,variant_deleted,set_enabled,set_disabled,set_deleted",
+    [
+        ("draft", True, False, False, True, False, False),
+        ("approved", False, False, False, True, False, False),
+        ("approved", True, True, False, True, False, False),
+        ("approved", True, False, True, True, False, False),
+        ("approved", True, False, False, False, False, False),
+        ("approved", True, False, False, True, True, False),
+        ("approved", True, False, False, True, False, True),
+    ],
+)
+async def test_database_rejects_direct_usage_for_ineligible_variant_or_set(
+    db_session,
+    variant_status,
+    variant_enabled,
+    variant_disabled,
+    variant_deleted,
+    set_enabled,
+    set_disabled,
+    set_deleted,
+):
+    """Raw ORM/SQL inserts must obey the same approved-and-active contract as the service."""
+    from sqlalchemy.exc import IntegrityError
+
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    created = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status=variant_status
+    )
+    assert created.ok, created.error
+    variant = await db_session.get(OutboundMessageVariant, created.id)
+    message_set = await db_session.get(OutboundMessageSet, set_id)
+    now = datetime.now(timezone.utc)
+    variant.is_enabled = variant_enabled
+    variant.disabled_at = now if variant_disabled else None
+    variant.deleted_at = now if variant_deleted else None
+    message_set.is_enabled = set_enabled
+    message_set.disabled_at = now if set_disabled else None
+    message_set.deleted_at = now if set_deleted else None
+    await db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(OutboundVariantUsage(message_set_id=set_id, variant_id=variant.id))
+            await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_database_freezes_usage_selection_identity_but_allows_fk_set_null(db_session):
+    """Historical selection IDs cannot be rewritten, while FK ON DELETE SET NULL remains valid."""
+    from sqlalchemy.exc import IntegrityError
+
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    first = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    second = await service.create_variant(
+        message_set_id=set_id, label="B", template_body="Hello.", status="approved"
+    )
+    recorded = await service.record_variant_usage(message_set_id=set_id, variant_id=first.id)
+    assert recorded.ok, recorded.error
+    usage = await db_session.get(OutboundVariantUsage, recorded.id)
+    assert usage is not None
+
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            usage.variant_id = second.id
+            await db_session.flush()
+
+    await db_session.refresh(usage)
+    assert usage.variant_id == first.id
+
+    original_variant = await db_session.get(OutboundMessageVariant, first.id)
+    await db_session.delete(original_variant)
+    await db_session.flush()
+    await db_session.refresh(usage)
+    assert usage.variant_id is None
+    assert usage.original_variant_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_database_rejects_usage_contact_queue_recipient_mismatch(db_session):
+    """The database must not allow a usage row to attribute a queued message to another contact."""
+    from sqlalchemy.exc import IntegrityError
+
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service)
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
+    contact = Contact(whatsapp_id="15550000031@c.us", display_name="Expected recipient")
+    wrong_queue = OutboundMessage(chat_id="15550000032@c.us", message_text="Hello.")
+    db_session.add_all([contact, wrong_queue])
+    await db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(
+                OutboundVariantUsage(
+                    contact_id=contact.id,
+                    message_set_id=set_id,
+                    variant_id=variant.id,
+                    outbound_queue_id=wrong_queue.id,
+                )
+            )
+            await db_session.flush()
+
+    matching_queue = OutboundMessage(chat_id=contact.whatsapp_id, message_text="Hello.")
+    db_session.add(matching_queue)
+    await db_session.flush()
+    good = await service.record_variant_usage(
+        message_set_id=set_id,
+        variant_id=variant.id,
+        contact_id=contact.id,
+        outbound_queue_id=matching_queue.id,
+    )
+    assert good.ok, good.error

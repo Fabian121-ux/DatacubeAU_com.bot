@@ -200,6 +200,39 @@ BEGIN
                 NEW.variant_id, NEW.message_set_id
                 USING ERRCODE = '23514';
         END IF;
+        -- Direct SQL/ORM inserts must obey the same eligibility contract as the service.
+        -- This check runs only on INSERT so later FK-driven cleanup is not blocked.
+        IF TG_OP = 'INSERT' AND NOT EXISTS (
+            SELECT 1
+            FROM outbound_message_variants v
+            JOIN outbound_message_sets s ON s.id = v.message_set_id
+            WHERE v.id = NEW.variant_id
+              AND v.message_set_id = NEW.message_set_id
+              AND v.status = 'approved'
+              AND v.is_enabled = TRUE
+              AND v.disabled_at IS NULL
+              AND v.deleted_at IS NULL
+              AND s.is_enabled = TRUE
+              AND s.disabled_at IS NULL
+              AND s.deleted_at IS NULL
+        ) THEN
+            RAISE EXCEPTION
+                'outbound_variant_usage requires an approved active variant under an active message set'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    IF TG_OP = 'INSERT' AND NEW.contact_id IS NOT NULL AND NEW.outbound_queue_id IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM contacts c
+            JOIN outbound_queue q ON q.id = NEW.outbound_queue_id
+            WHERE c.id = NEW.contact_id
+              AND q.chat_id IN (c.whatsapp_id, c.chat_id)
+        ) THEN
+            RAISE EXCEPTION
+                'outbound_variant_usage contact_id does not match outbound_queue_id recipient'
+                USING ERRCODE = '23514';
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -267,6 +300,39 @@ EXECUTE FUNCTION zina_freeze_outbound_variant_usage_original_ids();
 -- after insert closes this the same way the usage table's own immutable
 -- snapshot does: by removing the ability to rewrite the fact in place, rather
 -- than trying to reconcile every row that recorded it after the fact.
+-- Usage rows are historical selection records. Permit NULL transitions needed by
+-- ON DELETE SET NULL foreign keys, but never replace or restore a live selection id.
+CREATE OR REPLACE FUNCTION zina_freeze_outbound_variant_usage_selection_ids()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+    IF NEW.message_set_id IS DISTINCT FROM OLD.message_set_id AND NEW.message_set_id IS NOT NULL THEN
+        RAISE EXCEPTION 'outbound_variant_usage message_set_id is immutable after insert'
+            USING ERRCODE = '23514';
+    END IF;
+    IF NEW.variant_id IS DISTINCT FROM OLD.variant_id AND NEW.variant_id IS NOT NULL THEN
+        RAISE EXCEPTION 'outbound_variant_usage variant_id is immutable after insert'
+            USING ERRCODE = '23514';
+    END IF;
+    IF NEW.contact_id IS DISTINCT FROM OLD.contact_id AND NEW.contact_id IS NOT NULL THEN
+        RAISE EXCEPTION 'outbound_variant_usage contact_id is immutable after insert'
+            USING ERRCODE = '23514';
+    END IF;
+    IF NEW.outbound_queue_id IS DISTINCT FROM OLD.outbound_queue_id AND NEW.outbound_queue_id IS NOT NULL THEN
+        RAISE EXCEPTION 'outbound_variant_usage outbound_queue_id is immutable after insert'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS trg_outbound_variant_usage_freeze_selection_ids ON outbound_variant_usage;
+CREATE TRIGGER trg_outbound_variant_usage_freeze_selection_ids
+BEFORE UPDATE OF message_set_id, variant_id, contact_id, outbound_queue_id ON outbound_variant_usage
+FOR EACH ROW
+EXECUTE FUNCTION zina_freeze_outbound_variant_usage_selection_ids();
+
 CREATE OR REPLACE FUNCTION zina_forbid_outbound_variant_reparenting()
 RETURNS trigger
 LANGUAGE plpgsql
