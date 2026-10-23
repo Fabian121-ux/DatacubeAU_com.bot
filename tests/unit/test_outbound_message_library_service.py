@@ -1922,10 +1922,13 @@ async def test_database_rejects_a_fresh_usage_row_naming_only_one_id(db_session)
     entirely and every foreign key still accepted the row -- producing a usage
     row that can never be attributed to a real set+variant selection.
     record_variant_usage() itself always supplies both, so this only protects
-    against something that bypasses the service."""
+    against something that bypasses the service. The positive control uses an
+    approved variant because the database now also enforces selection eligibility."""
     service = OutboundMessageLibraryService(db_session)
     set_id = await _make_set(service)
-    variant = await service.create_variant(message_set_id=set_id, label="A", template_body="Hi.")
+    variant = await service.create_variant(
+        message_set_id=set_id, label="A", template_body="Hi.", status="approved"
+    )
 
     # Each failing insert runs in its own SAVEPOINT so the aborted attempt
     # doesn't take the outer transaction (and set_id/variant with it) down too.
