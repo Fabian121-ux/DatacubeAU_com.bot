@@ -121,7 +121,7 @@ EXECUTE FUNCTION zina_forbid_outbound_message_set_key_registry_delete();
 CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_registry_key_change()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $zina$
 BEGIN
     IF NEW.set_key IS DISTINCT FROM OLD.set_key THEN
         RAISE EXCEPTION 'outbound message set key reservations are immutable'
@@ -129,7 +129,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$;
+$zina$;
 
 DROP TRIGGER IF EXISTS trg_outbound_message_set_key_registry_immutable_key ON outbound_message_set_keys;
 CREATE TRIGGER trg_outbound_message_set_key_registry_immutable_key
