@@ -167,6 +167,27 @@ class ViewOnceCommandService:
         if not decision.accepted:
             return self._reply(f"This view-once media could not be returned safely: {decision.reason}")
 
+        # Serialize duplicate webhook deliveries for the same source before the
+        # idempotency lookup. Without this row lock, two concurrent requests can both
+        # observe no queue row and enqueue two owner returns. Re-check lifecycle and
+        # source identity because the record was loaded earlier in this transaction.
+        locked_source = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT source_chat_id FROM view_once_media_metadata
+                    WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                    FOR UPDATE
+                    """
+                ),
+                {"source_message_id": quoted_id},
+            )
+        ).mappings().one_or_none()
+        if locked_source is None:
+            return self._reply("Zina's metadata for this item was deleted before it could be queued.")
+        if str(locked_source["source_chat_id"] or "") != str(record["source_chat_id"] or ""):
+            return self._reply("The source chat no longer matches its recorded identity, so this item was not returned.")
+
         existing = await self._existing_return(transport_message_id)
         if existing is not None:
             # A command retry (same transport_message_id) must still reconcile

@@ -10,8 +10,12 @@ produce a send, because the durable record deliberately stores no locator.
 
 from __future__ import annotations
 
+import asyncio
+import os
+
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage, PrivateMediaArtifact
@@ -894,3 +898,44 @@ async def test_worker_fails_closed_on_invalid_view_once_source_binding(
     assert client.calls == []
     assert row.status == "deferred"
     assert expected_reason in (row.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_view_once_command_queues_exactly_one_return(db_session, monkeypatch):
+    """Two webhook deliveries for the same command must serialize on the source row."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await db_session.commit()
+
+    # Widen the race window after the source-row lock. Without the lock, both requests
+    # can complete the SELECT-before-INSERT idempotency check before either commits.
+    original_existing_return = ViewOnceCommandService._existing_return
+
+    async def delayed_existing_return(self, transport_message_id):
+        await asyncio.sleep(0.05)
+        return await original_existing_return(self, transport_message_id)
+
+    monkeypatch.setattr(ViewOnceCommandService, "_existing_return", delayed_existing_return)
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    event = _event(command_id="VV-CONCURRENT")
+
+    async def process_duplicate():
+        async with Session() as session:
+            result = await _run(session, event, owner)
+            await session.commit()
+            return result.outbound_queue_id
+
+    try:
+        queue_ids = await asyncio.gather(process_duplicate(), process_duplicate())
+        async with Session() as session:
+            rows = (await session.execute(select(OutboundMessage))).scalars().all()
+        assert len(rows) == 1
+        assert queue_ids == [rows[0].id, rows[0].id]
+    finally:
+        await engine.dispose()
