@@ -109,6 +109,17 @@ printf '%s\n' "$second_output" | grep -Fq "Skipping local-only seed 001_local_se
   exit 1
 }
 
+# Explicitly prove recorded migrations are checksum-skipped while the safe default
+# configuration seed is still re-applied on each runner invocation.
+printf '%s\\n' "$second_output" | grep -Fq "Skipping recorded migration 001_init.sql" || {
+  echo "The second deployment did not skip its recorded migration checksum." >&2
+  exit 1
+}
+printf '%s\\n' "$second_output" | grep -Fq "Applying seed 002_default_config.sql" || {
+  echo "The second deployment did not re-run the default configuration seed." >&2
+  exit 1
+}
+
 dm_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT is_enabled::text || ':' || cooldown_seconds::text
 FROM dm_configs
