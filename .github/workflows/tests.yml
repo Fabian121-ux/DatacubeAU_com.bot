@@ -65,6 +65,14 @@ jobs:
             psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -f "$migration"
           done
 
+      - name: Verify installed-database upgrade path
+        env:
+          UPGRADE_DATABASE_URL_SYNC: postgresql://postgres:postgres@localhost:5432/zina_upgrade_test
+          UPGRADE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/zina_upgrade_test
+        run: |
+          psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -c "CREATE DATABASE zina_upgrade_test"
+          bash scripts/validate_zina_upgrade.sh
+
       - name: Verify tests directory exists
         run: |
           if [ ! -d tests ]; then

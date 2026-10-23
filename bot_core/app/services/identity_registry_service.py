@@ -16,16 +16,46 @@ class IdentityRegistryService:
 
     SEARCH_LIMIT = 50
 
+    #: registry keys some hardcoded fallback -- `_special_answer` below, and
+    #: `BotConfigService.identity_reply()`'s own separate legacy fallback -- will
+    #: otherwise substitute a default answer for when no active entry exists. Used to
+    #: tell "never seeded" apart from "the OWNER intentionally deleted this" so a
+    #: deletion can't be silently undone by either hardcoded fallback layer. This is
+    #: every key `ensure_defaults_from_profile` seeds, since both fallback layers
+    #: reference some subset of them.
+    _DEFAULT_FALLBACK_KEYS = (
+        "zina",
+        "fabian",
+        "services",
+        "datacube_au",
+        "zinax",
+        "moxiz_gateway",
+        "projects",
+        "skills",
+    )
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def answer(self, message_text: str) -> str | None:
         normalized = FAQService.semantic_normalize(message_text)
         entries = await self.enabled_entries()
-        if not entries:
+        deleted_keys = await self.unavailable_default_keys()
+        if not entries and not deleted_keys:
             return None
 
-        special = self._special_answer(normalized, entries)
+        target_keys = self._explicit_target_keys(normalized)
+        if target_keys & deleted_keys:
+            # The query is unambiguously about one or more specific default facts and
+            # at least one is unavailable -- refuse outright instead of falling
+            # through to the scored-match loop below, where some other, unrelated
+            # entry might coincidentally mention the same name (e.g. the "projects"
+            # entry's own summary answer lists every project -- Datacube AU, ZinaX,
+            # etc -- by name; the "zina" entry's own keywords include "created" and
+            # "built") and silently resurrect the fact through a different door.
+            return None
+
+        special = self._special_answer(normalized, entries, deleted_keys)
         if special:
             return special
 
@@ -37,8 +67,12 @@ class IdentityRegistryService:
                 best_entry = entry
                 best_score = score
         if best_entry and best_score >= 0.62:
-            best_entry.updated_at = utcnow()
-            await self.session.flush()
+            # Matching and returning an answer is a read, not a content edit -- do not
+            # advance updated_at here. Migration 035's backfill (and any future
+            # provenance logic) relies on updated_at == created_at meaning "this
+            # row's content has never been edited since creation"; touching it on a
+            # mere lookup would permanently and incorrectly disqualify an otherwise
+            # untouched system default from ever being backfilled again.
             return best_entry.answer
         return None
 
@@ -52,6 +86,93 @@ class IdentityRegistryService:
             )
         ).scalars().all()
         return [row for row in rows if hasattr(row, "registry_key")]
+
+    async def unavailable_default_keys(self) -> set[str]:
+        """Default registry keys that are not fully active right now.
+
+        Covers both explicit tombstones (`deleted_at` set) and a default that merely
+        exists but is disabled (`is_enabled=False`, `deleted_at` still NULL) -- for
+        example, a previously-deleted key recreated via the admin API with
+        `enabled=False`, which clears the tombstone without making the row active
+        again. Both states mean a real row reflects the OWNER's current intent and a
+        hardcoded fallback literal must not silently stand in for it.
+
+        Public so any caller with its own hardcoded identity fallback (e.g.
+        `BotConfigService.identity_reply()`) can also suppress it, not only
+        `_special_answer`/`answer()`'s own scored-match layer.
+        """
+        rows = (
+            await self.session.execute(
+                select(IdentityRegistryEntry.registry_key)
+                .where(IdentityRegistryEntry.registry_key.in_(self._DEFAULT_FALLBACK_KEYS))
+                .where(
+                    or_(
+                        IdentityRegistryEntry.deleted_at.is_not(None),
+                        IdentityRegistryEntry.is_enabled.is_(False),
+                    )
+                )
+            )
+        ).scalars().all()
+        return set(rows)
+
+    @staticmethod
+    def _explicit_target_keys(normalized: str) -> frozenset[str]:
+        """Which default registry key(s), if any, a query's phrase is unambiguously
+
+        about -- mirrors `_special_answer`'s own branch conditions exactly, including
+        which branches depend on more than one key (e.g. "who created you" reads as
+        stale if *either* "zina" or "fabian" is unavailable, matching that branch's
+        own `or` check), plus "moxiz" (which has no `_special_answer` branch of its
+        own but is still a single, unambiguous project name). `answer()` refuses a
+        query outright when any of its returned keys is unavailable, rather than
+        letting the scored-match loop substitute a different entry that happens to
+        mention the same name or share a keyword (e.g. the "projects" entry's own
+        summary answer lists every project by name; the "zina" entry's own keywords
+        include "created" and "built").
+
+        Every condition below is checked and its key(s) accumulated -- not a
+        first-match short-circuit -- so a compound query naming more than one thing
+        (e.g. "what is Fabian's Datacube project?", which matches both the
+        "project"+"fabian" branch *and* a bare "datacube" mention) is refused if
+        *any* named target is unavailable, not just whichever branch happened to be
+        checked first. A bare mention of "zina" or "fabian" by name is also treated
+        as targeting that key -- e.g. "who is zina?" or "what is zina" match no
+        specific phrase above (only "what is *your* name"/"who are *you*" do) but
+        are just as identity-routed in practice (see
+        `IntentClassifier._is_identity_question`), and the same "projects entry
+        lists every name" leak applies to them too.
+        """
+        targets: set[str] = set()
+        if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
+            targets.add("zina")
+        if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you")) or re.search(
+            r"\bwho (?:create|own) zina\b", normalized
+        ):
+            targets.update({"zina", "fabian"})
+        if "why were you create" in normalized or "why do you exist" in normalized:
+            targets.add("zina")
+        if "who is fabian" in normalized:
+            targets.add("fabian")
+        if "project" in normalized and "fabian" in normalized:
+            targets.add("projects")
+        if "service" in normalized and ("fabian" in normalized or "offer" in normalized or "provide" in normalized):
+            targets.add("services")
+        if "datacube" in normalized:
+            targets.add("datacube_au")
+        if "zinax" in normalized:
+            targets.add("zinax")
+        if "moxiz" in normalized:
+            targets.add("moxiz_gateway")
+        # Word-boundary, not substring: "zina" is itself a substring of "zinax", so a
+        # plain `"zina" in normalized` check would incorrectly treat any ZinaX query
+        # as also targeting "zina" -- an unrelated "zina" tombstone would then block a
+        # ZinaX query it has nothing to do with, discarding a still-active (possibly
+        # administrator-customized) ZinaX answer in favor of the generic fallback.
+        if re.search(r"\bzina\b", normalized):
+            targets.add("zina")
+        if "fabian" in normalized:
+            targets.add("fabian")
+        return frozenset(targets)
 
     async def get_by_key(self, registry_key: str) -> IdentityRegistryEntry | None:
         """Fetch a single entry by key, including disabled ones, excluding deleted ones."""
@@ -250,9 +371,15 @@ class IdentityRegistryService:
         for item in defaults:
             if item["registry_key"] in existing:
                 continue
+            # A single shared timestamp, not two separate utcnow() calls: those can
+            # differ by a few microseconds, which would make created_at != updated_at
+            # for a freshly-seeded row that was never actually edited -- exactly the
+            # signal migration 035's backfill (and any future provenance logic)
+            # relies on to distinguish "never touched" from "admin-edited".
+            seeded_at = utcnow()
             self.session.add(
                 IdentityRegistryEntry(
-                    **item, source="system_default", is_enabled=True, created_at=utcnow(), updated_at=utcnow()
+                    **item, source="system_default", is_enabled=True, created_at=seeded_at, updated_at=seeded_at
                 )
             )
         await self.session.flush()
@@ -293,7 +420,17 @@ class IdentityRegistryService:
         }
 
     @staticmethod
-    def _special_answer(normalized: str, entries: list[IdentityRegistryEntry]) -> str | None:
+    def _special_answer(
+        normalized: str, entries: list[IdentityRegistryEntry], deleted_keys: set[str] | None = None
+    ) -> str | None:
+        """Phrase-matched shortcuts for the most common identity questions.
+
+        `deleted_keys` names default registry keys the OWNER has explicitly deleted.
+        For those, this returns None instead of the hardcoded fallback text below --
+        an intentional deletion must not be silently undone by substituting the same
+        default fact back in just because no active row remains to answer from.
+        """
+        deleted_keys = deleted_keys or set()
         by_key = {entry.registry_key: entry for entry in entries}
         owner = by_key.get("fabian")
         owner_name = owner.name if owner else "Fabian"
@@ -301,30 +438,46 @@ class IdentityRegistryService:
         assistant_name = assistant.name if assistant else "Zina"
 
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
-            return assistant.answer if assistant else f"I am {assistant_name}, {owner_name}'s AI assistant."
+            if assistant:
+                return assistant.answer
+            return None if "zina" in deleted_keys else f"I am {assistant_name}, {owner_name}'s AI assistant."
         if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you", "who create zina", "who own zina")):
+            if "zina" in deleted_keys or "fabian" in deleted_keys:
+                return None
             return f"{owner_name} created {assistant_name}."
         if "why were you create" in normalized or "why do you exist" in normalized:
+            if "zina" in deleted_keys:
+                return None
             return (
                 f"{assistant_name} was created to help {owner_name} manage memory, project context, "
                 "knowledge retrieval, WhatsApp conversations, and controlled AI access."
             )
         if "who is fabian" in normalized:
-            return owner.answer if owner else f"{owner_name} is the owner and creator I assist."
+            if owner:
+                return owner.answer
+            return None if "fabian" in deleted_keys else f"{owner_name} is the owner and creator I assist."
         if "project" in normalized and "fabian" in normalized:
             projects = by_key.get("projects")
-            return projects.answer if projects else f"{owner_name}'s core projects include Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway."
+            if projects:
+                return projects.answer
+            return None if "projects" in deleted_keys else f"{owner_name}'s core projects include Datacube AU, {assistant_name}, ZinaX, and Moxiz Gateway."
         if "service" in normalized and ("fabian" in normalized or "offer" in normalized or "provide" in normalized):
             services = by_key.get("services")
-            return services.answer if services else f"{owner_name} focuses on AI-assisted systems, automation tools, and productivity-focused projects."
+            if services:
+                return services.answer
+            return None if "services" in deleted_keys else f"{owner_name} focuses on AI-assisted systems, automation tools, and productivity-focused projects."
         if "datacube" in normalized:
             datacube = by_key.get("datacube_au")
+            if "datacube_au" in deleted_keys:
+                return None
             if "own" in normalized or "found" in normalized or "create" in normalized:
                 return f"Datacube AU is owned by {owner_name}."
             return datacube.answer if datacube else f"Datacube AU is an AI-powered educational intelligence platform founded by {owner_name}."
         if "zinax" in normalized:
             zinax = by_key.get("zinax")
-            return zinax.answer if zinax else f"ZinaX is a project in {owner_name}'s AI assistant and automation ecosystem."
+            if zinax:
+                return zinax.answer
+            return None if "zinax" in deleted_keys else f"ZinaX is a project in {owner_name}'s AI assistant and automation ecosystem."
         return None
 
     @staticmethod
