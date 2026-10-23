@@ -939,3 +939,98 @@ async def test_concurrent_duplicate_view_once_command_queues_exactly_one_return(
         assert queue_ids == [rows[0].id, rows[0].id]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_owner_delete_racing_with_open_cannot_leave_active_artifact(db_session, monkeypatch):
+    """A delete racing with .vvopen must win the final lifecycle state.
+
+    The open path locks the authoritative view-once row before its idempotency
+    lookup. Hold it there while a separate session attempts OWNER deletion. The
+    delete must wait, then tombstone the artifact that the open transaction creates;
+    otherwise a timing-dependent active artifact can survive an OWNER deletion.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await db_session.commit()
+
+    original_existing_return = ViewOnceCommandService._existing_return
+    original_delete = ViewOnceCommandService._delete
+    open_reached_idempotency = asyncio.Event()
+    release_open = asyncio.Event()
+    delete_started = asyncio.Event()
+
+    async def pause_open_after_source_lock(self, transport_message_id):
+        if transport_message_id == "VV-OPEN-RACE":
+            open_reached_idempotency.set()
+            await release_open.wait()
+        return await original_existing_return(self, transport_message_id)
+
+    async def signal_delete_start(self, record, quoted_id, *, request_id):
+        delete_started.set()
+        return await original_delete(self, record, quoted_id, request_id=request_id)
+
+    monkeypatch.setattr(ViewOnceCommandService, "_existing_return", pause_open_after_source_lock)
+    monkeypatch.setattr(ViewOnceCommandService, "_delete", signal_delete_start)
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    open_task = None
+    delete_task = None
+
+    async def process_open():
+        async with Session() as session:
+            result = await _run(session, _event(command_id="VV-OPEN-RACE"), owner)
+            await session.commit()
+            return result
+
+    async def process_delete():
+        async with Session() as session:
+            result = await _run(
+                session,
+                _event(body="@Zina .vv delete", command_id="VV-DELETE-RACE"),
+                owner,
+                operation="delete",
+            )
+            await session.commit()
+            return result
+
+    try:
+        open_task = asyncio.create_task(process_open())
+        await asyncio.wait_for(open_reached_idempotency.wait(), timeout=5)
+        delete_task = asyncio.create_task(process_delete())
+        await asyncio.wait_for(delete_started.wait(), timeout=5)
+
+        # Give the delete coroutine time to reach its UPDATE. It must be blocked by
+        # the source-row lock held by the open transaction, not race past it.
+        await asyncio.sleep(0.05)
+        assert not delete_task.done(), "OWNER deletion must serialize behind an in-flight source return"
+
+        release_open.set()
+        open_result, delete_result = await asyncio.gather(open_task, delete_task)
+        assert open_result.outbound_queue_id is not None
+        assert "was deleted" in delete_result.reply_text
+
+        artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+        assert len(artifacts) == 1
+        assert artifacts[0].deleted_at is not None
+
+        metadata = (
+            await db_session.execute(
+                text("SELECT deleted_at FROM view_once_media_metadata WHERE source_message_id = 'SRC-1'")
+            )
+        ).mappings().one()
+        assert metadata["deleted_at"] is not None
+        queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
+        assert len(queued) == 1
+    finally:
+        release_open.set()
+        if open_task is not None and not open_task.done():
+            await asyncio.gather(open_task, return_exceptions=True)
+        if delete_task is not None and not delete_task.done():
+            await asyncio.gather(delete_task, return_exceptions=True)
+        await engine.dispose()
