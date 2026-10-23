@@ -573,6 +573,18 @@ class PrivateMediaArtifact(Base):
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
+class OutboundMessageSetKey(Base):
+    """Permanent reservation for every outbound message-set key, including hard-deleted sets."""
+
+    __tablename__ = "outbound_message_set_keys"
+
+    set_key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class OutboundMessageSet(Base):
     """A named, reusable outbound message set (roadmap Phase 17).
 
@@ -593,7 +605,16 @@ class OutboundMessageSet(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    set_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    set_key: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey(
+            "outbound_message_set_keys.set_key",
+            ondelete="RESTRICT",
+            name="fk_outbound_message_sets_set_key_registry",
+        ),
+        nullable=False,
+        unique=True,
+    )
     name: Mapped[str] = mapped_column(String(180), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -609,6 +630,164 @@ class OutboundMessageSet(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# A permanent key registry makes the set_key guarantee survive physical deletion.
+# The migration mirrors these triggers; these listeners cover disposable/test databases
+# initialized directly with Base.metadata.create_all().
+event.listen(
+    OutboundMessageSetKey.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_registry_delete()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $
+        BEGIN
+            RAISE EXCEPTION
+                'outbound message set key reservations are permanent'
+                USING ERRCODE = '23514';
+        END;
+        $
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSetKey.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_set_key_registry_no_delete ON outbound_message_set_keys"),
+)
+event.listen(
+    OutboundMessageSetKey.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_set_key_registry_no_delete
+        BEFORE DELETE ON outbound_message_set_keys
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_forbid_outbound_message_set_key_registry_delete()
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_reserve_outbound_message_set_key()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM outbound_message_set_keys WHERE set_key = NEW.set_key
+            ) THEN
+                RAISE EXCEPTION 'outbound message set key % has already been reserved', NEW.set_key
+                    USING ERRCODE = '23505', CONSTRAINT = 'outbound_message_set_keys_pkey';
+            END IF;
+            INSERT INTO outbound_message_set_keys (set_key) VALUES (NEW.set_key);
+            RETURN NEW;
+        END;
+        $
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_sets_reserve_key ON outbound_message_sets"),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_sets_reserve_key
+        BEFORE INSERT ON outbound_message_sets
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_reserve_outbound_message_set_key()
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_forbid_outbound_message_set_key_change()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $
+        BEGIN
+            IF NEW.set_key IS DISTINCT FROM OLD.set_key THEN
+                RAISE EXCEPTION
+                    'outbound message set_key is immutable; create a new set with a new key'
+                    USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+        END;
+        $
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_sets_immutable_key ON outbound_message_sets"),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_sets_immutable_key
+        BEFORE UPDATE OF set_key ON outbound_message_sets
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_forbid_outbound_message_set_key_change()
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE OR REPLACE FUNCTION zina_retire_outbound_message_set_key()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $
+        BEGIN
+            UPDATE outbound_message_set_keys
+            SET retired_at = COALESCE(retired_at, NOW())
+            WHERE set_key = OLD.set_key;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'missing reservation for outbound message set key %', OLD.set_key
+                    USING ERRCODE = '23503';
+            END IF;
+            RETURN OLD;
+        END;
+        $
+        """
+    ),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL("DROP TRIGGER IF EXISTS trg_outbound_message_sets_retire_key ON outbound_message_sets"),
+)
+event.listen(
+    OutboundMessageSet.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_outbound_message_sets_retire_key
+        AFTER DELETE ON outbound_message_sets
+        FOR EACH ROW
+        EXECUTE FUNCTION zina_retire_outbound_message_set_key()
+        """
+    ),
+)
 
 
 class OutboundMessageVariant(Base):

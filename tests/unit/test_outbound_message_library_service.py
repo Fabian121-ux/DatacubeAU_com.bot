@@ -23,6 +23,7 @@ from app.models.schema import (
     Contact,
     OutboundMessage,
     OutboundMessageSet,
+    OutboundMessageSetKey,
     OutboundMessageVariant,
     OutboundVariantUsage,
 )
@@ -429,6 +430,23 @@ async def test_create_message_set_rejects_reuse_of_a_deleted_set_key(db_session)
 
 
 @pytest.mark.asyncio
+async def test_set_key_cannot_be_changed_to_another_reserved_or_unreserved_key(db_session):
+    service = OutboundMessageLibraryService(db_session)
+    set_id = await _make_set(service, set_key="immutable_set_key")
+    row = await service.get_message_set(set_id)
+    assert row is not None
+
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            row.set_key = "different_key"
+            await db_session.flush()
+
+    refreshed = await service.get_message_set(set_id)
+    assert refreshed is not None
+    assert refreshed.set_key == "immutable_set_key"
+
+
+@pytest.mark.asyncio
 async def test_create_variant_rejects_malformed_placeholder(db_session):
     """Regression: a placeholder like {{first-name}} (hyphen, not underscore) doesn't
     match the strict token pattern, so it silently passed validation and would later
@@ -654,6 +672,43 @@ async def test_hard_delete_of_set_preserves_usage_history_via_set_null(db_sessio
     assert surviving is not None
     assert surviving.message_set_id is None
     assert surviving.selection_reason == "only eligible approved variant"
+
+    # A physical delete must preserve the permanent identifier independently of the
+    # soft-delete row and keep its retirement timestamp. Service callers get a clean
+    # fail-closed result rather than a database exception.
+    key_reservation = await db_session.get(OutboundMessageSetKey, "lead_follow_up")
+    assert key_reservation is not None
+    assert key_reservation.retired_at is not None
+    recreate = await service.create_message_set(
+        set_key="lead_follow_up",
+        name="Reused Key",
+        description="must not be accepted",
+        category="lead_follow_up",
+    )
+    assert recreate.ok is False
+    assert "permanently reserved" in (recreate.error or "")
+
+    # Raw ORM/SQL paths cannot bypass the service check. The savepoint contains the
+    # expected integrity error without invalidating the test's outer transaction.
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(
+                OutboundMessageSet(
+                    set_key="lead_follow_up",
+                    name="Raw Reuse",
+                    description="must not be accepted",
+                    category="lead_follow_up",
+                )
+            )
+            await db_session.flush()
+
+    # Even direct deletion of a retired reservation is blocked; the registry is
+    # append-only outside the disposable-test reset path.
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            await db_session.delete(key_reservation)
+            await db_session.flush()
+    assert await db_session.get(OutboundMessageSetKey, "lead_follow_up") is not None
 
 
 # ------------------------------------------------------------------------------------

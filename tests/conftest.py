@@ -116,6 +116,15 @@ async def _purge_database_state(session) -> None:
         ).scalars().all()
         for table in present:
             await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+
+    # Production set-key reservations are append-only, including after hard deletion.
+    # The disposable test database must reset that global state between tests; TRUNCATE
+    # intentionally bypasses row-level delete guards and is never used by application code.
+    key_registry_exists = (
+        await session.execute(text("SELECT to_regclass('public.outbound_message_set_keys') IS NOT NULL"))
+    ).scalar_one()
+    if key_registry_exists:
+        await session.execute(text("TRUNCATE TABLE outbound_message_set_keys CASCADE"))
     await session.commit()
 
 

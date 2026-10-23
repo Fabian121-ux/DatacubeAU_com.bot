@@ -14,6 +14,7 @@ from app.models.schema import (
     Contact,
     OutboundMessage,
     OutboundMessageSet,
+    OutboundMessageSetKey,
     OutboundMessageVariant,
     OutboundVariantUsage,
 )
@@ -194,6 +195,20 @@ class OutboundMessageLibraryService:
             if existing.deleted_at is not None:
                 return LibraryResult(False, error=f"set_key {set_key!r} was deleted and cannot be reused")
             return LibraryResult(False, error=f"set_key {set_key!r} already exists")
+
+        # A physical maintenance/retention delete removes the set row but must not
+        # release its permanent identifier. The database trigger is the final guard;
+        # this lookup returns a stable service result before an INSERT is attempted.
+        reserved = (
+            await self.session.execute(
+                select(OutboundMessageSetKey).where(OutboundMessageSetKey.set_key == set_key)
+            )
+        ).scalar_one_or_none()
+        if reserved is not None:
+            return LibraryResult(
+                False,
+                error=f"set_key {set_key!r} is permanently reserved and cannot be reused",
+            )
 
         message_set = OutboundMessageSet(
             set_key=set_key,
