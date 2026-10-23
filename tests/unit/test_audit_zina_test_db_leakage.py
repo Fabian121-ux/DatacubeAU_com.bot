@@ -27,6 +27,18 @@ SCRIPT = ROOT / "scripts" / "audit_zina_test_db_leakage.py"
             "postgresql://postgres:postgres@localhost:5432/datacube_bot_test",
             "PostgreSQL async URL",
         ),
+        (
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test?host=remote.example.com",
+            "query parameters are not allowed",
+        ),
+        (
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test?database=production_db",
+            "query parameters are not allowed",
+        ),
+        (
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test?port=5433",
+            "query parameters are not allowed",
+        ),
         ("", "isolated local datacube_bot_test database"),
     ],
 )

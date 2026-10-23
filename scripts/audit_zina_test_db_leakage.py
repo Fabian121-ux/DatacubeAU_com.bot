@@ -32,6 +32,10 @@ def validated_database_url() -> str:
         )
     if not value.startswith("postgresql+asyncpg://"):
         raise SystemExit("Refusing DB-leakage audit: expected a PostgreSQL async URL.")
+    # SQLAlchemy merges URL query parameters into asyncpg connect arguments. Without
+    # this check, ?host=, ?port=, or ?database= can override the values validated above.
+    if parsed.query:
+        raise SystemExit("Refusing DB-leakage audit: query parameters are not allowed.")
     return value
 
 
