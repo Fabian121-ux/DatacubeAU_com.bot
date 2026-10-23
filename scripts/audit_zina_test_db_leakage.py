@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Fail CI if the full test suite leaves rows in managed cleanup tables.
 
-Restricted to the workflow's disposable local PostgreSQL database. Never use against
-production. Raw tables are included because ORM cleanup cannot see every SQL-migration
+This CLI is CI-only: it refuses to run outside GitHub Actions, then validates that
+DATABASE_URL targets the workflow's disposable local PostgreSQL database. Never use
+against production. Raw tables are included because ORM cleanup cannot see every SQL-migration
 table; optional tables are skipped until their migration exists on the checked-out head.
 """
 from __future__ import annotations
@@ -22,6 +23,14 @@ sys.path.insert(0, str(ROOT / "bot_core"))
 
 
 def validated_database_url() -> str:
+    # This is a CI gate, not a general-purpose database inspection utility. Refuse
+    # local/manual execution before parsing or opening any connection; otherwise a
+    # local port-forward to a database named datacube_bot_test could satisfy the URL
+    # checks below despite not being the disposable service owned by this workflow.
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise SystemExit(
+            "Refusing DB-leakage audit: this check may only run inside GitHub Actions."
+        )
     value = os.environ.get("DATABASE_URL", "")
     parsed = urlparse(value)
     database = parsed.path.lstrip("/")

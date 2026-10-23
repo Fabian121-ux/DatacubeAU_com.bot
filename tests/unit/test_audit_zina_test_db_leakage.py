@@ -56,6 +56,9 @@ def test_leakage_audit_refuses_unsafe_database_urls(
     # Exercise the real CLI entry point, but give it an invalid URL so it must exit
     # before creating an engine or opening any database connection.
     env = os.environ.copy()
+    # Local test runs do not necessarily inherit GitHub Actions' runner marker.
+    # Set it explicitly so these cases exercise URL validation, not the CI-only gate.
+    env["GITHUB_ACTIONS"] = "true"
     env["DATABASE_URL"] = database_url
     completed = subprocess.run(
         [sys.executable, str(SCRIPT)],
@@ -69,3 +72,23 @@ def test_leakage_audit_refuses_unsafe_database_urls(
 
     assert completed.returncode != 0
     assert expected_message in (completed.stdout + completed.stderr)
+
+def test_leakage_audit_refuses_to_run_outside_github_actions() -> None:
+    env = os.environ.copy()
+    env.pop("GITHUB_ACTIONS", None)
+    env["DATABASE_URL"] = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test"
+    )
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "only run inside GitHub Actions" in (completed.stdout + completed.stderr)
+
