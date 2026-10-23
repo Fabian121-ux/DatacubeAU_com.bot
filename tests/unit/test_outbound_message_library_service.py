@@ -2101,6 +2101,7 @@ async def test_set_pairing_trigger_is_installed_by_create_all_alone():
                 tables=[
                     Contact.__table__,
                     OutboundMessage.__table__,
+                    OutboundMessageSetKey.__table__,
                     OutboundMessageSet.__table__,
                     OutboundMessageVariant.__table__,
                     OutboundVariantUsage.__table__,
