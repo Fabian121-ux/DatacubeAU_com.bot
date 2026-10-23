@@ -20,10 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "bot_core"))
 
-from conftest import CLEANUP_MODELS, CLEANUP_RAW_TABLES  # noqa: E402
 
-
-def test_database_url() -> str:
+def validated_database_url() -> str:
     value = os.environ.get("DATABASE_URL", "")
     parsed = urlparse(value)
     database = parsed.path.lstrip("/")
@@ -38,7 +36,12 @@ def test_database_url() -> str:
 
 
 async def main() -> int:
-    engine = create_async_engine(test_database_url(), pool_pre_ping=True)
+    # Validate before importing conftest: it imports application modules, so the
+    # guard must run before any of that import-time configuration can touch a URL.
+    database_url = validated_database_url()
+    from conftest import CLEANUP_MODELS, CLEANUP_RAW_TABLES  # noqa: E402
+
+    engine = create_async_engine(database_url, pool_pre_ping=True)
     leaks: list[tuple[str, int]] = []
     try:
         async with engine.connect() as connection:
