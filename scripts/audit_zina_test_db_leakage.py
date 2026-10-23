@@ -32,6 +32,14 @@ def validated_database_url() -> str:
         )
     if not value.startswith("postgresql+asyncpg://"):
         raise SystemExit("Refusing DB-leakage audit: expected a PostgreSQL async URL.")
+    # The workflow service listens on 5432. Reject alternate direct ports so a local
+    # forwarded listener cannot be mistaken for the disposable service.
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise SystemExit("Refusing DB-leakage audit: DATABASE_URL must use a valid PostgreSQL port.") from exc
+    if port not in {None, 5432}:
+        raise SystemExit("Refusing DB-leakage audit: expected the disposable PostgreSQL port 5432.")
     # SQLAlchemy merges URL query parameters into asyncpg connect arguments. Without
     # this check, ?host=, ?port=, or ?database= can override the values validated above.
     if parsed.query:
