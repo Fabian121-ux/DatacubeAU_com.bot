@@ -185,7 +185,7 @@ docker compose --env-file .env.production build
 docker compose --env-file .env.production up -d
 ```
 
-Only on a **disposable development/test database**, set `RUN_LOCAL_SEEDS=true` on the migration service to explicitly apply `*_local_seed.sql` fixtures. Do not enable this option for production. The normal `002_default_config.sql` seed remains enabled and uses conflict-safe inserts, preserving existing configuration.
+Only on a **disposable development/test database**, pass `RUN_LOCAL_SEEDS=true` explicitly to the migration process to apply `*_local_seed.sql` fixtures. Never add this variable to `.env.production` or enable it in production. The normal `002_default_config.sql` seed is still re-applied on each runner invocation, but uses `ON CONFLICT DO NOTHING`; recorded migrations are checksum-skipped.
 
 10. Run the end-to-end smoke check:
 
