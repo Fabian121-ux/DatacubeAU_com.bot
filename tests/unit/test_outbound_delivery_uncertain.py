@@ -352,3 +352,104 @@ async def test_uncertain_scheduled_action_cannot_be_rereleased_or_replayed_after
     assert persisted_outbound is not None and persisted_outbound.status == "deferred"
     assert persisted_action is not None and persisted_action.status == "queued"
     assert persisted_action.outbound_queue_id == persisted_outbound.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_kind", ["inbound", "scheduled"])
+async def test_contact_remap_after_queue_creation_blocks_external_dispatch(
+    db_session, test_contact, monkeypatch, source_kind
+):
+    """A historical source must not authorize an old chat after Contact remapping."""
+    now = utcnow()
+    old_chat = "222@c.us"
+    new_chat = "333@c.us"
+    text = "must not reach a stale destination"
+    test_contact.whatsapp_id = old_chat
+    test_contact.chat_id = old_chat
+    await db_session.flush()
+
+    metadata = {
+        "delivery_policy": "approval_required",
+        "content_sha256": OutboundAuthorizationService.content_hash(text),
+        "response_category": "normal_reply",
+    }
+    if source_kind == "inbound":
+        inbound = Message(
+            contact_id=test_contact.id,
+            chat_id=old_chat,
+            chat_type="dm",
+            direction="inbound",
+            message_text="original inbound",
+            normalized_text="original inbound",
+            message_type="text",
+        )
+        db_session.add(inbound)
+        await db_session.flush()
+        metadata.update({
+            "inbound_message_id": inbound.id,
+            "contact_id": test_contact.id,
+        })
+
+    queue = OutboundMessage(
+        chat_id=old_chat,
+        message_text=text,
+        formatting_json=metadata,
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.flush()
+
+    if source_kind == "scheduled":
+        action = ScheduledAction(
+            action_type="whatsapp.send_message",
+            target_contact_id=test_contact.id,
+            target_chat_id=old_chat,
+            payload_json={"text": text},
+            timezone="UTC",
+            scheduled_for=now - timedelta(minutes=1),
+            status="queued",
+            is_enabled=True,
+            retry_count=0,
+            max_retries=3,
+            outbound_queue_id=queue.id,
+            idempotency_key=f"test-contact-remap-{source_kind}-{test_contact.id}",
+            metadata_json={},
+        )
+        db_session.add(action)
+        await db_session.flush()
+        queue.formatting_json = {"scheduled_action_id": action.id}
+
+    # Consent is valid for the old destination at queue creation time.
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=old_chat,
+        evidence_ref=f"owner-remap-{source_kind}",
+        owner_identity="OWNER",
+    )
+    # The Contact is then remapped before the final worker fence executes.
+    test_contact.whatsapp_id = new_chat
+    test_contact.chat_id = new_chat
+    await db_session.commit()
+
+    async def _authorized(session, authority, message):
+        return True, "test authority permits this row", None
+
+    async def _safe(self, message, *, now=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    monkeypatch.setattr(background_workers, "_delivery_authorized", _authorized)
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+    client = _RecordingClient()
+
+    processed = await background_workers._deliver_due_outbound_messages(client)
+
+    await db_session.refresh(queue)
+    assert processed == 1
+    assert client.calls == []
+    assert queue.status == "deferred"
+    assert "current contact/chat mapping does not match recipient" in (queue.error_message or "")

@@ -182,11 +182,16 @@ class ContactMessagingConsentService:
             await self.session.execute(
                 select(Contact.id)
                 .where(Contact.id == contact_id)
+                # Validate the current destination while holding the Contact lock.
+                # Historical inbound/scheduled rows can still resolve the old contact
+                # ID after an OWNER edits its WhatsApp mapping; consent for that old
+                # chat must not authorize a send to a no-longer-current destination.
+                .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
                 .with_for_update()
             )
         ).scalar_one_or_none()
         if locked_contact_id is None:
-            return ConsentDecision(False, "durable contact record is missing", contact_id)
+            return ConsentDecision(False, "current contact/chat mapping does not match recipient", contact_id)
 
         row = await self._lock_or_create(contact_id, exact_chat_id, instant)
         if row.status == "opted_out":
