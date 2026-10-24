@@ -1,7 +1,9 @@
+import asyncio
 from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.schema import (
     ContactMessagingConsent,
@@ -192,3 +194,144 @@ async def test_expired_consent_and_wrong_exact_chat_fail_closed(db_session, test
 )
 def test_opt_out_parser_is_conservative_and_deterministic(message, expected):
     assert ContactMessagingConsentService.is_explicit_opt_out_message(message) is expected
+
+
+@pytest.mark.asyncio
+async def test_dispatch_lock_serializes_later_opt_out(db_session, test_contact):
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    service = ContactMessagingConsentService(db_session)
+    await service.grant_for_chat(
+        exact_chat_id=test_contact.whatsapp_id,
+        evidence_ref="owner-attested-race-1",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    queue_id = int(queue.id)
+    contact_id = int(test_contact.id)
+    chat_id = test_contact.whatsapp_id
+    Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with Session() as dispatch_session, Session() as optout_session:
+        dispatch_queue = await dispatch_session.get(OutboundMessage, queue_id)
+        decision = await ContactMessagingConsentService(dispatch_session).authorize_outbound_queue_message(
+            dispatch_queue
+        )
+        assert decision.allowed is True
+
+        started = asyncio.Event()
+
+        async def record_opt_out():
+            started.set()
+            await ContactMessagingConsentService(optout_session).record_inbound_opt_out(
+                contact_id=contact_id,
+                exact_chat_id=chat_id,
+                evidence_ref="inbound-optout-race-1",
+            )
+            await optout_session.commit()
+
+        task = asyncio.create_task(record_opt_out())
+        await started.wait()
+        await asyncio.sleep(0.05)
+        assert not task.done(), "opt-out must wait while the dispatch transaction owns the consent row lock"
+
+        await dispatch_session.commit()
+        await asyncio.wait_for(task, timeout=3)
+
+    db_session.expire_all()
+    row = (
+        await db_session.execute(
+            select(ContactMessagingConsent).where(
+                ContactMessagingConsent.contact_id == contact_id,
+                ContactMessagingConsent.exact_chat_id == chat_id,
+            )
+        )
+    ).scalar_one()
+    assert row.status == "opted_out"
+
+
+@pytest.mark.asyncio
+async def test_opt_out_lock_wins_before_dispatch_authorization(db_session, test_contact):
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    await db_session.commit()
+
+    queue_id = int(queue.id)
+    contact_id = int(test_contact.id)
+    chat_id = test_contact.whatsapp_id
+    Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with Session() as optout_session, Session() as dispatch_session:
+        await ContactMessagingConsentService(optout_session).record_inbound_opt_out(
+            contact_id=contact_id,
+            exact_chat_id=chat_id,
+            evidence_ref="inbound-optout-race-2",
+        )
+
+        started = asyncio.Event()
+
+        async def authorize_dispatch():
+            dispatch_queue = await dispatch_session.get(OutboundMessage, queue_id)
+            started.set()
+            return await ContactMessagingConsentService(dispatch_session).authorize_outbound_queue_message(
+                dispatch_queue
+            )
+
+        task = asyncio.create_task(authorize_dispatch())
+        await started.wait()
+        await asyncio.sleep(0.05)
+        assert not task.done(), "dispatch must wait for the in-flight opt-out transaction"
+
+        await optout_session.commit()
+        decision = await asyncio.wait_for(task, timeout=3)
+        await dispatch_session.commit()
+
+    assert decision.allowed is False
+    assert decision.reason == "contact has opted out"
+
+
+@pytest.mark.asyncio
+async def test_first_insert_race_materializes_one_opted_out_row(db_session, test_contact):
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    await db_session.commit()
+
+    queue_id = int(queue.id)
+    contact_id = int(test_contact.id)
+    chat_id = test_contact.whatsapp_id
+    Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    start = asyncio.Event()
+
+    async def dispatch_first_touch():
+        async with Session() as session:
+            dispatch_queue = await session.get(OutboundMessage, queue_id)
+            await start.wait()
+            decision = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
+                dispatch_queue
+            )
+            await session.commit()
+            return decision
+
+    async def opt_out_first_touch():
+        async with Session() as session:
+            await start.wait()
+            await ContactMessagingConsentService(session).record_inbound_opt_out(
+                contact_id=contact_id,
+                exact_chat_id=chat_id,
+                evidence_ref="inbound-optout-first-insert",
+            )
+            await session.commit()
+
+    dispatch_task = asyncio.create_task(dispatch_first_touch())
+    optout_task = asyncio.create_task(opt_out_first_touch())
+    start.set()
+    decision, _ = await asyncio.gather(dispatch_task, optout_task)
+
+    assert decision.allowed is False
+    db_session.expire_all()
+    rows = (
+        await db_session.execute(
+            select(ContactMessagingConsent).where(
+                ContactMessagingConsent.contact_id == contact_id,
+                ContactMessagingConsent.exact_chat_id == chat_id,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == "opted_out"
