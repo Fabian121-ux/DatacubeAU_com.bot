@@ -30,6 +30,48 @@ if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
   esac
 fi
 
+# The deployment marker is an operator-controlled hint, not proof of where psql
+# will connect. Require a narrowly named disposable database on a local endpoint
+# before allowing fixture upserts, so overriding ZINA_DEPLOYMENT_ENV alone cannot
+# turn the production Compose migration service into a fixture-seed operation.
+if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
+  python3 - "${DATABASE_URL_SYNC}" <<'PY'
+import sys
+from urllib.parse import unquote, urlsplit
+
+try:
+    parsed = urlsplit(sys.argv[1])
+    host = parsed.hostname
+    port = parsed.port
+except ValueError as exc:
+    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC has an invalid host or port.") from exc
+
+if parsed.scheme != "postgresql":
+    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC must use a PostgreSQL URL.")
+if parsed.query or parsed.fragment:
+    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC query parameters/fragments are forbidden.")
+if host not in {"localhost", "127.0.0.1", "::1", "host.docker.internal"}:
+    raise SystemExit("Refusing local fixture seeds: target host must be local or host.docker.internal.")
+if port not in {None, 5432, 5433}:
+    raise SystemExit("Refusing local fixture seeds: target port must be 5432 or 5433.")
+if host == "host.docker.internal" and port != 5433:
+    raise SystemExit("Refusing local fixture seeds: host.docker.internal must use the documented disposable port 5433.")
+
+database = unquote(parsed.path.lstrip("/"))
+allowed_database = (
+    database == "zina_disposable"
+    or database.startswith("zina_seed_policy_")
+    or database.startswith("test_")
+    or database.startswith("dev_")
+)
+if not allowed_database:
+    raise SystemExit(
+        "Refusing local fixture seeds: database name must identify a disposable "
+        "zina_disposable, zina_seed_policy_*, test_*, or dev_* database."
+    )
+PY
+fi
+
 APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
