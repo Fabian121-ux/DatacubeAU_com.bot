@@ -2,7 +2,7 @@
 
 What remains before Fabian can begin controlled real-world WhatsApp testing (see `docs/ZINA_IMPLEMENTATION_ROADMAP.md` for the full per-domain detail behind each line here, and `docs/ZINA_CONTROLLED_TEST_PLAN.md`, once written, for the staged test procedure itself).
 
-Last verified: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d`.
+Last full phase-by-phase audit: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d`. The dated branch-state snapshot below is partial, not a fresh full release audit.
 
 ## Current branch-state snapshot — 2026-10-24 (not a full phase-by-phase audit)
 
@@ -14,7 +14,7 @@ Current open feature PRs and exact-head evidence:
 - **[#49](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49)** head `bcd0033e024b177561b8afd41589afe1897ba4de`: [Tests run 39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) succeeded — 896 passed, 76.67% coverage; this branch applies 001–033 and 036–037, not 034/035. Its permanent-key review thread remains unresolved.
 - **[#50](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50)** head `40f5139cb6c0dbfcee3e26771a06dafa0850bf62`: [Tests run 34312518958](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34312518958) succeeded — 820 passed, 76.44% coverage on 2026-09-09. Two architectural review threads remain unresolved: introduction paths bypass disabled/deleted identity state, and `updated_at = created_at` cannot reliably identify every legacy default for provenance backfill.
 - **[#55](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55)** draft head `2da7283a9a9d0e27a3c25b9a47a86570c3f8c8b2`: [Tests run 40010785239](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40010785239) succeeded — 814 passed, 76.01% coverage; schema and post-test database-leakage audits passed.
-- **[#57](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57)** draft current head `7a77cf0f0b66293857e7441740c30e12a423c605`: [Tests run 40077920202](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40077920202) succeeded on 2026-10-24. The isolated regression verifies local fixture seeds are skipped by default, existing fixture edits survive a second default deployment, and explicit opt-in is restricted to the documented disposable database namespace.
+- **[#57](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57)** draft exact head `492bfdeb056da11cb83b50a9472928fe5c937bd5`: [Tests run 40108792756](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40108792756) succeeded on 2026-10-24. The current runner accepts the exact local `zina_disposable` target or a CI-only `zina_seed_policy_*` name tied to the active GitHub run/attempt, and rejects broad `test_*`/`dev_*` names. This run's summary does not expose a test count or coverage figure, so figures from the prior head are not carried forward.
 
 Migration numbering is now structurally unique across those branches: #48 uses 034, #50 uses 035, and #49 uses 036–037. Temporary integrated validation head `8a2e6cc604f9d744d0f95a9126360b0a4364db9f` passed [run 39940318940](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39940318940): fresh 001–037, installed upgrade 033→037, 956 tests, 77.24% coverage, and zero DB leakage. This is integration evidence, not final-head approval: PR #48 has since advanced beyond the blob set in that run, so the latest source-binding/locator-hardening commits still need to be included in a fresh integrated-chain validation. The run also does not establish a second-run migration-runner no-op, the no-ledger legacy-install path, a separately reported P0 adversarial matrix, or a resolved legacy provenance policy.
 
@@ -27,7 +27,7 @@ Migration numbering is now structurally unique across those branches: #48 uses 0
 - [x] Full pytest suite green
 - [x] Coverage at or above the repository gate (57%; currently 75.12%)
 - [x] DB leakage = 0 across all `CLEANUP_MODELS`/`CLEANUP_RAW_TABLES` tables
-- [x] No known P0 outbound-authority regressions
+- [ ] **No unresolved P0 outbound-authority gaps.** Issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) remains open: exact-contact consent/opt-out must be authoritative and checked at final dispatch, with revocation serialized against the transport attempt.
 - [x] No duplicate outbound delivery paths (single fail-closed fence, confirmed)
 - [x] No unsafe blind retries on uncertain delivery
 - [x] Exactly one router, one scheduler, one tool dispatcher (confirmed, no duplicates found)
@@ -57,4 +57,4 @@ Not yet written. `docs/ZINA_CONTROLLED_TEST_PLAN.md` should be produced once the
 
 ## Live safety reminder
 
-The merged main branch contains the foundational outbound payload-binding fence, but two P0 prerequisites remain: contact consent/opt-out is not yet modeled/enforced by the final authorization path (issue #56), and PR #48's WAHA-origin/view-once source-binding/deletion-fence hardening is still unmerged and requires independent review. Do not infer live-test readiness from the older Phase 0 checkbox. Keep private-media retention OFF, and perform no real WhatsApp sends during unattended engineering.
+The main branch has foundational outbound payload binding and uncertain-send quarantine, but issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) is a real WhatsApp-facing P0 gap: unknown/revoked contact consent and opt-out are not yet enforced by an authoritative, race-safe final dispatch check. PR #48 adds important WAHA-origin and view-once source-binding/deletion-fence hardening, but remains unmerged; its green exact-head CI is not independent review or proof of the latest combined migration chain. Do not infer live-test readiness from the older Phase 0 checkbox. Until issue #56 is resolved, do not run a controlled external-contact test or wire the message library into live producers. Keep private-media retention OFF and perform no real WhatsApp sends during unattended engineering.
