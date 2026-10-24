@@ -32,7 +32,9 @@ class ContactMessagingConsentService:
 
     Missing state is materialized as UNKNOWN and denied. The row lock is intentionally
     held by the caller's transaction until the single outbound transport attempt ends.
-    OWNER automation policies and one-use approvals never override an opt-out.
+    OWNER automation policies, grants, and one-use approvals never override an opt-out.
+    Re-consent after an opt-out is deliberately unsupported until a separately reviewed
+    product policy is approved.
     """
 
     CONSENT_TTL = timedelta(days=90)
@@ -220,26 +222,6 @@ class ContactMessagingConsentService:
         row.revoked_at = None
         row.updated_at = instant
         await self._record_event(row, "granted", "owner", owner_identity.strip(), evidence_ref.strip(), instant)
-        await self.session.flush()
-        return int(contact.id)
-
-    async def reconsent_for_chat(self, *, exact_chat_id: str, evidence_ref: str, owner_identity: str) -> int:
-        self._validate_owner_evidence(exact_chat_id, evidence_ref, owner_identity)
-        contact = await self._resolve_owner_chat(exact_chat_id)
-        instant = utcnow()
-        row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)
-        if row.status != "opted_out":
-            raise ValueError("reconsent is only valid after an explicit contact opt-out")
-        row.status = "consented"
-        row.provenance = "owner_reconsent"
-        row.evidence_ref = evidence_ref.strip()
-        row.granted_by = owner_identity.strip()
-        row.granted_at = instant
-        row.expires_at = instant + self.CONSENT_TTL
-        row.opted_out_at = None
-        row.revoked_at = None
-        row.updated_at = instant
-        await self._record_event(row, "reconsented", "owner", owner_identity.strip(), evidence_ref.strip(), instant)
         await self.session.flush()
         return int(contact.id)
 

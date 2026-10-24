@@ -86,7 +86,7 @@ class ContactMessagingConsentEvent(Base):
     __tablename__ = "contact_messaging_consent_events"
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('granted', 'reconsented', 'revoked', 'opted_out')",
+            "event_type IN ('granted', 'revoked', 'opted_out')",
             name="ck_contact_messaging_consent_event_type",
         ),
         CheckConstraint(

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS contact_messaging_consent_events (
     evidence_ref VARCHAR(240),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_contact_messaging_consent_event_type
-        CHECK (event_type IN ('granted', 'reconsented', 'revoked', 'opted_out')),
+        CHECK (event_type IN ('granted', 'revoked', 'opted_out')),
     CONSTRAINT ck_contact_messaging_consent_event_actor
         CHECK (actor_type IN ('owner', 'contact', 'system'))
 );

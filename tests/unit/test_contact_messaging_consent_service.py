@@ -113,7 +113,7 @@ async def test_inbound_opt_out_overrides_prior_grant_and_is_audited(db_session, 
 
 
 @pytest.mark.asyncio
-async def test_owner_grant_cannot_override_opt_out_without_explicit_reconsent(db_session, test_contact):
+async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
     service = ContactMessagingConsentService(db_session)
     await service.record_inbound_opt_out(
         contact_id=test_contact.id,
@@ -128,14 +128,10 @@ async def test_owner_grant_cannot_override_opt_out_without_explicit_reconsent(db
             owner_identity="OWNER",
         )
 
-    await service.reconsent_for_chat(
-        exact_chat_id=test_contact.whatsapp_id,
-        evidence_ref="contact-reconsent-2026-10-24",
-        owner_identity="OWNER",
-    )
     queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
     decision = await service.authorize_outbound_queue_message(queue)
-    assert decision.allowed is True
+    assert decision.allowed is False
+    assert decision.reason == "contact has opted out"
 
 
 @pytest.mark.asyncio

@@ -273,7 +273,7 @@ class OwnerManagementCommandService:
             parts = query.split(maxsplit=3)
             if len(parts) != 4:
                 raise ValueError(
-                    "usage: .contact consent <grant|revoke|reconsent> <exact-chat-id> <evidence-ref>"
+                    "usage: .contact consent <grant|revoke> <exact-chat-id> <evidence-ref>"
                 )
             _, action, exact_chat_id, evidence_ref = parts
             action = action.lower()
@@ -292,14 +292,7 @@ class OwnerManagementCommandService:
                     owner_identity="OWNER",
                 )
                 return f"Messaging consent revoked for {exact_chat_id}."
-            if action == "reconsent":
-                await consent_service.reconsent_for_chat(
-                    exact_chat_id=exact_chat_id,
-                    evidence_ref=evidence_ref,
-                    owner_identity="OWNER",
-                )
-                return f"Explicit re-consent recorded for {exact_chat_id}; it expires in 90 days."
-            raise ValueError("consent action must be grant, revoke, or reconsent")
+            raise ValueError("consent action must be grant or revoke; opt-outs cannot be overridden")
 
         result = await self.contacts.resolve(query, limit=5)
         if result["status"] == "not_found":
