@@ -9,11 +9,12 @@ Last full phase-by-phase audit: 2026-09-08, against `main` @ `0034587a90bb8d5a79
 - Live `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033. Feature-branch changes are not part of `main`.
 - PR #47 already added Identity Registry `GET`/soft-`DELETE`, search, single-entry fetch, `source`/`entity_type`/`deleted_at` fields, and 14 direct service tests. Phase 1 below is corrected so the next run does not duplicate that work.
 - Phase 0 is **PARTIAL for release readiness**, not fully DONE: issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) tracks missing authoritative, race-safe contact consent/opt-out enforcement at final dispatch. Existing payload binding and uncertain-send quarantine do not replace this gate.
+- PR [#60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) is still draft/unmerged at head `80a714ef05b55d10b8827916245818ba2e3aabc9`; exact-head [Tests run 40120567937](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40120567937) passed 814 tests at 75.88% coverage. It adds contact consent at final dispatch and blocks OWNER revocation from rewriting a terminal opt-out. That CI run applied 001–033 and 038 only; it did not validate the combined 034–038 chain or perform the DB-leakage audit.
 - PR #50 still has unresolved decisions: all introduction paths must honor disabled/deleted identity, and legacy provenance cannot safely be inferred from `updated_at = created_at`. See the corrected Phase 1 next steps and the Release Checklist's dated branch snapshot.
-- Migration numbering across the open feature branches is structurally unique (PR #48: 034; PR #50: 035; PR #49: 036–037), but `main` remains at 033. The earlier integrated validation is not exact-head validation for the latest PR #48 code; a fresh combined-chain/upgrade run is still required.
+- Migration numbering across the current feature branches is structurally unique (#48: 034; #50: 035; #49: 036–037; #60: 038), but `main` remains at 033. The earlier integrated validation covered 001–037 and predates the latest #48 head and migration 038; a fresh exact-head 001–038 empty-database run plus installed 033→038 upgrade is still required.
 - **Current release state: NOT TEST READY.** Do not run an external-contact test or integrate the message library into live producers while issue #56 remains open. No real WAHA action was performed; private-media retention remains OFF.
 
-Only the Phase 0 release blocker, Phase 1, and branch/migration facts above were rechecked on this date. Other phase-by-phase status statements below remain from the 2026-09-08 audit and must not be treated as freshly verified.
+Only the Phase 0 release blocker, Phase 1 blockers, branch/migration facts, and exact-head PR #60 CI evidence above were rechecked on this date. Other phase-by-phase status statements below remain from the 2026-09-08 audit and must not be treated as freshly verified.
 
 Status legend: **DONE** (production-ready per acceptance criteria) / **PARTIAL** (real, wired-in work exists but acceptance criteria are incomplete) / **STUB** (scaffolding only, not load-bearing) / **MISSING** (does not exist).
 
@@ -28,11 +29,11 @@ Status legend: **DONE** (production-ready per acceptance criteria) / **PARTIAL**
 - `.vv`/`.vvopen` command handler: implemented, wired into `CommandControlService`, 92 passing tests. (A stale claim in `docs/VIEW_ONCE_MEDIA_PIPELINE.md` that this was unimplemented was corrected in PR #44.)
 - PrivateMediaArtifact metadata foundation (layer 1 only — no byte storage): merged via PR #44 (`3912cd5`→`0034587`). A follow-up hardening PR #45 fixes two P2 findings from an automated Codex review (unbounded field lengths could crash `flush()`; `transport_provenance` needed a closed allowlist rather than arbitrary text) — see Phase 11.
 
-**Dependencies:** none. **Active PR:** none (PR #45 is a Phase-11 hardening follow-up, tracked there). **Testing status:** full suite green, migration chain 001→032 verified clean, DB leakage 0.
+**Dependencies:** none. **Active PR:** #60 (draft/unmerged P0 contact-consent gate). **Testing status:** exact-head CI for #60 passed 814 tests at 75.88% coverage, but only applied migrations 001–033 plus 038; integrated migration 001–038, installed 033→038 upgrade, and DB leakage remain unverified.
 
 **Release blocker:** issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) tracks authoritative, exact-contact consent/opt-out checks and revocation-vs-dispatch serialization. Unknown/revoked consent and opt-out must fail closed even when an OWNER approval or automation policy exists, unless a separately reviewed re-consent rule is adopted. The final worker needs a per-row fence at the actual dispatch boundary, not only an earlier authorization check.
 
-**Next step:** close issue #56 with PostgreSQL-backed regressions for unknown consent, opt-out, revocation after enqueue/before send, and concurrent revocation/dispatch. Keep the existing single delivery fence; do not add a second sender or run live WhatsApp tests autonomously.
+**Next step:** obtain independent review of #60's OWNER-attested evidence model and terminal opt-out policy; run the exact combined migration chain and installed upgrade; rerun the P0 adversarial matrix and DB-leakage audit; only then decide whether #56 can be closed. Keep the existing single delivery fence; do not add a second sender or run live WhatsApp tests autonomously.
 
 ---
 
