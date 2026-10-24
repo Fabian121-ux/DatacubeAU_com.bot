@@ -52,3 +52,29 @@ def test_deployment_runner_local_seed_policy_on_isolated_postgres() -> None:
         "local fixture seeds are opt-in, default redeploy preserves edits, "
         "and explicit opt-in remains functional"
     ) in output
+
+
+@pytest.mark.parametrize("deployment_env", ["production", "staging", ""])
+def test_local_seed_opt_in_requires_explicit_nonproduction_environment(deployment_env: str) -> None:
+    env = os.environ.copy()
+    env["DATABASE_URL_SYNC"] = "postgresql://postgres:postgres@localhost:5432/datacube_bot_test"
+    env["RUN_LOCAL_SEEDS"] = "true"
+    if deployment_env:
+        env["ZINA_DEPLOYMENT_ENV"] = deployment_env
+    else:
+        env.pop("ZINA_DEPLOYMENT_ENV", None)
+
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "RUN_LOCAL_SEEDS=true requires ZINA_DEPLOYMENT_ENV=development or test" in (
+        result.stdout + result.stderr
+    )

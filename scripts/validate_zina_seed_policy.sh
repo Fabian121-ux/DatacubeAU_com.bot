@@ -62,6 +62,7 @@ run_runner() {
   DATABASE_URL_SYNC="$TEST_URL_SYNC" \
   DATABASE_URL="$TEST_URL_ASYNC" \
   APP_ROOT="$ROOT" \
+  ZINA_DEPLOYMENT_ENV=development \
   RUN_LOCAL_SEEDS="$local_seed_mode" \
     sh "$ROOT/deploy/scripts/run-migrations.sh"
 }

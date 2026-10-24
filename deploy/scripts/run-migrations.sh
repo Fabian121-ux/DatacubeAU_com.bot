@@ -17,6 +17,19 @@ case "$RUN_LOCAL_SEEDS" in
     ;;
 esac
 
+# The production Compose migration service sets this marker explicitly. Even if
+# RUN_LOCAL_SEEDS is accidentally added to .env.production, fixture upserts fail
+# closed unless the operator explicitly overrides the marker for a dev/test run.
+if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
+  case "${ZINA_DEPLOYMENT_ENV:-}" in
+    development|test) ;;
+    *)
+      echo "RUN_LOCAL_SEEDS=true requires ZINA_DEPLOYMENT_ENV=development or test." >&2
+      exit 1
+      ;;
+  esac
+fi
+
 APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"

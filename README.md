@@ -185,7 +185,7 @@ docker compose --env-file .env.production build
 docker compose --env-file .env.production up -d
 ```
 
-Only on a **disposable development/test database**, pass `RUN_LOCAL_SEEDS=true` explicitly to the migration process to apply `*_local_seed.sql` fixtures. Never add this variable to `.env.production` or enable it in production. The normal `002_default_config.sql` seed is still re-applied on each runner invocation, but uses `ON CONFLICT DO NOTHING`; recorded migrations are checksum-skipped.
+Only on a **disposable development/test database**, pass `RUN_LOCAL_SEEDS=true` explicitly and set `ZINA_DEPLOYMENT_ENV=development` (or `test`) to the migration process to apply `*_local_seed.sql` fixtures. Never add the flag to `.env.production` or enable it in production. The production Compose migration service hard-sets `ZINA_DEPLOYMENT_ENV=production`, so an accidentally inherited local-seed flag is rejected. The normal `002_default_config.sql` seed is still re-applied on each runner invocation, but uses `ON CONFLICT DO NOTHING`; recorded migrations are checksum-skipped.
 
 The migration service inherits database URLs from `.env.production`, so an opt-in must explicitly override **both** database URL variables and must target a disposable database that already exists and is reachable from the container. For a disposable PostgreSQL instance exposed on the host at port `5433` (use URL-encoded credentials if needed):
 
@@ -198,6 +198,7 @@ export ZINA_DISPOSABLE_DB_URL='postgresql+asyncpg://zina_dev:REPLACE_WITH_DEV_PA
 docker compose --env-file .env.production run --rm --no-deps \
   --add-host host.docker.internal:host-gateway \
   -e RUN_LOCAL_SEEDS=true \
+  -e ZINA_DEPLOYMENT_ENV=development \
   -e DATABASE_URL_SYNC="$ZINA_DISPOSABLE_DB_URL_SYNC" \
   -e DATABASE_URL="$ZINA_DISPOSABLE_DB_URL" \
   migrate
