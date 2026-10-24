@@ -5,7 +5,8 @@ from datetime import timedelta
 import pytest
 
 from app.models.scheduled_action import ScheduledAction
-from app.models.schema import OutboundMessage
+from app.models.schema import Contact, Message, OutboundMessage
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_authorization_service import AuthorizationDecision, OutboundAuthorizationService
 from app.services.outbound_safety_limit_service import OutboundSafetyDecision
@@ -128,16 +129,36 @@ async def test_waha_send_error_is_delivery_uncertain_not_retrying(db_session, mo
 
 
 @pytest.mark.asyncio
-async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(db_session, monkeypatch):
+async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(db_session, test_contact, monkeypatch):
     now = utcnow()
     text = "> quoted line\n\n*Important* uses `inline code`.\n\nFinal paragraph."
+    # This regression now uses real durable source/contact rows and explicit consent;
+    # the worker must not treat mocked authority as a substitute for consent state.
+    test_contact.whatsapp_id = "222@c.us"
+    test_contact.chat_id = "222@c.us"
+    inbound = Message(
+        contact_id=test_contact.id,
+        chat_id="222@c.us",
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(inbound)
+    await db_session.flush()
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id="222@c.us",
+        evidence_ref="owner-attested-2026-10-24",
+        owner_identity="OWNER",
+    )
     row = OutboundMessage(
         chat_id="222@c.us",
         message_text=text,
         formatting_json={
             "delivery_policy": "approval_required",
-            "inbound_message_id": 41,
-            "contact_id": 42,
+            "inbound_message_id": inbound.id,
+            "contact_id": test_contact.id,
             "content_sha256": OutboundAuthorizationService.content_hash(text),
             "response_category": "normal_reply",
         },
