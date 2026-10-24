@@ -103,6 +103,10 @@ def test_local_seed_opt_in_requires_explicit_nonproduction_environment(deploymen
             "database name must identify a disposable",
         ),
         (
+            "postgresql://postgres:postgres@localhost:5432/zina_seed_policy_production",
+            "database name must identify a disposable",
+        ),
+        (
             "postgresql://postgres:postgres@localhost:5432/zina_disposable?host=prod.example",
             "query parameters/fragments are forbidden",
         ),
@@ -134,4 +138,27 @@ def test_local_seed_opt_in_rejects_non_disposable_database_targets(
 
     assert result.returncode != 0
     assert expected_message in (result.stdout + result.stderr)
+
+
+def test_ci_seed_namespace_is_refused_outside_github_actions() -> None:
+    env = os.environ.copy()
+    env.pop("GITHUB_ACTIONS", None)
+    env["GITHUB_RUN_ID"] = "123"
+    env["GITHUB_RUN_ATTEMPT"] = "1"
+    env["DATABASE_URL_SYNC"] = "postgresql://postgres:postgres@localhost:5432/zina_seed_policy_123_1"
+    env["RUN_LOCAL_SEEDS"] = "true"
+    env["ZINA_DEPLOYMENT_ENV"] = "development"
+
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "database name must identify a disposable" in (result.stdout + result.stderr)
 

@@ -36,6 +36,8 @@ fi
 # turn the production Compose migration service into a fixture-seed operation.
 if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
   python3 - "${DATABASE_URL_SYNC}" <<'PY'
+import os
+import re
 import sys
 from urllib.parse import unquote, urlsplit
 
@@ -58,14 +60,30 @@ if host == "host.docker.internal" and port != 5433:
     raise SystemExit("Refusing local fixture seeds: host.docker.internal must use the documented disposable port 5433.")
 
 database = unquote(parsed.path.lstrip("/"))
-allowed_database = (
-    database == "zina_disposable"
-    or database.startswith("zina_seed_policy_")
+is_local_disposable = database == "zina_disposable"
+
+# The CI namespace is not a generic prefix allowlist. Bind it to this exact
+# workflow run/attempt so a misleading name such as zina_seed_policy_production
+# cannot opt in outside Actions or point at another run's database.
+run_id = os.environ.get("GITHUB_RUN_ID", "")
+run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+expected_ci_database = (
+    f"zina_seed_policy_{run_id}_{run_attempt}"
+    if os.environ.get("GITHUB_ACTIONS") == "true"
+    and run_id.isdecimal()
+    and run_attempt.isdecimal()
+    else ""
 )
-if not allowed_database:
+is_current_ci_disposable = bool(
+    expected_ci_database
+    and re.fullmatch(r"zina_seed_policy_[0-9]+_[0-9]+", database)
+    and database == expected_ci_database
+)
+if not (is_local_disposable or is_current_ci_disposable):
     raise SystemExit(
         "Refusing local fixture seeds: database name must identify a disposable "
-        "zina_disposable or zina_seed_policy_* database."
+        "zina_disposable database or this exact GitHub Actions run's "
+        "zina_seed_policy_<run_id>_<run_attempt> database."
     )
 PY
 fi
