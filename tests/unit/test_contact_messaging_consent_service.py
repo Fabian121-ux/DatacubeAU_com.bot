@@ -123,6 +123,15 @@ async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
         evidence_ref="inbound-message-123",
     )
 
+    # An OWNER revoke must not rewrite a contact's terminal opt-out into a
+    # state from which a later grant can bypass explicit contact re-consent.
+    with pytest.raises(ValueError, match="terminal opt-out"):
+        await service.revoke_for_chat(
+            exact_chat_id=test_contact.whatsapp_id,
+            evidence_ref="owner-revocation-after-optout",
+            owner_identity="OWNER",
+        )
+
     with pytest.raises(ValueError, match="explicit contact re-consent"):
         await service.grant_for_chat(
             exact_chat_id=test_contact.whatsapp_id,
