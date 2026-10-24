@@ -171,6 +171,44 @@ async def test_duplicate_delivery_of_one_source_creates_one_row(db_session):
 
 
 @pytest.mark.asyncio
+async def test_reused_source_id_from_another_chat_fails_closed_without_duplicate_artifact(db_session):
+    media = {"url": "http://waha:3000/api/files/a.jpg", "mimetype": "image/jpeg", "type": "image"}
+    await _observe(db_session, _payload(isViewOnce=True, media=media), chat_id=CHAT)
+
+    other_chat = "2348000000009@c.us"
+    conflicting_payload = _payload(
+        source_id="SRC-1",
+        chatId=other_chat,
+        **{"from": other_chat},
+        isViewOnce=True,
+        media=media,
+    )
+    result = await _observe(db_session, conflicting_payload, chat_id=other_chat)
+
+    assert result.recorded is False
+    assert "different chat" in result.reason
+
+    metadata = (
+        await db_session.execute(
+            text(
+                "SELECT source_chat_id, media_type, media_mime, deleted_at "
+                "FROM view_once_media_metadata WHERE source_message_id = 'SRC-1'"
+            )
+        )
+    ).mappings().one()
+    assert metadata["source_chat_id"] == CHAT
+    assert metadata["deleted_at"] is None
+
+    artifacts = (
+        await db_session.execute(
+            select(PrivateMediaArtifact).where(PrivateMediaArtifact.source_message_id == "SRC-1")
+        )
+    ).scalars().all()
+    assert len(artifacts) == 1
+    assert artifacts[0].source_chat_id == CHAT
+
+
+@pytest.mark.asyncio
 async def test_distinct_sources_create_distinct_rows(db_session):
     for source_id in ("SRC-A", "SRC-B"):
         await _observe(db_session, _payload(source_id=source_id, isViewOnce=True, media={"url": "http://x/a.jpg"}))

@@ -112,7 +112,7 @@ class ViewOnceObservationService:
         # tombstone check, which only protects a source that already has an artifact
         # row to find.
         try:
-            already_deleted = await self._is_deleted(canonical_id)
+            source_state = await self._source_state(canonical_id, chat_id)
         except Exception as exc:  # noqa: BLE001 - observation must never break ingress
             log_event(
                 logger,
@@ -121,9 +121,38 @@ class ViewOnceObservationService:
                 source_message_id=canonical_id,
                 error=str(exc),
             )
-            already_deleted = True  # fail closed: skip the artifact write, don't guess
+            source_state = "unavailable"  # fail closed: skip the artifact write, don't guess
 
-        if not already_deleted:
+        # source_message_id is the legacy metadata table's primary key. A duplicate
+        # delivery that presents the same ID under another chat must not mutate that
+        # row or create a second artifact under a different (chat, message) pair.
+        if source_state == "chat_mismatch":
+            log_event(
+                logger,
+                logging.WARNING,
+                "view_once_observation_source_identity_conflict",
+                source_message_id=canonical_id,
+                source_chat_id=chat_id,
+            )
+            return ViewOnceObservation(
+                False,
+                self.STATE_UNAVAILABLE,
+                "source message ID is already bound to a different chat",
+            )
+        if source_state == "missing":
+            log_event(
+                logger,
+                logging.WARNING,
+                "view_once_observation_source_identity_unavailable",
+                source_message_id=canonical_id,
+            )
+            return ViewOnceObservation(
+                False,
+                self.STATE_UNAVAILABLE,
+                "authoritative source metadata row is missing",
+            )
+
+        if source_state == "active":
             try:
                 # A SAVEPOINT, not the outer transaction: a failure here (including a
                 # genuine unique-constraint race on ux_private_media_artifacts_source)
@@ -170,19 +199,35 @@ class ViewOnceObservationService:
         )
         return ViewOnceObservation(True, state, capability.reason)
 
-    async def _is_deleted(self, source_message_id: str) -> bool:
-        """True only when a row exists for this source and is tombstoned.
+    async def _source_state(self, source_message_id: str, source_chat_id: str) -> str:
+        """Return the locked authoritative lifecycle/identity state for one source.
 
-        No row at all (never observed before) is not deletion -- it must fall through
-        to a normal first-time creation, not be treated as fail-closed.
+        The legacy metadata table keys rows by message ID alone. The chat ID is part of
+        the source identity nonetheless: a conflicting duplicate must not create a
+        second PrivateMediaArtifact under a different chat. FOR UPDATE keeps deletion
+        and source-identity checks serialized with the following metadata-only artifact
+        write until the caller's transaction commits.
         """
         row = (
             await self.session.execute(
-                text("SELECT deleted_at FROM view_once_media_metadata WHERE source_message_id = :source_message_id"),
+                text(
+                    """
+                    SELECT source_chat_id, deleted_at
+                    FROM view_once_media_metadata
+                    WHERE source_message_id = :source_message_id
+                    FOR UPDATE
+                    """
+                ),
                 {"source_message_id": source_message_id},
             )
         ).mappings().first()
-        return row is not None and row["deleted_at"] is not None
+        if row is None:
+            return "missing"
+        if row["deleted_at"] is not None:
+            return "deleted"
+        if str(row["source_chat_id"] or "") != source_chat_id:
+            return "chat_mismatch"
+        return "active"
 
     async def _upsert(
         self,
@@ -227,6 +272,7 @@ class ViewOnceObservationService:
                     transport_available = EXCLUDED.transport_available,
                     last_observed_at = now()
                 WHERE view_once_media_metadata.deleted_at IS NULL
+                  AND view_once_media_metadata.source_chat_id = EXCLUDED.source_chat_id
                 """
             ),
             {
