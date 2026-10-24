@@ -2,7 +2,18 @@
 
 Status: engineering execution plan for the "Zina Hourly Engineering" autonomous routine. This is **not** a runtime source of truth — it describes what to build and in what order, not what Zina answers with at runtime. Every claim here was verified against the actual codebase at the commit noted below; a later run must re-verify before trusting any status marked here, per this doc's own rule.
 
-Last verified: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d` (post-merge of PR #44), by a full three-way codebase audit (three parallel Explore passes covering Identity/Memory/FAQ/Knowledge, Command Center/Dashboard/Router/Tools/Scheduled Actions, and Project Intelligence/Internet/Observability).
+Last full phase-by-phase audit: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d` (post-merge of PR #44), by a full three-way codebase audit. The dated note below is a deliberately partial correction, not a replacement for that full audit.
+
+## Partial current-state verification — 2026-10-24 (not a full re-audit)
+
+- Live `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033. Feature-branch changes are not part of `main`.
+- PR #47 already added Identity Registry `GET`/soft-`DELETE`, search, single-entry fetch, `source`/`entity_type`/`deleted_at` fields, and 14 direct service tests. Phase 1 below is corrected so the next run does not duplicate that work.
+- Phase 0 is **PARTIAL for release readiness**, not fully DONE: issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) tracks missing authoritative, race-safe contact consent/opt-out enforcement at final dispatch. Existing payload binding and uncertain-send quarantine do not replace this gate.
+- PR #50 still has unresolved decisions: all introduction paths must honor disabled/deleted identity, and legacy provenance cannot safely be inferred from `updated_at = created_at`. See the corrected Phase 1 next steps and the Release Checklist's dated branch snapshot.
+- Migration numbering across the open feature branches is structurally unique (PR #48: 034; PR #50: 035; PR #49: 036–037), but `main` remains at 033. The earlier integrated validation is not exact-head validation for the latest PR #48 code; a fresh combined-chain/upgrade run is still required.
+- **Current release state: NOT TEST READY.** Do not run an external-contact test or integrate the message library into live producers while issue #56 remains open. No real WAHA action was performed; private-media retention remains OFF.
+
+Only the Phase 0 release blocker, Phase 1, and branch/migration facts above were rechecked on this date. Other phase-by-phase status statements below remain from the 2026-09-08 audit and must not be treated as freshly verified.
 
 Status legend: **DONE** (production-ready per acceptance criteria) / **PARTIAL** (real, wired-in work exists but acceptance criteria are incomplete) / **STUB** (scaffolding only, not load-bearing) / **MISSING** (does not exist).
 
@@ -10,7 +21,7 @@ Status legend: **DONE** (production-ready per acceptance criteria) / **PARTIAL**
 
 ## Phase 0 — Foundational Safety Work
 
-**Status: DONE.**
+**Status: PARTIAL for release readiness — the core outbound fence is present, but a required contact-policy gate remains open.**
 
 - P0 outbound authority (owner + external payload binding, recipient/text/media-locator/kind/caption/MIME/filename all bound into the authorization digest): merged via PR #43 (`05be9d9`), post-merge CI green.
 - View-once/private-media pipeline reconciled against P0 and merged via PR #41 (`0c312f2`), post-merge CI green (main @ `7846331`).
@@ -19,40 +30,44 @@ Status legend: **DONE** (production-ready per acceptance criteria) / **PARTIAL**
 
 **Dependencies:** none. **Active PR:** none (PR #45 is a Phase-11 hardening follow-up, tracked there). **Testing status:** full suite green, migration chain 001→032 verified clean, DB leakage 0.
 
-**Next step:** none — re-verify each run that main is still green before starting new work; this phase does not get new features, only regressions if something breaks it.
+**Release blocker:** issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) tracks authoritative, exact-contact consent/opt-out checks and revocation-vs-dispatch serialization. Unknown/revoked consent and opt-out must fail closed even when an OWNER approval or automation policy exists, unless a separately reviewed re-consent rule is adopted. The final worker needs a per-row fence at the actual dispatch boundary, not only an earlier authorization check.
+
+**Next step:** close issue #56 with PostgreSQL-backed regressions for unknown consent, opt-out, revocation after enqueue/before send, and concurrent revocation/dispatch. Keep the existing single delivery fence; do not add a second sender or run live WhatsApp tests autonomously.
 
 ---
 
 ## Phase 1 — Identity Registry
 
-**Status: PARTIAL, stub-leaning.**
+**Status: PARTIAL — lifecycle API/service support and direct tests are present on main; dashboard management, dedicated create semantics, a real relationship model, and consistent introduction behavior remain incomplete.**
 
-Files: `services/identity_registry_service.py` (239 lines), model `IdentityRegistryEntry` (`schema.py:450`), API in `api/admin.py:1520-1568`. Wired into the real reply path (`bot_config_service.identity_reply()` → `reply_planner.py`), so it's not dead code — but the surrounding CRUD is thin and the matching logic is essentially untested.
+Files: `bot_core/app/services/identity_registry_service.py`, `bot_core/app/models/schema.py` (`IdentityRegistryEntry`), and `bot_core/app/api/admin.py`. Current main baseline: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; migration 033 is integrated.
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Create | PARTIAL | Upsert-only (`upsert_identity_registry`); no dedicated create; `ensure_defaults_from_profile()` auto-seeds 8 hardcoded entries |
-| Read | PARTIAL | Only returns `is_enabled=True` rows; no fetch-by-key, no disabled-entry visibility |
-| Update | DONE | Same upsert endpoint |
-| Delete | MISSING | No delete route or service method anywhere |
-| Disable | DONE | `payload.enabled` toggle in upsert |
-| Search | MISSING | No query/filter param |
-| Provenance/source | MISSING | No column on the model at all |
-| Timestamps | DONE | `created_at`/`updated_at` |
-| Aliases | DONE | JSON `aliases` column, used in scoring |
-| Entity type | MISSING | Only a free-text `category` string |
-| Relationships | MISSING | `entities` is a flat JSON list, not a real relationship structure |
-| Dashboard | STUB | Only a read-only count on the Identity Status panel; no management UI |
-| Tests | MISSING | No `test_identity_registry_service.py`; existing tests stub out `identity_reply()` entirely, so the real `score_entry`/`_special_answer` logic is unexercised (matches the 16% coverage figure) |
+| Create | PARTIAL | `POST /admin/identity/registry` is an upsert; there is no separate create operation that rejects duplicate keys. |
+| Read | PARTIAL | List supports `q` and `include_disabled`; single-key GET includes disabled entries but excludes tombstoned rows. |
+| Update | DONE | Existing upsert endpoint updates an entry. |
+| Delete | DONE | `DELETE /admin/identity/registry/{registry_key}` tombstones `deleted_at`, disables the row, and audits the operation. |
+| Disable | DONE | Enabled state is managed through the upsert; disabled entries remain inspectable through search/single-key GET. |
+| Search | DONE | Substring search across key, name, category, and description, with optional disabled entries. |
+| Provenance/source | PARTIAL | The `source` column exists and newly seeded defaults use `system_default`; pre-migration rows can remain NULL until PR #50's backfill policy is resolved. |
+| Timestamps | PARTIAL | `created_at`/`updated_at` exist, but current main's scored `answer()` path updates `updated_at` on reads. It is not a reliable edit-history or provenance signal. |
+| Aliases | DONE | JSON aliases are used by identity scoring. |
+| Entity type | PARTIAL | Typed `entity_type` exists; legacy-row backfill remains unmerged and must not rely on the timestamp heuristic. |
+| Relationships | MISSING | `entities` remains a flat JSON list, not a relational entity model. |
+| Dashboard | STUB | Only a read-only count is exposed; there is no registry management UI. |
+| Tests | PARTIAL | 14 direct tests cover seeding/idempotency, special and scored answers, scoring, reference resolution, single fetch, search, and tombstone behavior. Dashboard and every introduction caller are not covered by this service suite. |
 
-**Acceptance criteria (from mission):** Create, Read, Update, Delete, Disable, Search, provenance/source, timestamps, aliases, entity type, relationships where appropriate; dashboard management; tests; conversation integration (already present).
+**Acceptance criteria:** dedicated create/read/update/delete/disable/search, trustworthy provenance, timestamps, aliases, entity type, relationships where appropriate, dashboard management, direct tests, and consistent conversation integration.
 
-**Dependencies:** none blocking. **Active PR:** none yet. **Blocked work:** none.
+**Current blockers and next steps:**
 
-**Next implementation step:** Add `source`/`provenance` and a typed `entity_type` column (migration), a dedicated `create()` that rejects on duplicate `registry_key` instead of silently upserting, a `delete()` (tombstone, consistent with the codebase's soft-delete convention elsewhere), single-entry fetch-by-key, and a search/filter endpoint. Add a real test suite exercising `score_entry`/`_special_answer` directly, not through a stubbed mock. This is the highest-priority gap after Phase 0 per the mission's own phase ordering.
+1. **Fix introduction lifecycle at one authoritative boundary.** PR #50's unresolved finding is valid: `BotConfigService.introduction_reply()` still builds the configured introduction directly, while first-time greetings, `/start`, and identity-like reply rules can call it without consulting the registry. Route those paths through a shared tombstone/disable-aware decision; add regressions for each caller. A guard confined to `identity_reply()` is insufficient.
+2. **Choose a safe legacy-provenance policy before merging migration 035.** The current `updated_at = created_at` heuristic cannot prove a row was never edited: historical scored reads already advanced `updated_at` before migration 033 existed. Recommended safe default: preserve ambiguous pre-existing NULL provenance as `legacy_unknown`; set `system_default` only for new defaults inserted by the current seeder. Backfill `entity_type` separately from provenance where the key mapping is trustworthy. Human approval is required before changing this migration's semantics.
+3. After the P0 contact-consent gate in issue #56 and the two PR #50 decisions, implement dashboard CRUD and decide whether a dedicated create endpoint is needed. Do not repeat delete/search/single-fetch/provenance-column work already present on main.
 
 ---
-
+ 
 ## Phase 2 — Memory Engine
 
 **Status: PARTIAL, close to production-ready.**
