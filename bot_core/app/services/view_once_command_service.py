@@ -440,12 +440,14 @@ class ViewOnceCommandService:
         # failed -- otherwise a repeat `.vv delete` on an already-deleted source would
         # never try again. Same non-fatal posture as the two recording call sites: this
         # must never turn a successful metadata delete into a failure.
+        artifact_cleanup_ok = True
         try:
             async with self.session.begin_nested():
                 artifact_result = await PrivateMediaArtifactService(self.session).delete_by_source(
                     record["source_chat_id"], quoted_id, request_id=request_id
                 )
             if not artifact_result.ok:
+                artifact_cleanup_ok = False
                 log_event(
                     logger,
                     logging.WARNING,
@@ -453,13 +455,26 @@ class ViewOnceCommandService:
                     source_message_id=quoted_id,
                     error=artifact_result.error,
                 )
-        except Exception as exc:  # noqa: BLE001 - artifact cleanup must never break the delete
+        except Exception as exc:  # noqa: BLE001 - artifact cleanup must never break the primary tombstone
+            artifact_cleanup_ok = False
             log_event(
                 logger,
                 logging.WARNING,
                 "private_media_artifact_observation_failed",
                 source_message_id=quoted_id,
                 error=str(exc),
+            )
+
+        # The legacy source tombstone is authoritative for blocking future returns,
+        # but the linked artifact table may still contain contact/source metadata after
+        # a transient cleanup failure. Do not tell the OWNER that all metadata was
+        # deleted unless both stores confirm it. A repeat .vv delete is idempotent and
+        # retries the artifact tombstone without re-enabling the source.
+        if not artifact_cleanup_ok:
+            return self._reply(
+                "The view-once item is disabled and cannot be opened, but cleanup of its "
+                "linked artifact metadata did not complete. No media bytes were stored. "
+                "Please retry `.vv delete`; if it repeats, the audit log needs review."
             )
 
         if already_deleted:
