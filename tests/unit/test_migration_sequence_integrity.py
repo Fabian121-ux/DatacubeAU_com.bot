@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "bot_core" / "migrations"
-MIGRATION_NAME = re.compile(r"(?P<number>\\d{3})_[a-z0-9_]+\\.sql\\Z")
+MIGRATION_NAME = re.compile(r"(?P<number>\d{3})_[a-z0-9_]+\.sql\Z")
 
 
 def test_sql_migration_numbers_are_unique_and_contiguous() -> None:
