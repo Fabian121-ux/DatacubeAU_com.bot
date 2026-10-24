@@ -392,3 +392,32 @@ async def test_first_insert_race_materializes_one_opted_out_row(db_session, test
     ).scalars().all()
     assert len(rows) == 1
     assert rows[0].status == "opted_out"
+
+@pytest.mark.asyncio
+async def test_inbound_opt_out_rejects_contact_chat_mismatch_without_mutation(db_session, test_contact):
+    service = ContactMessagingConsentService(db_session)
+
+    with pytest.raises(ValueError, match="exact chat ID does not match durable contact"):
+        await service.record_inbound_opt_out(
+            contact_id=test_contact.id,
+            exact_chat_id="15550000099@c.us",
+            evidence_ref="inbound-message-mismatch",
+        )
+
+    rows = (
+        await db_session.execute(
+            select(ContactMessagingConsent).where(
+                ContactMessagingConsent.contact_id == test_contact.id
+            )
+        )
+    ).scalars().all()
+    events = (
+        await db_session.execute(
+            select(ContactMessagingConsentEvent).where(
+                ContactMessagingConsent.contact_id == test_contact.id
+            )
+        )
+    ).scalars().all()
+    assert rows == []
+    assert events == []
+

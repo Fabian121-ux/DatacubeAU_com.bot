@@ -269,6 +269,26 @@ class ContactMessagingConsentService:
             raise ValueError("contact opt-out must be tied to an exact direct-message chat")
         if contact_id <= 0 or not str(evidence_ref or "").strip():
             raise ValueError("contact ID and inbound evidence reference are required")
+
+        # Keep the lock order inside this authority service, not only in InboundRouter.
+        # Every caller must lock the durable Contact row before touching the consent row,
+        # and the source chat must actually belong to that contact.
+        locked_contact_id = (
+            await self.session.execute(
+                select(Contact.id)
+                .where(Contact.id == contact_id)
+                .where(
+                    or_(
+                        Contact.whatsapp_id == exact_chat_id,
+                        Contact.chat_id == exact_chat_id,
+                    )
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_contact_id is None:
+            raise ValueError("exact chat ID does not match durable contact")
+
         instant = utcnow()
         row = await self._lock_or_create(contact_id, exact_chat_id, instant)
         row.status = "opted_out"
