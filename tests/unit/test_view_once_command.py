@@ -211,6 +211,19 @@ async def test_unobserved_source_is_not_opened(db_session):
 
 
 @pytest.mark.asyncio
+async def test_open_without_exact_command_message_id_is_not_queued(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    result = await _run(db_session, _event(command_id=None), owner)
+
+    assert result.reply_text is not None
+    assert "no exact message ID" in result.reply_text
+    assert await _outbound(db_session) == []
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_quoted_evidence_disagreeing_with_source_is_denied(db_session):
     """The detector's own ID must match the quoted source it is attached to."""
     owner = await _seed_owner(db_session)

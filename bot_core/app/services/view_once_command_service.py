@@ -119,6 +119,14 @@ class ViewOnceCommandService:
         if record["deleted_at"] is not None:
             return self._reply("Zina's metadata for this item was deleted, so it can no longer be opened.")
 
+        # The worker's final fence also rejects a missing command ID, but refusing here
+        # avoids persisting a queue row that can never be dispatched and cannot be
+        # deduplicated across webhook retries. Bind every return to one exact WAHA event.
+        if not isinstance(transport_message_id, str) or not transport_message_id.strip():
+            return self._reply(
+                "The WhatsApp command has no exact message ID, so this media was not queued."
+            )
+
         # Re-derive evidence from the live command payload rather than trusting the
         # stored state. Conflicting or downgraded evidence must fail closed here too.
         capability = ViewOnceCapabilityService.inspect_reply_snapshot(getattr(message, "payload", None))
