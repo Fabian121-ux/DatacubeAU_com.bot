@@ -173,6 +173,21 @@ class ContactMessagingConsentService:
         contact_id = await self._resolve_contact_id(message)
         if contact_id is None:
             return ConsentDecision(False, "exact durable contact/chat mapping is missing")
+
+        # InboundRouter locks the Contact row before recording an opt-out, then locks
+        # the consent row. Acquire the same locks in the same order here. Otherwise a
+        # dispatch can lock consent first while an already-arrived STOP is blocked on
+        # that consent row, allowing the send to overtake the opt-out transaction.
+        locked_contact_id = (
+            await self.session.execute(
+                select(Contact.id)
+                .where(Contact.id == contact_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_contact_id is None:
+            return ConsentDecision(False, "durable contact record is missing", contact_id)
+
         row = await self._lock_or_create(contact_id, exact_chat_id, instant)
         if row.status == "opted_out":
             return ConsentDecision(False, "contact has opted out", contact_id, int(row.id))
