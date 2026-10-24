@@ -61,13 +61,11 @@ database = unquote(parsed.path.lstrip("/"))
 allowed_database = (
     database == "zina_disposable"
     or database.startswith("zina_seed_policy_")
-    or database.startswith("test_")
-    or database.startswith("dev_")
 )
 if not allowed_database:
     raise SystemExit(
         "Refusing local fixture seeds: database name must identify a disposable "
-        "zina_disposable, zina_seed_policy_*, test_*, or dev_* database."
+        "zina_disposable or zina_seed_policy_* database."
     )
 PY
 fi
