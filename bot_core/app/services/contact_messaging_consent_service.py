@@ -230,6 +230,8 @@ class ContactMessagingConsentService:
         contact = await self._resolve_owner_chat(exact_chat_id)
         instant = utcnow()
         row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)
+        if row.status == "opted_out":
+            raise ValueError("contact opted out; owner revocation cannot override terminal opt-out")
         row.status = "revoked"
         row.provenance = "owner_revocation"
         row.evidence_ref = evidence_ref.strip()
