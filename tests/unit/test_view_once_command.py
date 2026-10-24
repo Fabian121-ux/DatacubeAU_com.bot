@@ -1072,3 +1072,39 @@ async def test_owner_delete_racing_with_open_cannot_leave_active_artifact(db_ses
         if delete_task is not None and not delete_task.done():
             await asyncio.gather(delete_task, return_exceptions=True)
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_replayed_command_id_with_different_source_fails_closed_without_new_artifact(db_session):
+    """A reused WAHA command ID must not attach a different quoted source to the old return."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, source_id="SRC-1")
+    first = await _run(
+        db_session,
+        _event(command_id="VV-REPLAY-CONFLICT", quoted_id="SRC-1"),
+        owner,
+    )
+    assert first.outbound_queue_id is not None
+
+    await _seed_metadata(db_session, source_id="SRC-2")
+    replay = await _run(
+        db_session,
+        _event(command_id="VV-REPLAY-CONFLICT", quoted_id="SRC-2"),
+        owner,
+    )
+
+    assert replay.outbound_queue_id is None
+    assert "already bound" in (replay.reply_text or "").lower()
+    assert len(await _outbound(db_session)) == 1
+
+    artifacts = (
+        await db_session.execute(select(PrivateMediaArtifact).order_by(PrivateMediaArtifact.source_message_id))
+    ).scalars().all()
+    assert [artifact.source_message_id for artifact in artifacts] == ["SRC-1"]
+
+    conflicts = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "view_once_return_replay_conflict")
+        )
+    ).scalars().all()
+    assert len(conflicts) == 1

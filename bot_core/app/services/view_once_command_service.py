@@ -200,11 +200,48 @@ class ViewOnceCommandService:
 
         existing = await self._existing_return(transport_message_id)
         if existing is not None:
-            # A command retry (same transport_message_id) must still reconcile
-            # provenance: if the first attempt's own artifact write transiently
-            # failed, this retry is otherwise the only chance to create or backfill
-            # it, since _existing_return's dedupe would return before ever reaching
-            # that call again.
+            # The idempotency key is the WAHA command ID, but that alone is not proof
+            # that a replay still refers to the same quoted source. A malformed or
+            # conflicting replay must not attach new provenance to the old queue row.
+            existing_row = await self.session.get(OutboundMessage, existing)
+            existing_metadata = (
+                existing_row.formatting_json
+                if existing_row is not None and isinstance(existing_row.formatting_json, dict)
+                else {}
+            )
+            existing_matches = (
+                existing_row is not None
+                and existing_row.chat_id == owner_chat_id
+                and existing_metadata.get("source_message_id") == quoted_id
+                and str(existing_metadata.get("source_chat_id") or "")
+                == str(record["source_chat_id"] or "")
+                and existing_metadata.get("command_message_id") == transport_message_id
+                and OutboundAuthorizationService.owner_payload_matches(existing_row)
+            )
+            if not existing_matches:
+                self.session.add(
+                    AuditLog(
+                        action="view_once_return_replay_conflict",
+                        entity_type="outbound_queue",
+                        entity_id=str(existing),
+                        details_json={
+                            "request_id": request_id,
+                            "command_message_id": transport_message_id,
+                            "requested_source_message_id": quoted_id,
+                            "requested_source_chat_id": record["source_chat_id"],
+                            "existing_source_message_id": existing_metadata.get("source_message_id"),
+                            "existing_source_chat_id": existing_metadata.get("source_chat_id"),
+                        },
+                    )
+                )
+                await self.session.flush()
+                return self._reply(
+                    "This WhatsApp command ID is already bound to a different or invalid media return; "
+                    "no additional media was queued."
+                )
+
+            # A command retry must still reconcile provenance, but only after proving
+            # it is an exact replay of the original source and stamped owner payload.
             await self._record_artifact(
                 quoted_id=quoted_id,
                 record=record,
