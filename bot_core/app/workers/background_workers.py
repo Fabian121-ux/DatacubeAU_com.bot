@@ -216,6 +216,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             # row if absent, then SELECTs it FOR UPDATE. Keep this transaction open through
             # the single WAHA attempt so grant/revoke/opt-out serialize on the same key.
             # OWNER self-DM remains on its existing exact-recipient + payload binding.
+            if not _is_owner_chat_id(message.chat_id):
                 consent = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
                     message,
                     now=utcnow(),
