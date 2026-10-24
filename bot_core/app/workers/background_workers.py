@@ -187,12 +187,35 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
-            # This is the final external-contact fence, after the queue batch has been
-            # committed as "sending". The consent service materializes an UNKNOWN row
-            # if absent, then SELECTs it FOR UPDATE. Keep this transaction open through
+            # The initial batch check prevents unauthorized rows from being claimed.
+            # Re-lock and refresh each row after that batch commit so a payload, approval,
+            # policy, or scheduled-action mutation between claim and dispatch cannot use
+            # the stale in-memory object to reach WAHA.
+            await session.refresh(message, with_for_update=True)
+            if message.status != "sending":
+                await session.rollback()
+                continue
+            final_allowed, final_reason, final_approval_id = await _delivery_authorized(
+                session,
+                OutboundAuthorizationService(session),
+                message,
+            )
+            if not final_allowed:
+                await _mark_delivery_blocked(
+                    session,
+                    message,
+                    reason=f"final outbound authority recheck failed: {final_reason}",
+                )
+                await session.commit()
+                continue
+            if final_approval_id is not None:
+                approval_ids[int(message.id)] = final_approval_id
+
+            # This is the final external-contact consent fence, after the queue batch has
+            # been committed as "sending". The consent service materializes an UNKNOWN
+            # row if absent, then SELECTs it FOR UPDATE. Keep this transaction open through
             # the single WAHA attempt so grant/revoke/opt-out serialize on the same key.
             # OWNER self-DM remains on its existing exact-recipient + payload binding.
-            if not _is_owner_chat_id(message.chat_id):
                 consent = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
                     message,
                     now=utcnow(),
