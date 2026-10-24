@@ -5,7 +5,7 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 
 from app.config import settings
 from app.db import SessionLocal
@@ -196,6 +196,11 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(session, message, reason=dispatch.reason)
                     await session.commit()
                     continue
+            source_available, source_reason = await _lock_owner_view_once_source(session, message)
+            if not source_available:
+                await _mark_delivery_blocked(session, message, reason=source_reason)
+                await session.commit()
+                continue
             try:
                 if dispatch is not None:
                     response = await _send_authorized_media(client, message, dispatch.plan)
@@ -208,6 +213,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     reason=f"WAHA delivery outcome uncertain; automatic replay blocked: {exc}",
                 )
             else:
+                await _mark_owner_view_once_returned(session, message)
                 approval_id = approval_ids.get(int(message.id))
                 if approval_id is not None:
                     consumed = await OutboundAuthorizationService(session).consume_approval(approval_id)
@@ -297,6 +303,74 @@ async def _send_authorized_media(client: WAHAClient, message: OutboundMessage, p
             filename=plan.filename,
         )
     raise WahaClientError(f"unsupported outbound media operation: {plan.operation}")
+
+
+async def _lock_owner_view_once_source(session, message: OutboundMessage) -> tuple[bool, str]:
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("source") != "owner_view_once":
+        return True, ""
+    source_message_id = metadata.get("source_message_id")
+    if not isinstance(source_message_id, str) or not source_message_id.strip():
+        return False, "owner view-once return missing exact source message id"
+    source_chat_id = metadata.get("source_chat_id")
+    if not isinstance(source_chat_id, str) or not source_chat_id.strip():
+        return False, "owner view-once return missing exact source chat id"
+    command_message_id = metadata.get("command_message_id")
+    if not isinstance(command_message_id, str) or not command_message_id.strip():
+        return False, "owner view-once return missing exact command message id"
+
+    result = await session.execute(
+        text(
+            """
+            SELECT source_message_id, source_chat_id FROM view_once_media_metadata
+            WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+            FOR UPDATE
+            """
+        ),
+        {"source_message_id": source_message_id},
+    )
+    source = result.mappings().one_or_none()
+    if source is None:
+        return False, "view-once source was deleted or is no longer active before dispatch"
+    if str(source["source_chat_id"] or "") != source_chat_id:
+        return False, "view-once source chat does not match authoritative metadata before dispatch"
+    return True, ""
+
+
+async def _mark_owner_view_once_returned(session, message: OutboundMessage) -> None:
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("source") != "owner_view_once":
+        return
+    source_message_id = metadata.get("source_message_id")
+    if not isinstance(source_message_id, str) or not source_message_id.strip():
+        log_event(logger, logging.ERROR, "view_once_return_delivery_invariant_failed", queue_id=message.id)
+        return
+    result = await session.execute(
+        text(
+            """
+            UPDATE view_once_media_metadata
+            SET returned_to_owner_at = now(), last_observed_at = now()
+            WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+            """
+        ),
+        {"source_message_id": source_message_id},
+    )
+    if result.rowcount != 1:
+        session.add(AuditLog(
+            action="view_once_return_delivery_invariant_failed",
+            entity_type="outbound_queue",
+            entity_id=str(message.id),
+            details_json={"source_message_id": source_message_id},
+        ))
+        log_event(logger, logging.ERROR, "view_once_return_delivery_invariant_failed",
+                  queue_id=message.id, source_message_id=source_message_id)
+        return
+    session.add(AuditLog(
+        action="view_once_returned_to_owner",
+        entity_type="view_once_media_metadata",
+        entity_id=source_message_id,
+        details_json={"outbound_queue_id": message.id, "source_message_id": source_message_id},
+    ))
 
 
 async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:

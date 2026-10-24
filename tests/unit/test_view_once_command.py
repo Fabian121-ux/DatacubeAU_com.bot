@@ -10,20 +10,56 @@ produce a send, because the durable record deliberately stores no locator.
 
 from __future__ import annotations
 
+import asyncio
+import os
+
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.message_normalizer import MessageNormalizer
-from app.models.schema import AdminAccount, AuditLog, OutboundMessage
+from app.models.schema import AdminAccount, AuditLog, OutboundMessage, PrivateMediaArtifact
 from app.services.command_control_service import CommandControlService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.private_media_artifact_service import PrivateMediaArtifactResult, PrivateMediaArtifactService
 from app.services.view_once_command_service import ViewOnceCommandService
 from app.workers import background_workers
+from app.services.waha_client import WahaClientError
 
 
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
-TRUSTED_URL = "http://waha:3000/api/files/view-once.jpg"
+WAHA_BASE_URL = str(background_workers.settings.waha_service_url).rstrip("/")
+TRUSTED_URL = f"{WAHA_BASE_URL}/api/files/view-once.jpg"
+
+
+class _SessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _RecordingClient:
+    def __init__(self, failure=None):
+        self.calls = []
+        self.failure = failure
+
+    async def send_image(self, chat_id, *, media_url, mimetype, caption=None, filename=None):
+        self.calls.append((chat_id, media_url, mimetype, caption, filename))
+        if self.failure is not None:
+            raise self.failure
+        return {"id": "mock-view-once-return"}
+
+
+async def _deliver(db_session, monkeypatch, client):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_ID)
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    return await background_workers._deliver_due_outbound_messages(client)
 
 
 def _owner(permission="owner", primary=True):
@@ -85,22 +121,22 @@ async def _seed_owner(db_session, permission="owner"):
     return owner
 
 
-async def _seed_metadata(db_session, *, source_id="SRC-1", deleted=False, transport=True):
+async def _seed_metadata(db_session, *, source_id="SRC-1", deleted=False, transport=True, contact_id=None):
     await db_session.execute(
         text(
             """
             INSERT INTO view_once_media_metadata (
-                source_message_id, source_chat_id, media_type, media_mime,
+                source_message_id, source_chat_id, source_contact_id, media_type, media_mime,
                 capability_state, evidence_source, transport_available, retention_mode,
                 deleted_at
             ) VALUES (
-                :sid, :chat, 'image', 'image/jpeg',
+                :sid, :chat, :contact_id, 'image', 'image/jpeg',
                 'transient_available', 'waha_payload', :transport, 'none',
                 CASE WHEN :deleted THEN now() ELSE NULL END
             )
             """
         ),
-        {"sid": source_id, "chat": PEER_ID, "transport": transport, "deleted": deleted},
+        {"sid": source_id, "chat": PEER_ID, "contact_id": contact_id, "transport": transport, "deleted": deleted},
     )
 
 
@@ -108,7 +144,7 @@ async def _outbound(db_session):
     return (await db_session.execute(select(OutboundMessage))).scalars().all()
 
 
-async def _run(db_session, event, owner, operation=None):
+async def _run(db_session, event, owner, operation=None, request_id=None):
     message = _normalize(event)
     command, args = CommandControlService.parse(message.message_text)
     resolved = operation or CommandControlService._view_once_operation(command, args)
@@ -117,6 +153,7 @@ async def _run(db_session, event, owner, operation=None):
         message=message,
         owner=owner,
         transport_message_id=event["payload"]["id"],
+        request_id=request_id,
     )
 
 
@@ -171,6 +208,19 @@ async def test_unobserved_source_is_not_opened(db_session):
 
     assert "has not observed" in result.reply_text
     assert await _outbound(db_session) == []
+
+
+@pytest.mark.asyncio
+async def test_open_without_exact_command_message_id_is_not_queued(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    result = await _run(db_session, _event(command_id=None), owner)
+
+    assert result.reply_text is not None
+    assert "no exact message ID" in result.reply_text
+    assert await _outbound(db_session) == []
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
 
 
 @pytest.mark.asyncio
@@ -238,12 +288,33 @@ async def test_confirmed_view_once_without_current_locator_is_truthfully_unavail
     assert await _outbound(db_session) == []
 
 
+@pytest.mark.parametrize(
+    "media_url",
+    [
+        "https://evil.invalid/steal.jpg",
+        "https://evil.invalid/api/files/attachment.jpg",
+        "http://127.0.0.1:1/api/files/attachment.jpg",
+        "http://192.168.1.10:3000/api/files/attachment.jpg",
+        "http://10.0.0.7:3000/api/files/attachment.jpg",
+        "http://waha.evil.invalid:3000/api/files/attachment.jpg",
+        f"{WAHA_BASE_URL}/nested/api/files/attachment.jpg",
+        f"{WAHA_BASE_URL}/api/files/%2e%2e/secret.jpg",
+        # Repeated decoding must not expose traversal to a downstream proxy/framework.
+        f"{WAHA_BASE_URL}/api/files/%252e%252e/secret.jpg",
+        f"{WAHA_BASE_URL}/api/files/%25252e%25252e/secret.jpg",
+        f"{WAHA_BASE_URL}/api/files/%252f%252e%252e%252fsecret.jpg",
+        # The trusted route prefix itself must not be encoded.
+        f"{WAHA_BASE_URL}/api%2ffiles/attachment.jpg",
+        f"{WAHA_BASE_URL}/api/files/attachment.jpg#fragment",
+        f"{WAHA_BASE_URL.replace('://', '://owner@')}/api/files/attachment.jpg",
+    ],
+)
 @pytest.mark.asyncio
-async def test_untrusted_media_origin_is_refused(db_session):
+async def test_untrusted_media_origin_or_path_is_refused(db_session, media_url):
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
 
-    result = await _run(db_session, _event(media_url="https://evil.invalid/steal.jpg"), owner)
+    result = await _run(db_session, _event(media_url=media_url), owner)
 
     assert "trusted WhatsApp transport" in result.reply_text
     assert await _outbound(db_session) == []
@@ -280,10 +351,10 @@ async def test_mime_and_kind_conflict_produces_no_media_row(db_session):
 @pytest.mark.parametrize(
     ("media_type", "mimetype", "url", "expected_kind"),
     [
-        ("image", "image/jpeg", "http://waha:3000/api/files/a.jpg", "image"),
-        ("video", "video/mp4", "http://waha:3000/api/files/a.mp4", "video"),
-        ("ptt", "audio/ogg", "http://waha:3000/api/files/a.ogg", "voice"),
-        ("audio", "audio/mpeg", "http://waha:3000/api/files/a.mp3", "audio"),
+        ("image", "image/jpeg", f"{WAHA_BASE_URL}/api/files/a.jpg", "image"),
+        ("video", "video/mp4", f"{WAHA_BASE_URL}/api/files/a.mp4", "video"),
+        ("ptt", "audio/ogg", f"{WAHA_BASE_URL}/api/files/a.ogg", "voice"),
+        ("audio", "audio/mpeg", f"{WAHA_BASE_URL}/api/files/a.mp3", "audio"),
     ],
 )
 async def test_available_view_once_media_queues_owner_targeted_row(
@@ -303,6 +374,8 @@ async def test_available_view_once_media_queues_owner_targeted_row(
     assert row.media_type == expected_kind
     assert row.formatting_json["media_mime"] == mimetype
     assert row.formatting_json["source_message_id"] == "SRC-1"
+    assert row.formatting_json["source_chat_id"] == PEER_ID
+    assert row.formatting_json["command_message_id"] == "VV-CMD-1"
     assert result.outbound_queue_id == row.id
 
 
@@ -333,14 +406,14 @@ async def test_queued_return_row_is_bound_and_clears_the_real_delivery_fence(db_
     # Mutating the stored locator after the stamp must invalidate the binding, exactly like
     # every other owner producer -- proving this row is bound to the canonical digest and not
     # some other ad-hoc hash.
-    row.media_url = "http://waha:3000/api/files/swapped.jpg"
+    row.media_url = f"{WAHA_BASE_URL}/api/files/swapped.jpg"
     mutated_allowed, mutated_reason, _ = await background_workers._delivery_authorized(db_session, authority, row)
     assert not mutated_allowed
     assert mutated_reason == "owner queue row payload is not bound to its authorized content"
 
 
 @pytest.mark.asyncio
-async def test_return_marks_metadata_and_writes_audit(db_session):
+async def test_queued_return_does_not_claim_delivery_before_waha_acceptance(db_session):
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
 
@@ -351,12 +424,15 @@ async def test_return_marks_metadata_and_writes_audit(db_session):
             text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
         )
     ).scalar_one()
-    assert returned is not None
+    assert returned is None
 
-    audits = (
+    queued_audits = (
+        await db_session.execute(select(AuditLog).where(AuditLog.action == "view_once_return_queued"))
+    ).scalars().all()
+    assert len(queued_audits) == 1
+    assert not (
         await db_session.execute(select(AuditLog).where(AuditLog.action == "view_once_returned_to_owner"))
     ).scalars().all()
-    assert len(audits) == 1
 
 
 @pytest.mark.asyncio
@@ -373,11 +449,246 @@ async def test_repeated_command_message_does_not_queue_two_returns(db_session):
 
 
 @pytest.mark.asyncio
+async def test_retrying_the_same_command_reconciles_a_previously_failed_artifact_write(db_session, monkeypatch):
+    """A command retry (same transport_message_id) must not be the artifact's only
+    chance: `_existing_return`'s dedupe returns before the artifact call is ever
+    reached again, so if the first attempt's artifact write transiently failed, only
+    the existing-return path itself can repair it.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    event = _event(command_id="VV-RETRY")
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _boom)
+    first = await _run(db_session, event, owner)
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+    monkeypatch.undo()
+    second = await _run(db_session, event, owner)
+
+    assert first.outbound_queue_id == second.outbound_queue_id
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.source_message_id == "SRC-1"
+
+
+@pytest.mark.asyncio
+async def test_open_records_metadata_only_provenance_bound_to_owner(db_session):
+    """A successful `.vvopen` return also records a PrivateMediaArtifact (roadmap phase 5).
+
+    This is provenance, not authority: no bytes, no storage_locator, and it must be
+    associated with the exact OWNER account that received the return.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.source_message_id == "SRC-1"
+    # Source identity is where the media originated (the peer chat the quoted message
+    # came from), never the OWNER self-DM destination the return is queued to.
+    assert artifact.source_chat_id == PEER_ID
+    assert artifact.transport_provenance == "view_once_command"
+    assert artifact.owner_admin_account_id == owner.id
+    assert artifact.media_kind == "image"
+    assert artifact.media_mime == "image/jpeg"
+    assert artifact.storage_locator is None
+    assert artifact.retention_policy == "none"
+
+
+@pytest.mark.asyncio
+async def test_open_passes_request_id_and_verified_byte_size_to_the_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    event = _event()
+    event["payload"]["replyTo"]["media"]["fileSize"] = 12345
+
+    await _run(db_session, event, owner, request_id="req-123")
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.byte_size == 12345
+
+    audit = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "private_media_artifact_created")
+        )
+    ).scalars().one()
+    assert audit.details_json["request_id"] == "req-123"
+
+
+@pytest.mark.asyncio
+async def test_open_carries_the_source_contact_into_the_artifact(db_session, test_contact):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, contact_id=test_contact.id)
+
+    await _run(db_session, _event(), owner)
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.source_contact_id == test_contact.id
+
+
+@pytest.mark.asyncio
+async def test_open_logs_a_rejected_artifact_write_instead_of_dropping_it(db_session, monkeypatch, caplog):
+    """A validation rejection (`ok=False`, no exception) must still be surfaced.
+
+    The SAVEPOINT exits normally on a clean rejection, so only checking for an
+    exception would silently drop the warning -- and, unlike the ingress path, the
+    owner return itself must still succeed regardless.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    async def _rejected(*args, **kwargs):
+        return PrivateMediaArtifactResult(False, error="simulated validation rejection")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "get_or_create_from_observation", _rejected)
+
+    with caplog.at_level("WARNING"):
+        result = await _run(db_session, _event(), owner)
+
+    assert result.outbound_queue_id is not None
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+    assert "private_media_artifact_observation_failed" in caplog.text
+    assert "simulated validation rejection" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_delete_then_reobserve_at_ingress_does_not_resurrect_the_artifact(db_session):
+    """The exact regression a create-on-tombstone branch would cause.
+
+    `view_once_media_metadata`'s own upsert is a no-op once a row is deleted (its
+    ON CONFLICT ... DO UPDATE is gated on `deleted_at IS NULL`), so ingress observation
+    reaches PrivateMediaArtifactService unconditionally on a repeat delivery -- a webhook
+    retry replaying the same source after an OWNER `.vv delete` must not recreate an
+    active artifact behind their back.
+    """
+    from app.services.view_once_observation_service import ViewOnceObservationService
+
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(command_id="VV-A"), owner)
+    artifact_id = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().artifact_id
+
+    await _run(db_session, _event(command_id="VV-DEL"), owner, operation="delete")
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is not None
+
+    await ViewOnceObservationService(db_session).observe(
+        payload={"id": "SRC-1", "chatId": PEER_ID, "isViewOnce": True, "media": {"url": "http://x/a.jpg", "type": "image"}},
+        source_message_id="SRC-1",
+        source_chat_id=PEER_ID,
+        source_contact_id=None,
+    )
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_id == artifact_id
+    assert artifacts[0].deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_repeated_open_of_the_same_source_does_not_duplicate_the_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    await _run(db_session, _event(command_id="VV-A"), owner)
+    await _run(db_session, _event(command_id="VV-B"), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_ingress_observed_artifact_and_later_open_converge_on_one_row(db_session):
+    """The exact regression a mismatched source_chat_id would cause.
+
+    Ingress records the artifact under the peer chat the message actually came from.
+    A later `.vvopen` for the same source must backfill that same row, never mint a
+    second one addressed to the OWNER self-DM instead.
+    """
+    from app.services.view_once_observation_service import ViewOnceObservationService
+
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await ViewOnceObservationService(db_session).observe(
+        payload={"id": "SRC-1", "chatId": PEER_ID, "isViewOnce": True, "media": {"url": "http://x/a.jpg", "type": "image"}},
+        source_message_id="SRC-1",
+        source_chat_id=PEER_ID,
+        source_contact_id=None,
+    )
+    assert len((await db_session.execute(select(PrivateMediaArtifact))).scalars().all()) == 1
+
+    await _run(db_session, _event(), owner)
+
+    artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+    assert len(artifacts) == 1
+    assert artifacts[0].owner_admin_account_id == owner.id
+
+
+@pytest.mark.asyncio
+async def test_delete_also_tombstones_the_matching_artifact(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is None
+
+    await _run(db_session, _event(), owner, operation="delete")
+
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_without_a_recorded_artifact_still_succeeds(db_session):
+    """`.vv delete` must work even when observation never created an artifact row."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+
+    result = await _run(db_session, _event(), owner, operation="delete")
+
+    assert "was deleted" in result.reply_text
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().all() == []
+
+
+@pytest.mark.parametrize("failure_mode", ["exception", "rejected_result"])
+@pytest.mark.asyncio
+async def test_repeated_delete_reports_and_retries_failed_artifact_cleanup(
+    db_session, monkeypatch, failure_mode
+):
+    """A failed secondary tombstone must be disclosed and retried on repeated delete."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+
+    async def _fail(*args, **kwargs):
+        if failure_mode == "exception":
+            raise RuntimeError("artifact store unavailable")
+        return PrivateMediaArtifactResult(False, error="artifact store unavailable")
+
+    monkeypatch.setattr(PrivateMediaArtifactService, "delete_by_source", _fail)
+    first = await _run(db_session, _event(), owner, operation="delete")
+    assert "cleanup of its linked artifact metadata did not complete" in first.reply_text
+    assert "Please retry `.vv delete`" in first.reply_text
+    assert (await db_session.execute(select(PrivateMediaArtifact))).scalars().one().deleted_at is None
+
+    monkeypatch.undo()
+    second = await _run(db_session, _event(), owner, operation="delete")
+
+    assert "already deleted" in second.reply_text
+    artifact = (await db_session.execute(select(PrivateMediaArtifact))).scalars().one()
+    assert artifact.deleted_at is not None
+
+
+@pytest.mark.asyncio
 async def test_no_transport_locator_is_persisted_on_the_queue_row(db_session):
     """The locator is used for delivery but must not leak into stored metadata."""
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
-    secret = "http://waha:3000/api/files/SECRET-TOKEN.jpg"
+    secret = f"{WAHA_BASE_URL}/api/files/SECRET-TOKEN.jpg"
 
     await _run(db_session, _event(media_url=secret), owner)
 
@@ -489,3 +800,359 @@ async def test_retain_on_remains_unavailable(db_session):
         await db_session.execute(text("SELECT DISTINCT retention_mode FROM view_once_media_metadata"))
     ).scalars().all()
     assert modes == ["none"]
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_view_once_return_only_after_waha_success(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    before = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert before is None
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    after = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert row.status == "sent"
+    assert len(client.calls) == 1
+    assert after is not None
+    audits = (
+        await db_session.execute(select(AuditLog).where(AuditLog.action == "view_once_returned_to_owner"))
+    ).scalars().all()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_deleted_view_once_source_blocks_pending_owner_return_before_waha(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    # Exercise the real OWNER deletion path after queueing but before worker dispatch.
+    await _run(db_session, _event(command_id="VV-DEL"), owner, operation="delete")
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "deleted" in (row.error_message or "").lower()
+    returned = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert returned is None
+
+
+@pytest.mark.asyncio
+async def test_uncertain_view_once_return_does_not_mark_returned_or_retry(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+    client = _RecordingClient(failure=WahaClientError("connection closed before response"))
+
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert len(client.calls) == 1
+    assert row.status == "deferred"
+    assert "automatic replay blocked" in (row.error_message or "")
+    returned = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert returned is None
+
+    await _deliver(db_session, monkeypatch, client)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_owner_view_once_source_identity_and_command_are_bound_to_payload_stamp(db_session):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+    original = dict(row.formatting_json)
+
+    assert OutboundAuthorizationService.owner_payload_matches(row)
+    for key, value in (
+        ("source_message_id", "SRC-OTHER"),
+        ("source_chat_id", "2348000000009@c.us"),
+        ("command_message_id", "VV-OTHER"),
+        ("source", "other"),
+    ):
+        row.formatting_json = {**original, key: value}
+        assert not OutboundAuthorizationService.owner_payload_matches(row), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "expected_reason"),
+    [
+        ("source_chat_id", "2348000000009@c.us", "source chat"),
+        ("command_message_id", "", "command message id"),
+    ],
+)
+async def test_worker_fails_closed_on_invalid_view_once_source_binding(
+    db_session, monkeypatch, field, value, expected_reason
+):
+    """Even a freshly stamped malformed row cannot bypass the final source fence."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    metadata = dict(row.formatting_json)
+    metadata[field] = value
+    row.formatting_json = metadata
+    # Simulate a producer that stamps a malformed row: digest binding alone is not
+    # enough; the worker must still validate required IDs and authoritative source chat.
+    row.formatting_json = OutboundAuthorizationService.stamp_owner_payload(row)
+    await db_session.flush()
+    assert OutboundAuthorizationService.owner_payload_matches(row)
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert expected_reason in (row.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_view_once_command_queues_exactly_one_return(db_session, monkeypatch):
+    """Two webhook deliveries for the same command must serialize on the source row."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await db_session.commit()
+
+    # Widen the race window after the source-row lock. Without the lock, both requests
+    # can complete the SELECT-before-INSERT idempotency check before either commits.
+    original_existing_return = ViewOnceCommandService._existing_return
+
+    async def delayed_existing_return(self, transport_message_id):
+        await asyncio.sleep(0.05)
+        return await original_existing_return(self, transport_message_id)
+
+    monkeypatch.setattr(ViewOnceCommandService, "_existing_return", delayed_existing_return)
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    event = _event(command_id="VV-CONCURRENT")
+
+    async def process_duplicate():
+        async with Session() as session:
+            result = await _run(session, event, owner)
+            await session.commit()
+            return result.outbound_queue_id
+
+    try:
+        queue_ids = await asyncio.gather(process_duplicate(), process_duplicate())
+        async with Session() as session:
+            rows = (await session.execute(select(OutboundMessage))).scalars().all()
+        assert len(rows) == 1
+        assert queue_ids == [rows[0].id, rows[0].id]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_owner_delete_racing_with_open_cannot_leave_active_artifact(db_session, monkeypatch):
+    """A delete racing with .vvopen must win the final lifecycle state.
+
+    The open path locks the authoritative view-once row before its idempotency
+    lookup. Hold it there while a separate session attempts OWNER deletion. The
+    delete must wait, then tombstone the artifact that the open transaction creates;
+    otherwise a timing-dependent active artifact can survive an OWNER deletion.
+    """
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await db_session.commit()
+
+    original_existing_return = ViewOnceCommandService._existing_return
+    original_delete = ViewOnceCommandService._delete
+    open_reached_idempotency = asyncio.Event()
+    release_open = asyncio.Event()
+    delete_started = asyncio.Event()
+
+    async def pause_open_after_source_lock(self, transport_message_id):
+        if transport_message_id == "VV-OPEN-RACE":
+            open_reached_idempotency.set()
+            await release_open.wait()
+        return await original_existing_return(self, transport_message_id)
+
+    async def signal_delete_start(self, record, quoted_id, *, request_id):
+        delete_started.set()
+        return await original_delete(self, record, quoted_id, request_id=request_id)
+
+    monkeypatch.setattr(ViewOnceCommandService, "_existing_return", pause_open_after_source_lock)
+    monkeypatch.setattr(ViewOnceCommandService, "_delete", signal_delete_start)
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    open_task = None
+    delete_task = None
+
+    async def process_open():
+        async with Session() as session:
+            result = await _run(session, _event(command_id="VV-OPEN-RACE"), owner)
+            await session.commit()
+            return result
+
+    async def process_delete():
+        async with Session() as session:
+            result = await _run(
+                session,
+                _event(body="@Zina .vv delete", command_id="VV-DELETE-RACE"),
+                owner,
+                operation="delete",
+            )
+            await session.commit()
+            return result
+
+    try:
+        open_task = asyncio.create_task(process_open())
+        await asyncio.wait_for(open_reached_idempotency.wait(), timeout=5)
+        delete_task = asyncio.create_task(process_delete())
+        await asyncio.wait_for(delete_started.wait(), timeout=5)
+
+        # Give the delete coroutine time to reach its UPDATE. It must be blocked by
+        # the source-row lock held by the open transaction, not race past it.
+        await asyncio.sleep(0.05)
+        assert not delete_task.done(), "OWNER deletion must serialize behind an in-flight source return"
+
+        release_open.set()
+        open_result, delete_result = await asyncio.gather(open_task, delete_task)
+        assert open_result.outbound_queue_id is not None
+        assert "was deleted" in delete_result.reply_text
+
+        artifacts = (await db_session.execute(select(PrivateMediaArtifact))).scalars().all()
+        assert len(artifacts) == 1
+        assert artifacts[0].deleted_at is not None
+
+        metadata = (
+            await db_session.execute(
+                text("SELECT deleted_at FROM view_once_media_metadata WHERE source_message_id = 'SRC-1'")
+            )
+        ).mappings().one()
+        assert metadata["deleted_at"] is not None
+        queued = (await db_session.execute(select(OutboundMessage))).scalars().all()
+        assert len(queued) == 1
+    finally:
+        release_open.set()
+        if open_task is not None and not open_task.done():
+            await asyncio.gather(open_task, return_exceptions=True)
+        if delete_task is not None and not delete_task.done():
+            await asyncio.gather(delete_task, return_exceptions=True)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_replayed_command_id_with_different_source_fails_closed_without_new_artifact(db_session):
+    """A reused WAHA command ID must not attach a different quoted source to the old return."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, source_id="SRC-1")
+    first = await _run(
+        db_session,
+        _event(command_id="VV-REPLAY-CONFLICT", quoted_id="SRC-1"),
+        owner,
+    )
+    assert first.outbound_queue_id is not None
+
+    await _seed_metadata(db_session, source_id="SRC-2")
+    replay = await _run(
+        db_session,
+        _event(command_id="VV-REPLAY-CONFLICT", quoted_id="SRC-2"),
+        owner,
+    )
+
+    assert replay.outbound_queue_id is None
+    assert "already bound" in (replay.reply_text or "").lower()
+    assert len(await _outbound(db_session)) == 1
+
+    artifacts = (
+        await db_session.execute(select(PrivateMediaArtifact).order_by(PrivateMediaArtifact.source_message_id))
+    ).scalars().all()
+    assert [artifact.source_message_id for artifact in artifacts] == ["SRC-1"]
+
+    conflicts = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "view_once_return_replay_conflict")
+        )
+    ).scalars().all()
+    assert len(conflicts) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_conflicting_source_replays_with_one_command_id_queue_only_one_return(db_session):
+    """Command-ID serialization must cover replays that quote different source rows."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, source_id="SRC-1")
+    await _seed_metadata(db_session, source_id="SRC-2")
+    await db_session.commit()
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    async def process(source_id):
+        async with Session() as session:
+            result = await _run(
+                session,
+                _event(command_id="VV-CONCURRENT-CONFLICT", quoted_id=source_id),
+                owner,
+            )
+            await session.commit()
+            return result
+
+    try:
+        results = await asyncio.gather(process("SRC-1"), process("SRC-2"))
+        assert sum(result.outbound_queue_id is not None for result in results) == 1
+        assert sum("already bound" in (result.reply_text or "").lower() for result in results) == 1
+
+        queued = await _outbound(db_session)
+        assert len(queued) == 1
+        artifacts = (
+            await db_session.execute(select(PrivateMediaArtifact).order_by(PrivateMediaArtifact.source_message_id))
+        ).scalars().all()
+        assert len(artifacts) == 1
+        assert artifacts[0].source_message_id in {"SRC-1", "SRC-2"}
+
+        conflicts = (
+            await db_session.execute(
+                select(AuditLog).where(AuditLog.action == "view_once_return_replay_conflict")
+            )
+        ).scalars().all()
+        assert len(conflicts) == 1
+    finally:
+        await engine.dispose()

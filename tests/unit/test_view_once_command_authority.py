@@ -66,7 +66,8 @@ class _RecordingClient:
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
 STRANGER_ID = "2348000000009@c.us"
-TRUSTED_URL = "http://waha:3000/api/files/vv.jpg"
+WAHA_BASE_URL = str(background_workers.settings.waha_service_url).rstrip("/")
+TRUSTED_URL = f"{WAHA_BASE_URL}/api/files/vv.jpg"
 
 
 async def _seed_catalog(db_session, *, enabled=True):
@@ -328,7 +329,7 @@ async def test_view_once_media_reaches_typed_image_dispatch(db_session, monkeypa
     "field, value",
     [
         ("chat_id", STRANGER_ID),
-        ("media_url", "http://waha:3000/api/files/swapped.jpg"),
+        ("media_url", f"{WAHA_BASE_URL}/api/files/swapped.jpg"),
         ("media_type", "video"),
         ("media_caption", "attacker caption"),
         ("message_text", "attacker text"),
