@@ -95,6 +95,14 @@ def test_local_seed_opt_in_requires_explicit_nonproduction_environment(deploymen
             "database name must identify a disposable",
         ),
         (
+            "postgresql://postgres:postgres@localhost:5432/test_real_database",
+            "database name must identify a disposable",
+        ),
+        (
+            "postgresql://postgres:postgres@localhost:5432/dev_production_backup",
+            "database name must identify a disposable",
+        ),
+        (
             "postgresql://postgres:postgres@localhost:5432/zina_disposable?host=prod.example",
             "query parameters/fragments are forbidden",
         ),
