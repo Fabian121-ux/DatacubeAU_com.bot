@@ -29,7 +29,8 @@ from app.services.waha_client import WahaClientError
 
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
-TRUSTED_URL = "http://waha:3000/api/files/view-once.jpg"
+WAHA_BASE_URL = str(background_workers.settings.waha_service_url).rstrip("/")
+TRUSTED_URL = f"{WAHA_BASE_URL}/api/files/view-once.jpg"
 
 
 class _SessionContext:
@@ -274,12 +275,25 @@ async def test_confirmed_view_once_without_current_locator_is_truthfully_unavail
     assert await _outbound(db_session) == []
 
 
+@pytest.mark.parametrize(
+    "media_url",
+    [
+        "https://evil.invalid/steal.jpg",
+        "https://evil.invalid/api/files/attachment.jpg",
+        "http://127.0.0.1:1/api/files/attachment.jpg",
+        "http://waha.evil.invalid:3000/api/files/attachment.jpg",
+        f"{WAHA_BASE_URL}/nested/api/files/attachment.jpg",
+        f"{WAHA_BASE_URL}/api/files/%2e%2e/secret.jpg",
+        f"{WAHA_BASE_URL}/api/files/attachment.jpg#fragment",
+        f"{WAHA_BASE_URL.replace('://', '://owner@')}/api/files/attachment.jpg",
+    ],
+)
 @pytest.mark.asyncio
-async def test_untrusted_media_origin_is_refused(db_session):
+async def test_untrusted_media_origin_or_path_is_refused(db_session, media_url):
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
 
-    result = await _run(db_session, _event(media_url="https://evil.invalid/steal.jpg"), owner)
+    result = await _run(db_session, _event(media_url=media_url), owner)
 
     assert "trusted WhatsApp transport" in result.reply_text
     assert await _outbound(db_session) == []
@@ -316,10 +330,10 @@ async def test_mime_and_kind_conflict_produces_no_media_row(db_session):
 @pytest.mark.parametrize(
     ("media_type", "mimetype", "url", "expected_kind"),
     [
-        ("image", "image/jpeg", "http://waha:3000/api/files/a.jpg", "image"),
-        ("video", "video/mp4", "http://waha:3000/api/files/a.mp4", "video"),
-        ("ptt", "audio/ogg", "http://waha:3000/api/files/a.ogg", "voice"),
-        ("audio", "audio/mpeg", "http://waha:3000/api/files/a.mp3", "audio"),
+        ("image", "image/jpeg", f"{WAHA_BASE_URL}/api/files/a.jpg", "image"),
+        ("video", "video/mp4", f"{WAHA_BASE_URL}/api/files/a.mp4", "video"),
+        ("ptt", "audio/ogg", f"{WAHA_BASE_URL}/api/files/a.ogg", "voice"),
+        ("audio", "audio/mpeg", f"{WAHA_BASE_URL}/api/files/a.mp3", "audio"),
     ],
 )
 async def test_available_view_once_media_queues_owner_targeted_row(
@@ -371,7 +385,7 @@ async def test_queued_return_row_is_bound_and_clears_the_real_delivery_fence(db_
     # Mutating the stored locator after the stamp must invalidate the binding, exactly like
     # every other owner producer -- proving this row is bound to the canonical digest and not
     # some other ad-hoc hash.
-    row.media_url = "http://waha:3000/api/files/swapped.jpg"
+    row.media_url = f"{WAHA_BASE_URL}/api/files/swapped.jpg"
     mutated_allowed, mutated_reason, _ = await background_workers._delivery_authorized(db_session, authority, row)
     assert not mutated_allowed
     assert mutated_reason == "owner queue row payload is not bound to its authorized content"
@@ -650,7 +664,7 @@ async def test_no_transport_locator_is_persisted_on_the_queue_row(db_session):
     """The locator is used for delivery but must not leak into stored metadata."""
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
-    secret = "http://waha:3000/api/files/SECRET-TOKEN.jpg"
+    secret = f"{WAHA_BASE_URL}/api/files/SECRET-TOKEN.jpg"
 
     await _run(db_session, _event(media_url=secret), owner)
 

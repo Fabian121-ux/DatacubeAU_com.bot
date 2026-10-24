@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.admin_management_service import AdminManagementService
 from app.services.logging_service import log_event
@@ -502,7 +504,57 @@ class ViewOnceCommandService:
 
     @classmethod
     def _is_trusted_locator(cls, media_url: str) -> bool:
-        return cls._TRUSTED_MEDIA_PATH in str(media_url or "")
+        """Accept only a file capability served by the configured WAHA origin."""
+        raw = str(media_url or "").strip()
+        if not raw or len(raw) > OutboundMediaMetadataService.MAX_URL_LENGTH:
+            return False
+        if any(character.isspace() for character in raw) or "\x00" in raw:
+            return False
+
+        try:
+            candidate = urlparse(raw)
+            configured = urlparse(str(settings.waha_service_url or "").strip())
+            candidate_port = candidate.port
+            configured_port = configured.port
+        except ValueError:
+            return False
+
+        candidate_scheme = candidate.scheme.lower()
+        configured_scheme = configured.scheme.lower()
+        if candidate_scheme not in {"http", "https"} or configured_scheme not in {"http", "https"}:
+            return False
+        if not candidate.netloc or not configured.netloc:
+            return False
+        if candidate.username is not None or candidate.password is not None:
+            return False
+        if configured.username is not None or configured.password is not None:
+            return False
+        if candidate.fragment:
+            return False
+
+        candidate_host = (candidate.hostname or "").lower()
+        configured_host = (configured.hostname or "").lower()
+        if not candidate_host or not configured_host:
+            return False
+
+        def effective_port(scheme: str, port: int | None) -> int:
+            if port is not None:
+                return port
+            return 443 if scheme == "https" else 80
+
+        if (
+            candidate_scheme,
+            candidate_host,
+            effective_port(candidate_scheme, candidate_port),
+        ) != (
+            configured_scheme,
+            configured_host,
+            effective_port(configured_scheme, configured_port),
+        ):
+            return False
+
+        path = unquote(candidate.path or "")
+        return path.startswith(cls._TRUSTED_MEDIA_PATH) and ".." not in path
 
     @staticmethod
     def _quoted_source_message_id(payload: Any) -> str | None:
