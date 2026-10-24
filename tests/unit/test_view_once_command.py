@@ -1108,3 +1108,51 @@ async def test_replayed_command_id_with_different_source_fails_closed_without_ne
         )
     ).scalars().all()
     assert len(conflicts) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_conflicting_source_replays_with_one_command_id_queue_only_one_return(db_session):
+    """Command-ID serialization must cover replays that quote different source rows."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session, source_id="SRC-1")
+    await _seed_metadata(db_session, source_id="SRC-2")
+    await db_session.commit()
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    async def process(source_id):
+        async with Session() as session:
+            result = await _run(
+                session,
+                _event(command_id="VV-CONCURRENT-CONFLICT", quoted_id=source_id),
+                owner,
+            )
+            await session.commit()
+            return result
+
+    try:
+        results = await asyncio.gather(process("SRC-1"), process("SRC-2"))
+        assert sum(result.outbound_queue_id is not None for result in results) == 1
+        assert sum("already bound" in (result.reply_text or "").lower() for result in results) == 1
+
+        queued = await _outbound(db_session)
+        assert len(queued) == 1
+        artifacts = (
+            await db_session.execute(select(PrivateMediaArtifact).order_by(PrivateMediaArtifact.source_message_id))
+        ).scalars().all()
+        assert len(artifacts) == 1
+        assert artifacts[0].source_message_id in {"SRC-1", "SRC-2"}
+
+        conflicts = (
+            await db_session.execute(
+                select(AuditLog).where(AuditLog.action == "view_once_return_replay_conflict")
+            )
+        ).scalars().all()
+        assert len(conflicts) == 1
+    finally:
+        await engine.dispose()

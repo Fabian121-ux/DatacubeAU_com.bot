@@ -181,6 +181,16 @@ class ViewOnceCommandService:
         # idempotency lookup. Without this row lock, two concurrent requests can both
         # observe no queue row and enqueue two owner returns. Re-check lifecycle and
         # source identity because the record was loaded earlier in this transaction.
+        # Serialize by exact command ID before locking a source row. The source-row
+        # lock handles duplicate commands for one source, but a conflicting replay can
+        # quote a different source and otherwise lock a different row concurrently.
+        # The transaction-scoped advisory lock makes the idempotency lookup and insert
+        # one critical section for this command ID without adding another delivery path.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:command_message_id, 0))"),
+            {"command_message_id": transport_message_id},
+        )
+
         locked_source = (
             await self.session.execute(
                 text(
