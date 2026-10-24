@@ -2,7 +2,7 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -420,4 +420,53 @@ async def test_inbound_opt_out_rejects_contact_chat_mismatch_without_mutation(db
     ).scalars().all()
     assert rows == []
     assert events == []
+
+@pytest.mark.asyncio
+async def test_consent_event_history_rejects_update_and_delete(db_session, test_contact):
+    """The database trigger, not just service convention, preserves consent history."""
+    service = ContactMessagingConsentService(db_session)
+    await service.record_inbound_opt_out(
+        contact_id=test_contact.id,
+        exact_chat_id=test_contact.whatsapp_id,
+        evidence_ref="immutable-audit-event",
+    )
+    await db_session.commit()
+
+    event = (
+        await db_session.execute(
+            select(ContactMessagingConsentEvent).where(
+                ContactMessagingConsentEvent.contact_id == test_contact.id,
+                ContactMessagingConsentEvent.exact_chat_id == test_contact.whatsapp_id,
+                ContactMessagingConsentEvent.event_type == "opted_out",
+            )
+        )
+    ).scalar_one()
+    event_id = int(event.id)
+
+    with pytest.raises(DBAPIError):
+        await db_session.execute(
+            text(
+                "UPDATE contact_messaging_consent_events "
+                "SET evidence_ref = :replacement WHERE id = :event_id"
+            ),
+            {"replacement": "tampered", "event_id": event_id},
+        )
+    await db_session.rollback()
+
+    with pytest.raises(DBAPIError):
+        await db_session.execute(
+            text("DELETE FROM contact_messaging_consent_events WHERE id = :event_id"),
+            {"event_id": event_id},
+        )
+    await db_session.rollback()
+
+    persisted = (
+        await db_session.execute(
+            select(ContactMessagingConsentEvent).where(
+                ContactMessagingConsentEvent.id == event_id
+            )
+        )
+    ).scalar_one()
+    assert persisted.evidence_ref == "immutable-audit-event"
+    assert persisted.event_type == "opted_out"
 
