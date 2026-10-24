@@ -3,9 +3,11 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.schema import (
+    Contact,
     ContactMessagingConsent,
     ContactMessagingConsentEvent,
     Message,
@@ -65,6 +67,40 @@ async def test_missing_consent_materializes_unknown_and_denies_exact_queue(db_se
         )
     ).scalar_one()
     assert row.status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_final_consent_fence_locks_contact_before_send(db_session, test_contact):
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=test_contact.whatsapp_id,
+        evidence_ref="owner-attested-2026-10-24",
+        owner_identity="OWNER",
+    )
+    queue_id = queue.id
+    contact_id = test_contact.id
+    await db_session.commit()
+
+    # A separate transaction must not be able to begin inbound contact processing
+    # while the final authorization fence is held through the transport attempt.
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with factory() as worker_session, factory() as ingress_session:
+        worker_queue = await worker_session.get(OutboundMessage, queue_id)
+        decision = await ContactMessagingConsentService(
+            worker_session
+        ).authorize_outbound_queue_message(worker_queue)
+        assert decision.allowed is True
+
+        try:
+            with pytest.raises(DBAPIError):
+                await ingress_session.execute(
+                    select(Contact.id)
+                    .where(Contact.id == contact_id)
+                    .with_for_update(nowait=True)
+                )
+        finally:
+            await ingress_session.rollback()
+            await worker_session.rollback()
 
 
 @pytest.mark.asyncio
