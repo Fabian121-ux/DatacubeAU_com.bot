@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.models.schema import (
     ContactMessagingConsent,
@@ -55,7 +56,7 @@ async def test_missing_consent_materializes_unknown_and_denies_exact_queue(db_se
     assert decision.reason == "contact consent is unknown"
     row = (
         await db_session.execute(
-            __import__("sqlalchemy").select(ContactMessagingConsent).where(
+            select(ContactMessagingConsent).where(
                 ContactMessagingConsent.contact_id == test_contact.id,
                 ContactMessagingConsent.exact_chat_id == test_contact.whatsapp_id,
             )

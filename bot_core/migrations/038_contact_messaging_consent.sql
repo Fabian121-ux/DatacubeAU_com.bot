@@ -24,8 +24,10 @@ CREATE INDEX IF NOT EXISTS ix_contact_messaging_consent_dispatch
 
 CREATE TABLE IF NOT EXISTS contact_messaging_consent_events (
     id BIGSERIAL PRIMARY KEY,
-    consent_id BIGINT REFERENCES contact_messaging_consents(id) ON DELETE SET NULL,
-    contact_id BIGINT REFERENCES contacts(id) ON DELETE SET NULL,
+    -- Historical IDs are intentionally not foreign keys: deleting live state must
+    -- never rewrite the append-only audit history.
+    consent_id BIGINT,
+    contact_id BIGINT,
     exact_chat_id VARCHAR(120) NOT NULL,
     event_type VARCHAR(24) NOT NULL,
     actor_type VARCHAR(24) NOT NULL,

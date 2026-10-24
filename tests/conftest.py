@@ -52,7 +52,6 @@ from app.db import Base
 # how committed `admin_accounts` rows survived teardown and made unrelated
 # command-control tests fail on `admin_accounts_normalized_whatsapp_id_key`.
 CLEANUP_MODELS = (
-    ContactMessagingConsentEvent,
     ContactMessagingConsent,
     ScheduledAction,
     PrivateMediaArtifact,
@@ -82,9 +81,9 @@ CLEANUP_MODELS = (
 )
 
 
-# Tables created by raw SQL migrations have no ORM model, so the model-based cleanup
-# above cannot reach them. `outbound_approvals` and `outbound_authorization_audit` are
-# removed transitively by their cascading parents, but the rest survive teardown.
+# Raw tables and append-only audit tables need explicit cleanup. The consent-event
+# trigger intentionally blocks DELETE; the disposable test database uses TRUNCATE
+# as its teardown boundary for that table.
 # A leaked `inbound_webhook_receipts` row makes a later test's webhook look like a
 # duplicate delivery, which silently suppresses routing.
 CLEANUP_RAW_TABLES = (
@@ -92,6 +91,7 @@ CLEANUP_RAW_TABLES = (
     "outbound_approvals",
     "outbound_authorization_audit",
     "contact_automation_policies",
+    "contact_messaging_consent_events",
     "view_once_media_metadata",
 )
 

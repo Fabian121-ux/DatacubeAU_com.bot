@@ -83,7 +83,7 @@ class InboundRouter:
                 status="ok",
                 chat_type=normalized.chat_type.value,
                 action="ignored",
-                decision_type="contact_opt_out",
+                decision_type=DecisionType.IGNORE.value,
                 reason="explicit contact opt-out recorded; no outbound reply queued",
                 kb_confidence=0.0,
                 inbound_message_id=inbound.id,

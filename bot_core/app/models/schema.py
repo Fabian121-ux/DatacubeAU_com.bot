@@ -96,10 +96,10 @@ class ContactMessagingConsentEvent(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    consent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("contact_messaging_consents.id", ondelete="SET NULL")
-    )
-    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    # Historical IDs are values rather than foreign keys so deleting live state
+    # cannot rewrite or erase the append-only audit record.
+    consent_id: Mapped[int | None] = mapped_column(BigInteger)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger)
     exact_chat_id: Mapped[str] = mapped_column(String(120), nullable=False)
     event_type: Mapped[str] = mapped_column(String(24), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(24), nullable=False)
