@@ -294,6 +294,8 @@ async def test_confirmed_view_once_without_current_locator_is_truthfully_unavail
         "https://evil.invalid/steal.jpg",
         "https://evil.invalid/api/files/attachment.jpg",
         "http://127.0.0.1:1/api/files/attachment.jpg",
+        "http://192.168.1.10:3000/api/files/attachment.jpg",
+        "http://10.0.0.7:3000/api/files/attachment.jpg",
         "http://waha.evil.invalid:3000/api/files/attachment.jpg",
         f"{WAHA_BASE_URL}/nested/api/files/attachment.jpg",
         f"{WAHA_BASE_URL}/api/files/%2e%2e/secret.jpg",
