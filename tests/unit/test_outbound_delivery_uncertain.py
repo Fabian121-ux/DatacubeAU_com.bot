@@ -195,6 +195,70 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
 
 
 @pytest.mark.asyncio
+async def test_external_contact_without_consent_is_blocked_even_when_policy_authorizes(
+    db_session, test_contact, monkeypatch
+):
+    now = utcnow()
+    test_contact.whatsapp_id = "222@c.us"
+    test_contact.chat_id = "222@c.us"
+    inbound = Message(
+        contact_id=test_contact.id,
+        chat_id="222@c.us",
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(inbound)
+    await db_session.flush()
+
+    text = "reply without explicit consent"
+    row = OutboundMessage(
+        chat_id="222@c.us",
+        message_text=text,
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": inbound.id,
+            "contact_id": test_contact.id,
+            "content_sha256": OutboundAuthorizationService.content_hash(text),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(row)
+    await db_session.commit()
+
+    async def _authorized(self, message):
+        context = self.context_from_queue_message(message)
+        assert context is not None
+        # This models a valid active contact policy with no one-use approval ID.
+        return context, AuthorizationDecision(True, "contact_policy", "active contact policy")
+
+    async def _safe(self, message, *, now=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+    client = _RecordingClient()
+
+    processed = await background_workers._deliver_due_outbound_messages(client)
+
+    await db_session.refresh(row)
+    assert processed == 1
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "contact consent denied" in (row.error_message or "")
+    assert "unknown" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
 async def test_delivery_uncertain_state_survives_restart_style_reload(db_session):
     row = OutboundMessage(
         chat_id="222@c.us",
