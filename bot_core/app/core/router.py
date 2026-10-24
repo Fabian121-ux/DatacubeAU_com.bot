@@ -13,6 +13,7 @@ from app.core.message_normalizer import MessageNormalizer, NormalizedMessage
 from app.core.reply_planner import PlannedReply, ReplyPlanner
 from app.models.enums import DecisionType, Direction
 from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
@@ -54,6 +55,40 @@ class InboundRouter:
         normalized = self.normalizer.normalize(event)
         contact = await self._get_or_create_contact(normalized)
         inbound = await self._save_inbound_message(normalized, contact.id)
+
+        # Explicit opt-outs are deterministic control signals, not AI content. Record
+        # them before memory extraction/planning and return without sending a reply.
+        if (
+            normalized.chat_type.value == "dm"
+            and not self._is_owner_chat_id(normalized.chat_id)
+            and ContactMessagingConsentService.is_explicit_opt_out_message(normalized.message_text)
+        ):
+            await ContactMessagingConsentService(self.session).record_inbound_opt_out(
+                contact_id=contact.id,
+                exact_chat_id=normalized.chat_id,
+                evidence_ref=str(inbound.id),
+            )
+            await self._save_audit_log(
+                action="contact_messaging_opt_out_recorded",
+                entity_type="contact",
+                entity_id=str(contact.id),
+                details_json={
+                    "chat_id": normalized.chat_id,
+                    "inbound_message_id": inbound.id,
+                    "consent_status": "opted_out",
+                },
+            )
+            await self.session.commit()
+            return asdict(RouteResult(
+                status="ok",
+                chat_type=normalized.chat_type.value,
+                action="ignored",
+                decision_type="contact_opt_out",
+                reason="explicit contact opt-out recorded; no outbound reply queued",
+                kb_confidence=0.0,
+                inbound_message_id=inbound.id,
+                outbound_message_id=None,
+            ))
 
         # Bounded capability observation only. This runs after authentication, session
         # binding, non-conversational rejection, and the durable event claim performed by

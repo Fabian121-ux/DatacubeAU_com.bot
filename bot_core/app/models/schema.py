@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, text
+from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -51,6 +51,61 @@ class Contact(Base):
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class ContactMessagingConsent(Base):
+    """Explicit, expiring messaging permission for one contact and exact WhatsApp chat."""
+
+    __tablename__ = "contact_messaging_consents"
+    __table_args__ = (
+        UniqueConstraint("contact_id", "exact_chat_id", name="uq_contact_messaging_consent_identity"),
+        CheckConstraint(
+            "status IN ('unknown', 'consented', 'opted_out', 'revoked')",
+            name="ck_contact_messaging_consent_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    exact_chat_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'unknown'"))
+    provenance: Mapped[str | None] = mapped_column(String(40))
+    evidence_ref: Mapped[str | None] = mapped_column(String(240))
+    granted_by: Mapped[str | None] = mapped_column(String(120))
+    granted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    opted_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class ContactMessagingConsentEvent(Base):
+    """Append-only audit history for consent changes; never stores message bodies."""
+
+    __tablename__ = "contact_messaging_consent_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('granted', 'reconsented', 'revoked', 'opted_out')",
+            name="ck_contact_messaging_consent_event_type",
+        ),
+        CheckConstraint(
+            "actor_type IN ('owner', 'contact', 'system')",
+            name="ck_contact_messaging_consent_event_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    consent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("contact_messaging_consents.id", ondelete="SET NULL")
+    )
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    exact_chat_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_identity: Mapped[str | None] = mapped_column(String(120))
+    evidence_ref: Mapped[str | None] = mapped_column(String(240))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class Message(Base):

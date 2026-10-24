@@ -14,6 +14,7 @@ from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_dispatch_service import (
     MediaDispatchDecision,
@@ -186,6 +187,25 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
+            # This is the final external-contact fence, after the queue batch has been
+            # committed as "sending". The consent service materializes an UNKNOWN row
+            # if absent, then SELECTs it FOR UPDATE. Keep this transaction open through
+            # the single WAHA attempt so grant/revoke/opt-out serialize on the same key.
+            # OWNER self-DM remains on its existing exact-recipient + payload binding.
+            if not _is_owner_chat_id(message.chat_id):
+                consent = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
+                    message,
+                    now=utcnow(),
+                )
+                if not consent.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"contact consent denied: {consent.reason}",
+                    )
+                    await session.commit()
+                    continue
+
             dispatch: MediaDispatchDecision | None = None
             if message.media_url:
                 # Runs only after the final authorization fence and safety limits have

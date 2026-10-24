@@ -11,6 +11,7 @@ from app.models.schema import AuditLog, Contact
 from app.services.bot_config_service import BotConfigService
 from app.services.command_catalog_service import CommandCatalogService
 from app.services.contact_intelligence_service import ContactIntelligenceService
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.contact_sync_service import ContactSyncService
 from app.services.deleted_message_service import DeletedMessageService
 from app.utils.time import utcnow
@@ -267,6 +268,39 @@ class OwnerManagementCommandService:
         query = (query or "").strip()
         if not query:
             raise ValueError("usage: .contact <name-or-phone>")
+
+        if query.lower().startswith("consent "):
+            parts = query.split(maxsplit=3)
+            if len(parts) != 4:
+                raise ValueError(
+                    "usage: .contact consent <grant|revoke|reconsent> <exact-chat-id> <evidence-ref>"
+                )
+            _, action, exact_chat_id, evidence_ref = parts
+            action = action.lower()
+            consent_service = ContactMessagingConsentService(self.session)
+            if action == "grant":
+                await consent_service.grant_for_chat(
+                    exact_chat_id=exact_chat_id,
+                    evidence_ref=evidence_ref,
+                    owner_identity="OWNER",
+                )
+                return f"Messaging consent granted for {exact_chat_id}; it expires in 90 days."
+            if action == "revoke":
+                await consent_service.revoke_for_chat(
+                    exact_chat_id=exact_chat_id,
+                    evidence_ref=evidence_ref,
+                    owner_identity="OWNER",
+                )
+                return f"Messaging consent revoked for {exact_chat_id}."
+            if action == "reconsent":
+                await consent_service.reconsent_for_chat(
+                    exact_chat_id=exact_chat_id,
+                    evidence_ref=evidence_ref,
+                    owner_identity="OWNER",
+                )
+                return f"Explicit re-consent recorded for {exact_chat_id}; it expires in 90 days."
+            raise ValueError("consent action must be grant, revoke, or reconsent")
+
         result = await self.contacts.resolve(query, limit=5)
         if result["status"] == "not_found":
             return "No matching contact found."

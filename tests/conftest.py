@@ -20,6 +20,8 @@ from app.models.schema import (
     AuditLog,
     BotConfig,
     Contact,
+    ContactMessagingConsent,
+    ContactMessagingConsentEvent,
     ConversationSummary,
     ConversationTimeline,
     FeedbackReview,
@@ -50,6 +52,8 @@ from app.db import Base
 # how committed `admin_accounts` rows survived teardown and made unrelated
 # command-control tests fail on `admin_accounts_normalized_whatsapp_id_key`.
 CLEANUP_MODELS = (
+    ContactMessagingConsentEvent,
+    ContactMessagingConsent,
     ScheduledAction,
     PrivateMediaArtifact,
     OutboundMessage,
