@@ -304,6 +304,12 @@ async def test_opt_out_lock_wins_before_dispatch_authorization(db_session, test_
     chat_id = test_contact.whatsapp_id
     Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
     async with Session() as optout_session, Session() as dispatch_session:
+        # Match InboundRouter's lock order: Contact first, then consent.
+        await optout_session.execute(
+            select(Contact.id)
+            .where(Contact.id == contact_id)
+            .with_for_update()
+        )
         await ContactMessagingConsentService(optout_session).record_inbound_opt_out(
             contact_id=contact_id,
             exact_chat_id=chat_id,
@@ -356,6 +362,12 @@ async def test_first_insert_race_materializes_one_opted_out_row(db_session, test
     async def opt_out_first_touch():
         async with Session() as session:
             await start.wait()
+            # Model the router's Contact-row lock before its consent-row lock.
+            await session.execute(
+                select(Contact.id)
+                .where(Contact.id == contact_id)
+                .with_for_update()
+            )
             await ContactMessagingConsentService(session).record_inbound_opt_out(
                 contact_id=contact_id,
                 exact_chat_id=chat_id,
