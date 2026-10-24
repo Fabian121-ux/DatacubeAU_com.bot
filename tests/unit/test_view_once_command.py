@@ -284,6 +284,12 @@ async def test_confirmed_view_once_without_current_locator_is_truthfully_unavail
         "http://waha.evil.invalid:3000/api/files/attachment.jpg",
         f"{WAHA_BASE_URL}/nested/api/files/attachment.jpg",
         f"{WAHA_BASE_URL}/api/files/%2e%2e/secret.jpg",
+        # Repeated decoding must not expose traversal to a downstream proxy/framework.
+        f"{WAHA_BASE_URL}/api/files/%252e%252e/secret.jpg",
+        f"{WAHA_BASE_URL}/api/files/%25252e%25252e/secret.jpg",
+        f"{WAHA_BASE_URL}/api/files/%252f%252e%252e%252fsecret.jpg",
+        # The trusted route prefix itself must not be encoded.
+        f"{WAHA_BASE_URL}/api%2ffiles/attachment.jpg",
         f"{WAHA_BASE_URL}/api/files/attachment.jpg#fragment",
         f"{WAHA_BASE_URL.replace('://', '://owner@')}/api/files/attachment.jpg",
     ],

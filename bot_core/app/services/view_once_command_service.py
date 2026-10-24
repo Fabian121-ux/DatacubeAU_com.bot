@@ -553,8 +553,31 @@ class ViewOnceCommandService:
         ):
             return False
 
-        path = unquote(candidate.path or "")
-        return path.startswith(cls._TRUSTED_MEDIA_PATH) and ".." not in path
+        raw_path = candidate.path or ""
+        # Require the literal route prefix before decoding. A proxy or HTTP framework
+        # may normalize percent-encoded path separators differently from this validator.
+        if not raw_path.startswith(cls._TRUSTED_MEDIA_PATH):
+            return False
+
+        # Check every decoding layer, not just the first one: a double-encoded traversal
+        # segment can survive one unquote() and be decoded later by a downstream layer.
+        path = raw_path
+        for _ in range(5):
+            if ".." in path or "\\" in path:
+                return False
+            decoded_path = unquote(path)
+            if decoded_path == path:
+                break
+            path = decoded_path
+        else:
+            # Excessive nested encoding is ambiguous; fail closed.
+            return False
+
+        return (
+            path.startswith(cls._TRUSTED_MEDIA_PATH)
+            and ".." not in path
+            and "\\" not in path
+        )
 
     @staticmethod
     def _quoted_source_message_id(payload: Any) -> str | None:
