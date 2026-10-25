@@ -433,7 +433,8 @@ async def test_first_insert_race_materializes_one_opted_out_row(db_session, test
     async def opt_out_first_touch():
         async with Session() as session:
             await start.wait()
-            # Model the router's Contact-row lock before its consent-row lock.
+            # Match production lock order: exact-chat mapping, Contact row, then consent.
+            await ContactMessagingConsentService.lock_exact_chat_mapping(session, chat_id)
             await session.execute(
                 select(Contact.id)
                 .where(Contact.id == contact_id)
