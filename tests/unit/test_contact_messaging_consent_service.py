@@ -152,8 +152,8 @@ async def test_inbound_chat_remap_serializes_with_final_consent_mapping_lock(db_
         await ingress_session.commit()
 
     # Once the competing mapping commits, a later authorization sees ambiguity and
-    # fails closed. The worker-level ambiguity regression separately asserts zero
-    # mocked WAHA calls for this denial reason.
+    # fails closed. The worker-level stale/remapped-destination regression separately
+    # asserts zero mocked WAHA calls for this denial reason.
     async with factory() as verify_session:
         queued = await verify_session.get(OutboundMessage, queue_id)
         denied = await ContactMessagingConsentService(
@@ -374,7 +374,8 @@ async def test_opt_out_lock_wins_before_dispatch_authorization(db_session, test_
     chat_id = test_contact.whatsapp_id
     Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
     async with Session() as optout_session, Session() as dispatch_session:
-        # Match InboundRouter's lock order: Contact first, then consent.
+        # Match production lock order: exact-chat mapping, Contact row, then consent.
+        await ContactMessagingConsentService.lock_exact_chat_mapping(optout_session, chat_id)
         await optout_session.execute(
             select(Contact.id)
             .where(Contact.id == contact_id)
