@@ -422,7 +422,7 @@ async def test_inbound_opt_out_rejects_contact_chat_mismatch_without_mutation(db
     assert events == []
 
 @pytest.mark.asyncio
-async def test_consent_event_history_rejects_update_and_delete(db_session, test_contact):
+async def test_consent_event_history_rejects_update_delete_and_truncate(db_session, test_contact):
     """The database trigger, not just service convention, preserves consent history."""
     service = ContactMessagingConsentService(db_session)
     await service.record_inbound_opt_out(
@@ -458,6 +458,10 @@ async def test_consent_event_history_rejects_update_and_delete(db_session, test_
             text("DELETE FROM contact_messaging_consent_events WHERE id = :event_id"),
             {"event_id": event_id},
         )
+    await db_session.rollback()
+
+    with pytest.raises(DBAPIError):
+        await db_session.execute(text("TRUNCATE TABLE contact_messaging_consent_events"))
     await db_session.rollback()
 
     persisted = (

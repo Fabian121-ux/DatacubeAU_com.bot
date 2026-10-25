@@ -81,9 +81,9 @@ CLEANUP_MODELS = (
 )
 
 
-# Raw tables and append-only audit tables need explicit cleanup. The consent-event
-# trigger intentionally blocks DELETE; the disposable test database uses TRUNCATE
-# as its teardown boundary for that table.
+# Raw tables need explicit cleanup. Consent-event history is append-only during
+# application use; this disposable test fixture temporarily disables only its
+# TRUNCATE guard around teardown, then restores it before the next test.
 # A leaked `inbound_webhook_receipts` row makes a later test's webhook look like a
 # duplicate delivery, which silently suppresses routing.
 CLEANUP_RAW_TABLES = (
@@ -113,7 +113,24 @@ async def _purge_database_state(session) -> None:
             )
         ).scalars().all()
         for table in present:
-            await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+            if table == "contact_messaging_consent_events":
+                # This is test-fixture teardown only. The guard remains active for
+                # the actual test assertion and for application code between tests.
+                await session.execute(
+                    text(
+                        "ALTER TABLE contact_messaging_consent_events "
+                        "DISABLE TRIGGER trg_contact_messaging_consent_events_no_truncate"
+                    )
+                )
+                await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+                await session.execute(
+                    text(
+                        "ALTER TABLE contact_messaging_consent_events "
+                        "ENABLE TRIGGER trg_contact_messaging_consent_events_no_truncate"
+                    )
+                )
+            else:
+                await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
     await session.commit()
 
 

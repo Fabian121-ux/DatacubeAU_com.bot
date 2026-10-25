@@ -56,4 +56,12 @@ CREATE TRIGGER trg_contact_messaging_consent_events_immutable
     BEFORE UPDATE OR DELETE ON contact_messaging_consent_events
     FOR EACH ROW EXECUTE FUNCTION prevent_contact_messaging_consent_event_mutation();
 
+-- Row-level triggers do not fire for TRUNCATE. Keep the audit table append-only
+-- for ordinary SQL callers by rejecting that separate statement operation too.
+DROP TRIGGER IF EXISTS trg_contact_messaging_consent_events_no_truncate
+    ON contact_messaging_consent_events;
+CREATE TRIGGER trg_contact_messaging_consent_events_no_truncate
+    BEFORE TRUNCATE ON contact_messaging_consent_events
+    FOR EACH STATEMENT EXECUTE FUNCTION prevent_contact_messaging_consent_event_mutation();
+
 COMMIT;
