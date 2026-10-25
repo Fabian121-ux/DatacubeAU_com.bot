@@ -11,6 +11,7 @@ No real WhatsApp transport is contacted.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import text
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -105,6 +106,27 @@ async def test_ordinary_contact_dm_is_still_routed(ingress):
     body = await _post(app, _message_event(message_id="REAL-1"))
 
     assert body["status"] == "accepted"
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_contact_opt_out_is_claimed_before_routing(ingress, db_session):
+    """The final worker fence must see STOP even if routing is waiting on a lock."""
+    app, routed = ingress
+    body = await _post(app, _message_event(message_id="STOP-CLAIM-1", body="STOP"))
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": f"test:{CONTACT_ID}:STOP-CLAIM-1"},
+        )
+    ).one()
+    assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
     assert len(routed) == 1
 
 

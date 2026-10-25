@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import text
 
 from app.api.inbound import _build_idempotency_key
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
@@ -48,3 +49,34 @@ async def test_idempotency_claim_blocks_duplicate_until_failed_claim_is_released
     assert await service.claim(receipt) is True
     await service.mark_completed(receipt.event_key)
     assert await service.claim(receipt) is False
+
+@pytest.mark.asyncio
+async def test_failed_opt_out_claim_preserves_pending_intent_for_retry(db_session):
+    receipt = InboundReceipt(
+        event_key="test:222@c.us:STOP-RETRY",
+        session_name="test",
+        chat_id="222@c.us",
+        message_id="STOP-RETRY",
+        opt_out_intent=True,
+    )
+    service = InboundIdempotencyService(db_session)
+
+    assert await service.claim(receipt) is True
+    await service.release_failed(receipt.event_key)
+
+    pending = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": receipt.event_key},
+        )
+    ).one()
+    assert pending.opt_out_intent is True
+    assert pending.status == "processing"
+
+    # The stale lease is immediately reclaimable, but the veto remains monotonic.
+    assert await service.claim(receipt) is True
+    await service.mark_completed(receipt.event_key)
+

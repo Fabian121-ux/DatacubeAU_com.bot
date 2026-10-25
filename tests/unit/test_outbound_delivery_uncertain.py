@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.router import InboundRouter
 from app.models.scheduled_action import ScheduledAction
-from app.models.schema import Contact, Message, OutboundMessage
+from app.models.schema import AuditLog, Contact, ContactMessagingConsent, ContactMessagingConsentEvent, Message, OutboundMessage
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
-from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.outbound_authorization_service import AuthorizationDecision, OutboundAuthorizationService
 from app.services.outbound_safety_limit_service import OutboundSafetyDecision
 from app.services.scheduled_action_service import ScheduledActionService
@@ -472,3 +476,165 @@ async def test_contact_remap_after_queue_creation_blocks_external_dispatch(
     assert client.calls == []
     assert queue.status == "deferred"
     assert "current contact/chat mapping does not match recipient" in (queue.error_message or "")
+
+@pytest.mark.asyncio
+async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
+    db_session, test_contact, monkeypatch
+):
+    now = utcnow()
+    test_contact.whatsapp_id = "222@c.us"
+    test_contact.chat_id = "222@c.us"
+    await db_session.flush()
+    source = Message(
+        contact_id=test_contact.id,
+        chat_id="222@c.us",
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(source)
+    await db_session.flush()
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id="222@c.us",
+        evidence_ref="owner-attested-stop-race",
+        owner_identity="OWNER",
+    )
+    reply_text = "previously consented reply"
+    queue = OutboundMessage(
+        chat_id="222@c.us",
+        message_text=reply_text,
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": source.id,
+            "contact_id": test_contact.id,
+            "content_sha256": OutboundAuthorizationService.content_hash(reply_text),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.commit()
+    queue_id = int(queue.id)
+    contact_id = int(test_contact.id)
+
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    monkeypatch.setattr(background_workers, "SessionLocal", factory)
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+
+    async def _authorized(self, message):
+        context = self.context_from_queue_message(message)
+        assert context is not None
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
+
+    async def _safe(self, message, *, now=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+
+    at_final_veto = asyncio.Event()
+    resume_dispatch = asyncio.Event()
+    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent
+
+    async def pause_at_final_veto(service, exact_chat_id):
+        at_final_veto.set()
+        await resume_dispatch.wait()
+        return await original_pending_check(service, exact_chat_id)
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "has_pending_opt_out_intent",
+        pause_at_final_veto,
+    )
+    client = _RecordingClient()
+    worker_task = asyncio.create_task(background_workers._deliver_due_outbound_messages(client))
+    await asyncio.wait_for(at_final_veto.wait(), timeout=5)
+
+    event = {
+        "event": "message",
+        "session": "test",
+        "payload": {
+            "id": "STOP-RACE-1",
+            "chatId": "222@c.us",
+            "from": "222@c.us",
+            "fromMe": False,
+            "body": "STOP",
+        },
+    }
+    event_key = "test:222@c.us:STOP-RACE-1"
+    async with factory() as receipt_session:
+        claimed = await InboundIdempotencyService(receipt_session).claim(
+            InboundReceipt(
+                event_key=event_key,
+                session_name="test",
+                chat_id="222@c.us",
+                message_id="STOP-RACE-1",
+                opt_out_intent=True,
+            )
+        )
+    assert claimed is True
+
+    # The STOP receipt is committed while routing has not yet acquired the mapping
+    # lock. Resume at the final fence: no mock transport call may be made.
+    resume_dispatch.set()
+    processed = await asyncio.wait_for(worker_task, timeout=5)
+    assert processed == 1
+    assert client.calls == []
+    await db_session.refresh(queue)
+    assert queue.status == "deferred"
+    assert "pending inbound opt-out intent" in (queue.error_message or "")
+
+    # Now let the accepted STOP finish routing after the worker releases its locks.
+    async with factory() as route_session:
+        result = await InboundRouter(route_session).process_event(event)
+        assert result["action"] == "ignored"
+        await InboundIdempotencyService(route_session).mark_completed(event_key)
+
+    async with factory() as verify_session:
+        consent = (
+            await verify_session.execute(
+                select(ContactMessagingConsent)
+                .where(ContactMessagingConsent.contact_id == contact_id)
+                .where(ContactMessagingConsent.exact_chat_id == "222@c.us")
+            )
+        ).scalar_one()
+        assert consent.status == "opted_out"
+
+        events = (
+            await verify_session.execute(
+                select(ContactMessagingConsentEvent)
+                .where(ContactMessagingConsent.contact_id == contact_id)
+                .where(ContactMessagingConsentEvent.exact_chat_id == "222@c.us")
+            )
+        ).scalars().all()
+        assert any(row.event_type == "opted_out" for row in events)
+
+        audits = (
+            await verify_session.execute(
+                select(AuditLog).where(AuditLog.action == "contact_messaging_consent_changed")
+            )
+        ).scalars().all()
+        assert any(
+            row.details_json.get("exact_chat_id") == "222@c.us"
+            and row.details_json.get("status") == "opted_out"
+            for row in audits
+        )
+
+        receipt = (
+            await verify_session.execute(
+                text(
+                    "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                    "WHERE event_key = :event_key"
+                ),
+                {"event_key": event_key},
+            )
+        ).one()
+        assert receipt.opt_out_intent is True
+        assert receipt.status == "completed"
+

@@ -89,6 +89,31 @@ class ContactMessagingConsentService:
             return True
         return any(pattern.search(raw) for pattern in cls._OPT_OUT_PATTERNS)
 
+    async def has_pending_opt_out_intent(self, exact_chat_id: str) -> bool:
+        """Return whether an authenticated inbound STOP is claimed but not applied.
+
+        The receipt is committed before routing can block on the mapping lock. This is
+        a veto-only signal, never consent authority; completed receipts are safe to ignore
+        because routing commits the terminal opt-out state before completing its receipt.
+        """
+        if not self._is_direct_chat(exact_chat_id):
+            return False
+        result = await self.session.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM inbound_webhook_receipts
+                    WHERE chat_id = :exact_chat_id
+                      AND opt_out_intent IS TRUE
+                      AND status = 'processing'
+                )
+                """
+            ),
+            {"exact_chat_id": exact_chat_id},
+        )
+        return bool(result.scalar_one())
+
     @staticmethod
     def _is_direct_chat(exact_chat_id: str | None) -> bool:
         chat = (exact_chat_id or "").strip().lower()

@@ -13,6 +13,7 @@ from app.db import SessionLocal
 from app.models.schema import AuditLog
 from app.services.admin_management_service import AdminManagementService
 from app.services.command_control_service import CommandControlService
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
@@ -112,6 +113,20 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unexpected_session", "event_name": event_name or "message"}
 
+    # Detect an explicit external-contact opt-out before routing can wait on the
+    # per-chat mapping lock. The durable receipt becomes a veto signal for the final
+    # outbound fence while the STOP is still waiting to update consent state.
+    opt_out_intent = False
+    if not _is_from_me(payload):
+        normalized_for_consent = MessageNormalizer().normalize(event)
+        opt_out_intent = (
+            normalized_for_consent.chat_type.value == "dm"
+            and not InboundRouter._is_owner_chat_id(normalized_for_consent.chat_id)
+            and ContactMessagingConsentService.is_explicit_opt_out_message(
+                normalized_for_consent.message_text
+            )
+        )
+
     # Claim every message event before *any* command/action side effect. WAHA may
     # deliver the same message as both `message` and `message.any`, and webhook
     # retries must not execute owner commands twice.
@@ -122,6 +137,7 @@ async def waha_webhook(
             session_name=_resolve_session_name(event, payload),
             chat_id=_resolve_chat_id(payload),
             message_id=message_id,
+            opt_out_intent=opt_out_intent,
         )
         async with SessionLocal() as db:
             claimed = await InboundIdempotencyService(db).claim(receipt)

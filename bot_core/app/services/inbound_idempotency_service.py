@@ -14,6 +14,7 @@ class InboundReceipt:
     session_name: str | None
     chat_id: str | None
     message_id: str | None
+    opt_out_intent: bool = False
 
 
 class InboundClaimLostError(RuntimeError):
@@ -68,6 +69,7 @@ class InboundIdempotencyService:
                     session_name,
                     chat_id,
                     message_id,
+                    opt_out_intent,
                     status,
                     claim_token,
                     updated_at
@@ -77,6 +79,7 @@ class InboundIdempotencyService:
                     :session_name,
                     :chat_id,
                     :message_id,
+                    :opt_out_intent,
                     'processing',
                     :claim_token,
                     NOW()
@@ -85,6 +88,7 @@ class InboundIdempotencyService:
                 SET session_name = EXCLUDED.session_name,
                     chat_id = EXCLUDED.chat_id,
                     message_id = EXCLUDED.message_id,
+                    opt_out_intent = inbound_webhook_receipts.opt_out_intent OR EXCLUDED.opt_out_intent,
                     status = 'processing',
                     claim_token = EXCLUDED.claim_token,
                     updated_at = NOW()
@@ -99,6 +103,7 @@ class InboundIdempotencyService:
                 "session_name": receipt.session_name,
                 "chat_id": receipt.chat_id,
                 "message_id": receipt.message_id,
+                "opt_out_intent": bool(receipt.opt_out_intent),
                 "claim_token": claim_token,
                 "lease_seconds": self.PROCESSING_LEASE_SECONDS,
             },
@@ -160,9 +165,31 @@ class InboundIdempotencyService:
             self._forget_token(event_key, claim_token)
 
     async def release_failed(self, event_key: str) -> None:
-        """Release only this worker's failed claim so WAHA may safely retry."""
+        """Release a failed claim without discarding an accepted opt-out intent.
+
+        A failed opt-out receipt stays in ``processing`` with an expired lease: the
+        next WAHA retry can reclaim it immediately, while the final outbound fence
+        continues to deny delivery if no retry arrives or routing keeps failing.
+        """
         claim_token = self._token_for(event_key)
         if claim_token:
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE inbound_webhook_receipts
+                    SET updated_at = NOW() - ((:lease_seconds + 1) * INTERVAL '1 second')
+                    WHERE event_key = :event_key
+                      AND claim_token = :claim_token
+                      AND status = 'processing'
+                      AND opt_out_intent IS TRUE
+                    """
+                ),
+                {
+                    "event_key": event_key,
+                    "claim_token": claim_token,
+                    "lease_seconds": self.PROCESSING_LEASE_SECONDS,
+                },
+            )
             await self.session.execute(
                 text(
                     """
@@ -170,6 +197,7 @@ class InboundIdempotencyService:
                     WHERE event_key = :event_key
                       AND claim_token = :claim_token
                       AND status = 'processing'
+                      AND opt_out_intent IS NOT TRUE
                     """
                 ),
                 {"event_key": event_key, "claim_token": claim_token},

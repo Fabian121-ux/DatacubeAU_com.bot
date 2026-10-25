@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS contact_messaging_consent_events (
 CREATE INDEX IF NOT EXISTS ix_contact_messaging_consent_events_identity
     ON contact_messaging_consent_events (contact_id, exact_chat_id, created_at DESC);
 
+-- A claimed explicit opt-out must veto an outbound attempt even while routing waits
+-- on the exact-chat mapping lock. The receipt is completed only after consent state
+-- and its audit event have committed.
+ALTER TABLE inbound_webhook_receipts
+    ADD COLUMN IF NOT EXISTS opt_out_intent BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS ix_inbound_webhook_receipts_pending_opt_out
+    ON inbound_webhook_receipts (chat_id, updated_at)
+    WHERE opt_out_intent IS TRUE AND status = 'processing';
+
 CREATE OR REPLACE FUNCTION prevent_contact_messaging_consent_event_mutation()
 RETURNS trigger AS $$
 BEGIN

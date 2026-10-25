@@ -259,6 +259,23 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(session, message, reason=dispatch.reason)
                     await session.commit()
                     continue
+            # A STOP receipt is committed before ingress waits on the exact-chat lock.
+            # This is the final pre-transport veto: a claim committed before this read
+            # blocks the send. Once this read completes, the single transport attempt is
+            # considered in-flight and cannot be reliably cancelled after network entry.
+            if not _is_owner_chat_id(message.chat_id):
+                pending_opt_out = await ContactMessagingConsentService(
+                    session
+                ).has_pending_opt_out_intent(message.chat_id)
+                if pending_opt_out:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason="pending inbound opt-out intent; external delivery denied",
+                    )
+                    await session.commit()
+                    continue
+
             try:
                 if dispatch is not None:
                     response = await _send_authorized_media(client, message, dispatch.plan)
