@@ -474,3 +474,30 @@ async def test_consent_event_history_rejects_update_delete_and_truncate(db_sessi
     assert persisted.evidence_ref == "immutable-audit-event"
     assert persisted.event_type == "opted_out"
 
+@pytest.mark.asyncio
+async def test_dispatch_denies_ambiguous_current_chat_mapping(db_session, test_contact):
+    """A legacy duplicate chat_id must not inherit another contact's consent."""
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    service = ContactMessagingConsentService(db_session)
+    await service.grant_for_chat(
+        exact_chat_id=test_contact.whatsapp_id,
+        evidence_ref="owner-attested-before-remap",
+        owner_identity="OWNER",
+    )
+
+    # whatsapp_id is unique, but chat_id is nullable and not globally unique.
+    # This simulates legacy or manually edited data where one exact destination
+    # is claimed by two different Contact rows after the original grant.
+    db_session.add(
+        Contact(
+            whatsapp_id="15550000002@c.us",
+            chat_id=test_contact.whatsapp_id,
+            display_name="Conflicting contact mapping",
+        )
+    )
+    await db_session.flush()
+
+    decision = await service.authorize_outbound_queue_message(queue)
+
+    assert decision.allowed is False
+    assert decision.reason == "exact chat ID does not resolve to exactly one current contact"
