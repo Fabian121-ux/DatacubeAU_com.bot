@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import event
 
 from app.models.schema import Contact
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
@@ -95,37 +96,52 @@ async def test_older_contact_page_cannot_overwrite_newer_saved_evidence(db_sessi
     assert contact.identity_json["is_saved_contact"] is True
 
 @pytest.mark.asyncio
-async def test_contact_sync_serializes_chat_mapping_write_with_shared_lock(monkeypatch, db_session):
-    contact = Contact(whatsapp_id="2348044444444@c.us")
-    db_session.add(contact)
-    await db_session.flush()
+@pytest.mark.parametrize("existing_contact", [True, False])
+async def test_contact_sync_takes_mapping_lock_before_any_contact_flush(db_session, existing_contact):
+    contact = None
+    if existing_contact:
+        # The sync will dirty ordinary Contact fields before filling in chat_id.
+        # AsyncSession.execute() autoflushes those changes unless the mapping lock is
+        # acquired first, which would invert the final dispatch fence's lock order.
+        contact = Contact(
+            whatsapp_id="2348044444444@c.us",
+            display_name="Previous Name",
+            contact_name="Previous Name",
+        )
+        db_session.add(contact)
+        await db_session.flush()
 
-    observed = []
+    statements = []
 
-    async def capture_mapping_lock(session, exact_chat_id):
-        assert session is db_session
-        assert exact_chat_id == "2348044444444@c.us"
-        # The lock must be acquired before the service mutates the mapping.
-        assert contact.chat_id is None
-        observed.append(exact_chat_id)
+    def capture_sql(conn, cursor, statement, parameters, context, executemany):
+        normalized = " ".join(statement.lower().split())
+        if "pg_advisory_xact_lock" in normalized and "hashtext" in normalized:
+            statements.append("mapping_lock")
+        elif normalized.startswith("update contacts") or normalized.startswith("insert into contacts"):
+            statements.append("contact_write")
 
-    monkeypatch.setattr(
-        ContactMessagingConsentService,
-        "lock_exact_chat_mapping",
-        staticmethod(capture_mapping_lock),
+    engine = db_session.bind.sync_engine
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        outcome, _ = await ContactSyncService(db_session, waha=object())._sync_one(
+            {
+                "id": "2348044444444@s.whatsapp.net",
+                "name": "Amanda",
+                "isMyContact": True,
+            },
+            sync_at=datetime.now(timezone.utc),
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
+
+    assert outcome == ("updated" if existing_contact else "created")
+    assert "mapping_lock" in statements
+    assert "contact_write" in statements
+    assert statements.index("mapping_lock") < statements.index("contact_write"), (
+        "ContactSyncService must acquire the exact-chat advisory lock before ORM "
+        "autoflush can take a Contact row lock"
     )
-
-    outcome, _ = await ContactSyncService(db_session, waha=object())._sync_one(
-        {
-            "id": "2348044444444@s.whatsapp.net",
-            "name": "Amanda",
-            "isMyContact": True,
-        },
-        sync_at=datetime.now(timezone.utc),
-    )
-
-    assert outcome == "updated"
-    assert observed == ["2348044444444@c.us"]
-    await db_session.refresh(contact)
-    assert contact.chat_id == "2348044444444@c.us"
+    if contact is not None:
+        await db_session.refresh(contact)
+        assert contact.chat_id == "2348044444444@c.us"
 
