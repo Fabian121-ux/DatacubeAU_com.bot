@@ -178,20 +178,25 @@ class ContactMessagingConsentService:
         # the consent row. Acquire the same locks in the same order here. Otherwise a
         # dispatch can lock consent first while an already-arrived STOP is blocked on
         # that consent row, allowing the send to overtake the opt-out transaction.
-        locked_contact_id = (
+        # Lock all rows that currently claim this exact destination in stable order.
+        # whatsapp_id is unique, but legacy chat_id mappings can still collide with
+        # another contact's whatsapp_id or chat_id. Consent is contact-specific, so
+        # an ambiguous exact-chat mapping must never inherit one contact's grant.
+        matching_contact_ids = (
             await self.session.execute(
                 select(Contact.id)
-                .where(Contact.id == contact_id)
-                # Validate the current destination while holding the Contact lock.
-                # Historical inbound/scheduled rows can still resolve the old contact
-                # ID after an OWNER edits its WhatsApp mapping; consent for that old
-                # chat must not authorize a send to a no-longer-current destination.
                 .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
+                .order_by(Contact.id)
+                .limit(2)
                 .with_for_update()
             )
-        ).scalar_one_or_none()
-        if locked_contact_id is None:
-            return ConsentDecision(False, "current contact/chat mapping does not match recipient", contact_id)
+        ).scalars().all()
+        if len(matching_contact_ids) != 1 or int(matching_contact_ids[0]) != contact_id:
+            return ConsentDecision(
+                False,
+                "exact chat ID does not resolve to exactly one current contact",
+                contact_id,
+            )
 
         row = await self._lock_or_create(contact_id, exact_chat_id, instant)
         if row.status == "opted_out":
