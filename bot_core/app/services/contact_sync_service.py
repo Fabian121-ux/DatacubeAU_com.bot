@@ -174,12 +174,24 @@ class ContactSyncService:
         else:
             is_saved_contact = False
 
+        # Do not grow Zina's address book from WAHA-only unsaved contacts. Those
+        # people are learned through the normal inbound Contact pipeline instead.
+        if row is None and not is_saved_contact:
+            return "skipped", self._identity_keys_from_values(whatsapp_id, raw_id, lid)
+
+        candidate_chat_id = whatsapp_id if not whatsapp_id.endswith("@lid") else None
+        if candidate_chat_id and (row is None or not row.chat_id):
+            # Acquire the shared mapping lock before mutating or adding an ORM row.
+            # AsyncSession.execute() autoflushes pending changes before running the
+            # advisory-lock SELECT; taking this lock after editing row fields would
+            # silently acquire a Contact row lock first and invert the dispatch order
+            # (exact-chat lock -> Contact -> consent), allowing deadlocks under load.
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session, candidate_chat_id
+            )
+
         created = row is None
         if row is None:
-            # Do not grow Zina's address book from WAHA-only unsaved contacts. Those
-            # people are learned through the normal inbound Contact pipeline instead.
-            if not is_saved_contact:
-                return "skipped", self._identity_keys_from_values(whatsapp_id, raw_id, lid)
             row = Contact(whatsapp_id=whatsapp_id, updated_at=sync_at)
             self.session.add(row)
 
@@ -197,13 +209,7 @@ class ContactSyncService:
             if preferred_name:
                 row.display_name = preferred_name[:180]
 
-        candidate_chat_id = whatsapp_id if not whatsapp_id.endswith("@lid") else None
         if not row.chat_id and candidate_chat_id:
-            # Contact sync is another runtime writer of Contact.chat_id. It must use
-            # the same exact-chat lock as inbound routing and final outbound consent.
-            await ContactMessagingConsentService.lock_exact_chat_mapping(
-                self.session, candidate_chat_id
-            )
             row.chat_id = candidate_chat_id
         row.waha_contact_id = raw_id[:120]
         if lid:
