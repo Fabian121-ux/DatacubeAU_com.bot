@@ -151,7 +151,22 @@ fi
 # The default reply-rule seed must be idempotent too. ReplyRule has no unique
 # constraint, so bare ON CONFLICT DO NOTHING would silently duplicate every rule
 # on each deployment. A same-key operator edit must also survive a redeploy.
-default_rule_counts="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+default_rule_keys="('help'), ('/help'), ('commands'), ('status'), ('/status'), ('ping'), ('/start'), ('hi'), ('hello'), ('hey'), ('good morning'), ('good afternoon'), ('good evening'), ('who are you'), ('what is your name'), ('what is datacube au')"
+missing_default_keys="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+WITH expected(keyword) AS (VALUES $default_rule_keys)
+SELECT e.keyword
+FROM expected AS e
+WHERE NOT EXISTS (
+  SELECT 1 FROM reply_rules AS r WHERE r.keyword = e.keyword
+)
+ORDER BY e.keyword;
+")"
+if [ -n "$missing_default_keys" ]; then
+  echo "Default reply-rule seed omitted expected keys: $missing_default_keys" >&2
+  exit 1
+fi
+
+default_rule_counts_before="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT COUNT(*)::text || ':' || COUNT(DISTINCT keyword)::text
 FROM reply_rules
 WHERE keyword IN (
@@ -162,8 +177,10 @@ WHERE keyword IN (
   AND match_mode = 'exact'
   AND chat_type_filter IS NULL;
 ")"
-if [ "$default_rule_counts" != "16:16" ]; then
-  echo "Default reply-rule seed duplicated or omitted rows on redeploy: $default_rule_counts" >&2
+before_rows="${default_rule_counts_before%%:*}"
+before_keys="${default_rule_counts_before##*:}"
+if [ -z "$before_rows" ] || [ "$before_rows" != "$before_keys" ]; then
+  echo "Default reply-rule keys are duplicated before redeploy: $default_rule_counts_before" >&2
   exit 1
 fi
 
@@ -176,6 +193,22 @@ WHERE keyword = '/help'
 ")"
 if [ "$custom_reply_state" != "operator-customized /help response:false:7" ]; then
   echo "Default redeploy overwrote operator-edited reply rule: $custom_reply_state" >&2
+  exit 1
+fi
+
+default_rule_counts_after="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+SELECT COUNT(*)::text || ':' || COUNT(DISTINCT keyword)::text
+FROM reply_rules
+WHERE keyword IN (
+  'help', '/help', 'commands', 'status', '/status', 'ping', '/start',
+  'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+  'who are you', 'what is your name', 'what is datacube au'
+)
+  AND match_mode = 'exact'
+  AND chat_type_filter IS NULL;
+")"
+if [ "$default_rule_counts_after" != "$default_rule_counts_before" ]; then
+  echo "Default reply-rule seed changed row counts on redeploy: before=$default_rule_counts_before after=$default_rule_counts_after" >&2
   exit 1
 fi
 
