@@ -609,7 +609,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         events = (
             await verify_session.execute(
                 select(ContactMessagingConsentEvent)
-                .where(ContactMessagingConsent.contact_id == contact_id)
+                .where(ContactMessagingConsentEvent.contact_id == contact_id)
                 .where(ContactMessagingConsentEvent.exact_chat_id == "222@c.us")
             )
         ).scalars().all()
