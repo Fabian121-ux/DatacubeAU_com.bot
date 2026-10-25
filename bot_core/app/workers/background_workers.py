@@ -230,6 +230,25 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
 
+            # Revalidate after the final authority, policy, Contact, and consent locks.
+            # authorize() acquires the global transaction-scoped reservation lock, which
+            # remains held through the single transport attempt and durable outcome.
+            # This closes the gap where a row waits >1 minute at a final fence and its
+            # timestamp-based reservation would otherwise age out before dispatch.
+            if not _is_owner_chat_id(message.chat_id):
+                final_safety = await OutboundSafetyLimitService(session).authorize(
+                    message,
+                    now=utcnow(),
+                )
+                if not final_safety.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final outbound safety recheck failed: {final_safety.reason}",
+                    )
+                    await session.commit()
+                    continue
+
             dispatch: MediaDispatchDecision | None = None
             if message.media_url:
                 # Runs only after the final authorization fence and safety limits have

@@ -144,3 +144,46 @@ async def test_below_limits_allows_exact_queue_row(db_session):
 
     assert decision.allowed is True
     assert decision.reason == "outbound safety limits allow delivery"
+
+
+@pytest.mark.asyncio
+async def test_stale_sending_rows_still_reserve_per_contact_rate_capacity(db_session):
+    now = utcnow()
+    current = _row(chat_id="222@c.us", status="pending", updated_at=now, text="current")
+    db_session.add(current)
+    db_session.add_all(
+        [
+            _row(
+                chat_id="222@c.us",
+                status="sending",
+                updated_at=now - timedelta(minutes=3),
+                text=f"slow-in-flight-{index}",
+            )
+            for index in range(3)
+        ]
+    )
+    await db_session.flush()
+
+    decision = await OutboundSafetyLimitService(db_session).authorize(current, now=now)
+
+    assert decision.allowed is False
+    assert decision.reason == "per-contact outbound safety rate limit reached"
+
+
+@pytest.mark.asyncio
+async def test_stale_in_flight_duplicate_is_suppressed_beyond_duplicate_window(db_session):
+    now = utcnow()
+    current = _row(chat_id="222@c.us", status="pending", updated_at=now, text="same exact content")
+    in_flight = _row(
+        chat_id="222@c.us",
+        status="sending",
+        updated_at=now - timedelta(minutes=20),
+        text="same exact content",
+    )
+    db_session.add_all([current, in_flight])
+    await db_session.flush()
+
+    decision = await OutboundSafetyLimitService(db_session).authorize(current, now=now)
+
+    assert decision.allowed is False
+    assert decision.reason == "recent duplicate/similar outbound content suppressed"
