@@ -102,7 +102,17 @@ SET response_text = 'operator-customized /help response',
     is_enabled = FALSE,
     priority = 7,
     updated_at = NOW()
-WHERE keyword = '/help'
+WHERE NULLIF(
+        BTRIM(
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(LOWER(keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+            '[[:space:]]+',
+            ' ',
+            'g'
+          )
+        ),
+        ''
+      ) = 'help'
   AND match_mode = 'exact'
   AND chat_type_filter IS NULL;
 " >/dev/null
@@ -151,13 +161,37 @@ fi
 # The default reply-rule seed must be idempotent too. ReplyRule has no unique
 # constraint, so bare ON CONFLICT DO NOTHING would silently duplicate every rule
 # on each deployment. A same-key operator edit must also survive a redeploy.
-default_rule_keys="('help'), ('/help'), ('commands'), ('status'), ('/status'), ('ping'), ('/start'), ('hi'), ('hello'), ('hey'), ('good morning'), ('good afternoon'), ('good evening'), ('who are you'), ('what is your name'), ('what is datacube au')"
+default_rule_keys="('help'), ('commands'), ('status'), ('ping'), ('/start'), ('hi'), ('hello'), ('hey'), ('good morning'), ('good afternoon'), ('good evening'), ('who are you'), ('what is your name'), ('what is datacube au')"
 missing_default_keys="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 WITH expected(keyword) AS (VALUES $default_rule_keys)
 SELECT e.keyword
 FROM expected AS e
 WHERE NOT EXISTS (
-  SELECT 1 FROM reply_rules AS r WHERE r.keyword = e.keyword
+  SELECT 1
+  FROM reply_rules AS r
+  WHERE NULLIF(
+          BTRIM(
+            REGEXP_REPLACE(
+              REGEXP_REPLACE(LOWER(r.keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+              '[[:space:]]+',
+              ' ',
+              'g'
+            )
+          ),
+          ''
+        ) IS NOT DISTINCT FROM NULLIF(
+          BTRIM(
+            REGEXP_REPLACE(
+              REGEXP_REPLACE(LOWER(e.keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+              '[[:space:]]+',
+              ' ',
+              'g'
+            )
+          ),
+          ''
+        )
+    AND r.match_mode = 'exact'
+    AND r.chat_type_filter IS NULL
 )
 ORDER BY e.keyword;
 ")"
@@ -167,10 +201,30 @@ if [ -n "$missing_default_keys" ]; then
 fi
 
 default_rule_counts_before="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
-SELECT COUNT(*)::text || ':' || COUNT(DISTINCT keyword)::text
+SELECT COUNT(*)::text || ':' || COUNT(DISTINCT NULLIF(
+  BTRIM(
+    REGEXP_REPLACE(
+      REGEXP_REPLACE(LOWER(keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+      '[[:space:]]+',
+      ' ',
+      'g'
+    )
+  ),
+  ''
+))::text
 FROM reply_rules
-WHERE keyword IN (
-  'help', '/help', 'commands', 'status', '/status', 'ping', '/start',
+WHERE NULLIF(
+        BTRIM(
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(LOWER(keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+            '[[:space:]]+',
+            ' ',
+            'g'
+          )
+        ),
+        ''
+      ) IN (
+  'help', 'commands', 'status', 'ping', 'start',
   'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
   'who are you', 'what is your name', 'what is datacube au'
 )
@@ -187,7 +241,17 @@ fi
 custom_reply_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT response_text || ':' || is_enabled::text || ':' || priority::text
 FROM reply_rules
-WHERE keyword = '/help'
+WHERE NULLIF(
+        BTRIM(
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(LOWER(keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+            '[[:space:]]+',
+            ' ',
+            'g'
+          )
+        ),
+        ''
+      ) = 'help'
   AND match_mode = 'exact'
   AND chat_type_filter IS NULL;
 ")"
@@ -197,10 +261,30 @@ if [ "$custom_reply_state" != "operator-customized /help response:false:7" ]; th
 fi
 
 default_rule_counts_after="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
-SELECT COUNT(*)::text || ':' || COUNT(DISTINCT keyword)::text
+SELECT COUNT(*)::text || ':' || COUNT(DISTINCT NULLIF(
+  BTRIM(
+    REGEXP_REPLACE(
+      REGEXP_REPLACE(LOWER(keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+      '[[:space:]]+',
+      ' ',
+      'g'
+    )
+  ),
+  ''
+))::text
 FROM reply_rules
-WHERE keyword IN (
-  'help', '/help', 'commands', 'status', '/status', 'ping', '/start',
+WHERE NULLIF(
+        BTRIM(
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(LOWER(keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+            '[[:space:]]+',
+            ' ',
+            'g'
+          )
+        ),
+        ''
+      ) IN (
+  'help', 'commands', 'status', 'ping', 'start',
   'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
   'who are you', 'what is your name', 'what is datacube au'
 )
