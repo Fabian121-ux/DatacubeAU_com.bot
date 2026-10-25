@@ -1,5 +1,19 @@
 # Zina Release Checklist
 
+## Latest verification delta — 2026-10-25 13:35 UTC
+
+This partial state correction supersedes the older 04:26 UTC snapshot where heads or CI results differ; it is not a full release audit.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08.
+- PR #60 consent P0 is still draft/unmerged at `753f5eb8fff3c57452e89e3cb4861211c7e7b72b`; [run 40197910350](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40197910350) succeeded with 831 passed, 76.17% coverage. This branch runs 001–033 plus 038 only; two review threads remain unresolved, and the integrated 001–038 chain, installed upgrade, current DB-leakage audit, and separate P0 matrix are not yet proven.
+- PR #61 migration-sequence guard is green at `180852b98c8b1bcb2072c1e4d0bc6e1a4ebccf7d` (run 40125154693; 798 passed, 76.01%) but still needs independent review.
+- Migration dependency order is #48 (034) → #50 (035) → #49 (036–037) → #60 (038). A temporary integrated run validated only 001–037, not 038.
+- Review API currently reports: #48 0 unresolved/15 total (9 outdated); #49 1 unresolved/80 total (50 outdated); #50 2 unresolved/10 total (3 outdated); #55 0; #57 1 unresolved but outdated; #59 0; #60 2 unresolved/2 total (1 outdated); #61 0. Zero unresolved inline threads is not a substitute for independent approval.
+- PR #57 remains important for deployment safety: main's migration runner replays all seed SQL files each run. PR #55's leakage gate and #57's seed-policy fix are not merged.
+
+**NOT TEST READY.** Do not start controlled live WhatsApp testing until exact-head independent reviews, ordered 001–038 fresh and installed-upgrade validation, migration checksum/no-op verification, DB-leakage audit, P0 adversarial matrix, and the remaining product/dashboard gates are complete. REAL WAHA ACTIONS: NONE; private-media retention remains OFF.
+
+
 What remains before Fabian can begin controlled real-world WhatsApp testing (see `docs/ZINA_IMPLEMENTATION_ROADMAP.md` for the full per-domain detail behind each line here, and `docs/ZINA_CONTROLLED_TEST_PLAN.md`, once written, for the staged test procedure itself).
 
 Last full phase-by-phase audit: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d`. The dated branch-state snapshot below is partial, not a fresh full release audit.
