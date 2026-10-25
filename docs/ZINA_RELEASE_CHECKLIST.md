@@ -4,6 +4,19 @@ What remains before Fabian can begin controlled real-world WhatsApp testing (see
 
 Last full phase-by-phase audit: 2026-09-08, against `main` @ `0034587a90bb8d5a79bda41e85091cfea33b969d`. The dated branch-state snapshot below is partial, not a fresh full release audit.
 
+## Latest verification delta — 2026-10-25 04:26 UTC
+
+This partial update supersedes the older branch-state details below where exact heads or review counts differ; it is not a full phase-by-phase release audit.
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08.
+- PR #48 head `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca`, [run 40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566): 856 passed, 76.26% coverage, migrations 001–034.
+- PR #60 head `b9868455cd4c7aecdadeaa21d10e889ff4e02e65`, [run 40161743911](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40161743911): 822 passed, 75.96% coverage, migrations 001–033 plus 038 only. The current worker regression matrix verifies that neither contact-policy authority nor one-use approval can bypass unknown consent or terminal opt-out; zero mocked WAHA calls in all four cases.
+- PR #57's current head `492bfdeb056da11cb83b50a9472928fe5c937bd5` passed [run 40108792756](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40108792756). Its strict disposable-database allowlist is implemented; one outdated review thread still awaits independent resolution.
+- Review blockers remain: #49 has one current unresolved retired-key finding; #50 has two current unresolved Identity Registry findings; #60 has two current unresolved consent/audit findings. #48 has no unresolved inline threads, but remains open pending independent approval and integrated validation.
+- Migration branches remain #48=034, #50=035, #49=036–037, #60=038; main has only 001–033. The integrated fresh 001–038 chain, installed 033→038 upgrade, checksum/no-op rerun, P0 adversarial matrix, and current database-leakage audit are not yet proven.
+- **NOT TEST READY.** No live WhatsApp sends; private-media retention remains OFF.
+
+
 ## Current branch-state snapshot — 2026-10-24/25 (not a full phase-by-phase audit)
 
 The last full roadmap/checklist audit above is historical. The live `main` branch is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033. Its latest `Tests` push run is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. The checkboxes below must not be treated as fresh release approval, and open feature branches are not part of `main`.
