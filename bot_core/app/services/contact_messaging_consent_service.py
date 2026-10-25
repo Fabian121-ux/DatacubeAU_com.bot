@@ -287,6 +287,20 @@ class ContactMessagingConsentService:
     async def grant_for_chat(self, *, exact_chat_id: str, evidence_ref: str, owner_identity: str) -> int:
         self._validate_owner_evidence(exact_chat_id, evidence_ref, owner_identity)
         contact = await self._resolve_owner_chat(exact_chat_id)
+
+        # Current consent rows cascade with Contact deletion, but the audit events
+        # deliberately do not. Preserve the terminal opt-out invariant across contact
+        # deletion/re-import by consulting the immutable exact-chat history before
+        # creating a fresh consent row for a recreated Contact.
+        prior_opt_out = await self.session.execute(
+            select(ContactMessagingConsentEvent.id)
+            .where(ContactMessagingConsentEvent.exact_chat_id == exact_chat_id)
+            .where(ContactMessagingConsentEvent.event_type == "opted_out")
+            .limit(1)
+        )
+        if prior_opt_out.scalar_one_or_none() is not None:
+            raise ValueError("contact opted out; explicit contact re-consent is required before .contact consent reconsent")
+
         instant = utcnow()
         row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)
         if row.status == "opted_out":

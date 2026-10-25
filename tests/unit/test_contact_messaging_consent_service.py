@@ -242,6 +242,58 @@ async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
 
 
 @pytest.mark.asyncio
+async def test_terminal_opt_out_survives_contact_delete_and_recreation(db_session, test_contact):
+    exact_chat_id = test_contact.whatsapp_id
+    service = ContactMessagingConsentService(db_session)
+    await service.record_inbound_opt_out(
+        contact_id=int(test_contact.id),
+        exact_chat_id=exact_chat_id,
+        evidence_ref="inbound-stop-before-contact-delete",
+    )
+    await db_session.commit()
+
+    # Live consent state is intentionally FK-cascaded, while the append-only event
+    # history is not. Recreating the same Contact must not turn that history into
+    # fresh UNKNOWN state which an OWNER grant can silently override.
+    await db_session.delete(test_contact)
+    await db_session.commit()
+
+    replacement = Contact(
+        whatsapp_id=exact_chat_id,
+        chat_id=exact_chat_id,
+        display_name="Recreated contact",
+    )
+    db_session.add(replacement)
+    await db_session.flush()
+
+    with pytest.raises(ValueError, match="explicit contact re-consent"):
+        await ContactMessagingConsentService(db_session).grant_for_chat(
+            exact_chat_id=exact_chat_id,
+            evidence_ref="owner-grant-after-contact-recreation",
+            owner_identity="OWNER",
+        )
+
+    live_state = await db_session.execute(
+        select(ContactMessagingConsent.id).where(
+            ContactMessagingConsent.contact_id == replacement.id,
+            ContactMessagingConsent.exact_chat_id == exact_chat_id,
+        )
+    )
+    assert live_state.scalar_one_or_none() is None
+
+    history = (
+        await db_session.execute(
+            select(ContactMessagingConsentEvent).where(
+                ContactMessagingConsentEvent.exact_chat_id == exact_chat_id,
+                ContactMessagingConsentEvent.event_type == "opted_out",
+            )
+        )
+    ).scalars().all()
+    assert len(history) == 1
+    assert history[0].evidence_ref == "inbound-stop-before-contact-delete"
+
+
+@pytest.mark.asyncio
 async def test_expired_consent_and_wrong_exact_chat_fail_closed(db_session, test_contact):
     queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
     service = ContactMessagingConsentService(db_session)
