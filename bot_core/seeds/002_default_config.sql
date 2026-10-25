@@ -29,10 +29,8 @@ WITH default_reply_rules (
 ) AS (
     VALUES
       ('help',        'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL::VARCHAR(20), TRUE, 100),
-      ('/help',       'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL::VARCHAR(20), TRUE, 100),
       ('commands',    'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL::VARCHAR(20), TRUE, 100),
       ('status',      'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL::VARCHAR(20), TRUE, 90),
-      ('/status',     'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL::VARCHAR(20), TRUE, 90),
       ('ping',        'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL::VARCHAR(20), TRUE, 90),
       ('/start',      'Welcome to Datacube AU 👋 I''m Zina, Fabian''s AI assistant. Ask me anything or type /help for commands.', 'exact', NULL::VARCHAR(20), TRUE, 95),
       ('hi',          'Hello 👋 How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
@@ -53,7 +51,27 @@ FROM default_reply_rules AS d
 WHERE NOT EXISTS (
     SELECT 1
     FROM reply_rules AS existing
-    WHERE existing.keyword = d.keyword
+    WHERE NULLIF(
+            BTRIM(
+              REGEXP_REPLACE(
+                REGEXP_REPLACE(LOWER(existing.keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+                '[[:space:]]+',
+                ' ',
+                'g'
+              )
+            ),
+            ''
+          ) IS NOT DISTINCT FROM NULLIF(
+            BTRIM(
+              REGEXP_REPLACE(
+                REGEXP_REPLACE(LOWER(d.keyword), '[^[:alnum:]_[:space:]]+', ' ', 'g'),
+                '[[:space:]]+',
+                ' ',
+                'g'
+              )
+            ),
+            ''
+          )
       AND existing.match_mode = d.match_mode
       AND existing.chat_type_filter IS NOT DISTINCT FROM d.chat_type_filter
 )
