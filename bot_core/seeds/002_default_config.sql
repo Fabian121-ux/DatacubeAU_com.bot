@@ -21,22 +21,40 @@ INSERT INTO bot_config (config_key, config_value) VALUES
   ('identity_style',       'Helpful, concise, and direct')
 ON CONFLICT (config_key) DO NOTHING;
 
--- Default reply rules (replaces hardcoded _resolve_static_reply)
-INSERT INTO reply_rules (keyword, response_text, match_mode, chat_type_filter, is_enabled, priority) VALUES
-  ('help',        'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL, TRUE, 100),
-  ('/help',       'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL, TRUE, 100),
-  ('commands',    'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL, TRUE, 100),
-  ('status',      'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL, TRUE, 90),
-  ('/status',     'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL, TRUE, 90),
-  ('ping',        'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL, TRUE, 90),
-  ('/start',      'Welcome to Datacube AU 👋 I''m Zina, Fabian''s AI assistant. Ask me anything or type /help for commands.', 'exact', NULL, TRUE, 95),
-  ('hi',          'Hello 👋 How can I help you today?', 'exact', NULL, TRUE, 50),
-  ('hello',       'Hello 👋 How can I help you today?', 'exact', NULL, TRUE, 50),
-  ('hey',         'Hello 👋 How can I help you today?', 'exact', NULL, TRUE, 50),
-  ('good morning','Good morning ☀️ How can I help you today?', 'exact', NULL, TRUE, 50),
-  ('good afternoon','Good afternoon! How can I help you today?', 'exact', NULL, TRUE, 50),
-  ('good evening','Good evening! How can I help you today?', 'exact', NULL, TRUE, 50),
-  ('who are you', 'Hi 👋 I''m Zina, Fabian''s AI assistant. I help answer questions about Fabian, his projects, and Datacube AU.', 'exact', NULL, TRUE, 80),
-  ('what is your name', 'Hi 👋 I''m Zina, Fabian''s AI assistant. I help answer questions about Fabian, his projects, and Datacube AU.', 'exact', NULL, TRUE, 80),
-  ('what is datacube au', 'Datacube AU is Fabian''s intelligent WhatsApp assistant system for smart replies, memory, automation, and AI-assisted interactions.', 'exact', NULL, TRUE, 80)
+-- Default reply rules are bootstrap defaults, not an instruction to reset operator-managed
+-- rules on every deployment. ReplyRule has no database uniqueness constraint, so
+-- ON CONFLICT DO NOTHING alone does not make this seed idempotent.
+WITH default_reply_rules (
+    keyword, response_text, match_mode, chat_type_filter, is_enabled, priority
+) AS (
+    VALUES
+      ('help',        'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL::VARCHAR(20), TRUE, 100),
+      ('/help',       'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL::VARCHAR(20), TRUE, 100),
+      ('commands',    'Available commands: /help, /status, /mode. Mention the bot in groups to trigger a reply.', 'exact', NULL::VARCHAR(20), TRUE, 100),
+      ('status',      'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL::VARCHAR(20), TRUE, 90),
+      ('/status',     'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL::VARCHAR(20), TRUE, 90),
+      ('ping',        'Datacube AU bot status: online ✅ Knowledge search is enabled.', 'exact', NULL::VARCHAR(20), TRUE, 90),
+      ('/start',      'Welcome to Datacube AU 👋 I''m Zina, Fabian''s AI assistant. Ask me anything or type /help for commands.', 'exact', NULL::VARCHAR(20), TRUE, 95),
+      ('hi',          'Hello 👋 How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
+      ('hello',       'Hello 👋 How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
+      ('hey',         'Hello 👋 How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
+      ('good morning','Good morning ☀️ How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
+      ('good afternoon','Good afternoon! How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
+      ('good evening', 'Good evening! How can I help you today?', 'exact', NULL::VARCHAR(20), TRUE, 50),
+      ('who are you', 'Hi 👋 I''m Zina, Fabian''s AI assistant. I help answer questions about Fabian, his projects, and Datacube AU.', 'exact', NULL::VARCHAR(20), TRUE, 80),
+      ('what is your name', 'Hi 👋 I''m Zina, Fabian''s AI assistant. I help answer questions about Fabian, his projects, and Datacube AU.', 'exact', NULL::VARCHAR(20), TRUE, 80),
+      ('what is datacube au', 'Datacube AU is Fabian''s intelligent WhatsApp assistant system for smart replies, memory, automation, and AI-assisted interactions.', 'exact', NULL::VARCHAR(20), TRUE, 80)
+)
+INSERT INTO reply_rules (
+    keyword, response_text, match_mode, chat_type_filter, is_enabled, priority
+)
+SELECT d.keyword, d.response_text, d.match_mode, d.chat_type_filter, d.is_enabled, d.priority
+FROM default_reply_rules AS d
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM reply_rules AS existing
+    WHERE existing.keyword = d.keyword
+      AND existing.match_mode = d.match_mode
+      AND existing.chat_type_filter IS NOT DISTINCT FROM d.chat_type_filter
+)
 ON CONFLICT DO NOTHING;
