@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.admin_management_service import AdminManagementService
+from app.services.logging_service import log_event
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_metadata_service import OutboundMediaMetadataService
+from app.services.private_media_artifact_service import PrivateMediaArtifactService
 from app.services.view_once_capability_service import ViewOnceCapabilityService
 from app.utils.time import utcnow
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -83,6 +91,7 @@ class ViewOnceCommandService:
             record,
             quoted_id,
             message=message,
+            owner=owner,
             owner_chat_id=owner_chat_id,
             transport_message_id=transport_message_id,
             request_id=request_id,
@@ -98,6 +107,7 @@ class ViewOnceCommandService:
         quoted_id: str,
         *,
         message: Any,
+        owner: AdminAccount,
         owner_chat_id: str,
         transport_message_id: str | None,
         request_id: str | None,
@@ -108,6 +118,14 @@ class ViewOnceCommandService:
             )
         if record["deleted_at"] is not None:
             return self._reply("Zina's metadata for this item was deleted, so it can no longer be opened.")
+
+        # The worker's final fence also rejects a missing command ID, but refusing here
+        # avoids persisting a queue row that can never be dispatched and cannot be
+        # deduplicated across webhook retries. Bind every return to one exact WAHA event.
+        if not isinstance(transport_message_id, str) or not transport_message_id.strip():
+            return self._reply(
+                "The WhatsApp command has no exact message ID, so this media was not queued."
+            )
 
         # Re-derive evidence from the live command payload rather than trusting the
         # stored state. Conflicting or downgraded evidence must fail closed here too.
@@ -159,8 +177,90 @@ class ViewOnceCommandService:
         if not decision.accepted:
             return self._reply(f"This view-once media could not be returned safely: {decision.reason}")
 
+        # Serialize duplicate webhook deliveries for the same source before the
+        # idempotency lookup. Without this row lock, two concurrent requests can both
+        # observe no queue row and enqueue two owner returns. Re-check lifecycle and
+        # source identity because the record was loaded earlier in this transaction.
+        # Serialize by exact command ID before locking a source row. The source-row
+        # lock handles duplicate commands for one source, but a conflicting replay can
+        # quote a different source and otherwise lock a different row concurrently.
+        # The transaction-scoped advisory lock makes the idempotency lookup and insert
+        # one critical section for this command ID without adding another delivery path.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:command_message_id, 0))"),
+            {"command_message_id": transport_message_id},
+        )
+
+        locked_source = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT source_chat_id FROM view_once_media_metadata
+                    WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                    FOR UPDATE
+                    """
+                ),
+                {"source_message_id": quoted_id},
+            )
+        ).mappings().one_or_none()
+        if locked_source is None:
+            return self._reply("Zina's metadata for this item was deleted before it could be queued.")
+        if str(locked_source["source_chat_id"] or "") != str(record["source_chat_id"] or ""):
+            return self._reply("The source chat no longer matches its recorded identity, so this item was not returned.")
+
         existing = await self._existing_return(transport_message_id)
         if existing is not None:
+            # The idempotency key is the WAHA command ID, but that alone is not proof
+            # that a replay still refers to the same quoted source. A malformed or
+            # conflicting replay must not attach new provenance to the old queue row.
+            existing_row = await self.session.get(OutboundMessage, existing)
+            existing_metadata = (
+                existing_row.formatting_json
+                if existing_row is not None and isinstance(existing_row.formatting_json, dict)
+                else {}
+            )
+            existing_matches = (
+                existing_row is not None
+                and existing_row.chat_id == owner_chat_id
+                and existing_metadata.get("source_message_id") == quoted_id
+                and str(existing_metadata.get("source_chat_id") or "")
+                == str(record["source_chat_id"] or "")
+                and existing_metadata.get("command_message_id") == transport_message_id
+                and OutboundAuthorizationService.owner_payload_matches(existing_row)
+            )
+            if not existing_matches:
+                self.session.add(
+                    AuditLog(
+                        action="view_once_return_replay_conflict",
+                        entity_type="outbound_queue",
+                        entity_id=str(existing),
+                        details_json={
+                            "request_id": request_id,
+                            "command_message_id": transport_message_id,
+                            "requested_source_message_id": quoted_id,
+                            "requested_source_chat_id": record["source_chat_id"],
+                            "existing_source_message_id": existing_metadata.get("source_message_id"),
+                            "existing_source_chat_id": existing_metadata.get("source_chat_id"),
+                        },
+                    )
+                )
+                await self.session.flush()
+                return self._reply(
+                    "This WhatsApp command ID is already bound to a different or invalid media return; "
+                    "no additional media was queued."
+                )
+
+            # A command retry must still reconcile provenance, but only after proving
+            # it is an exact replay of the original source and stamped owner payload.
+            await self._record_artifact(
+                quoted_id=quoted_id,
+                record=record,
+                owner=owner,
+                media_kind=decision.media.media_kind,
+                media_mime=decision.media.mimetype,
+                byte_size=size,
+                request_id=request_id,
+            )
             return ViewOnceCommandResult(True, outbound_queue_id=existing)
 
         caption = f"View-once {decision.media.media_kind} from your WhatsApp history."
@@ -169,6 +269,7 @@ class ViewOnceCommandService:
             "command": self.COMMAND,
             "command_message_id": transport_message_id,
             "source_message_id": quoted_id,
+            "source_chat_id": record["source_chat_id"],
             **decision.media.queue_metadata(),
         }
         queued = OutboundMessage(
@@ -194,19 +295,9 @@ class ViewOnceCommandService:
         queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
         await self.session.flush()
 
-        await self.session.execute(
-            text(
-                """
-                UPDATE view_once_media_metadata
-                SET returned_to_owner_at = now(), last_observed_at = now()
-                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
-                """
-            ),
-            {"source_message_id": quoted_id},
-        )
         self.session.add(
             AuditLog(
-                action="view_once_returned_to_owner",
+                action="view_once_return_queued",
                 entity_type="outbound_queue",
                 entity_id=str(queued.id),
                 details_json={
@@ -218,7 +309,75 @@ class ViewOnceCommandService:
             )
         )
         await self.session.flush()
+
+        await self._record_artifact(
+            quoted_id=quoted_id,
+            record=record,
+            owner=owner,
+            media_kind=decision.media.media_kind,
+            media_mime=decision.media.mimetype,
+            byte_size=size,
+            request_id=request_id,
+        )
+
         return ViewOnceCommandResult(True, outbound_queue_id=queued.id)
+
+    async def _record_artifact(
+        self,
+        *,
+        quoted_id: str,
+        record: dict[str, Any],
+        owner: AdminAccount,
+        media_kind: str,
+        media_mime: str | None,
+        byte_size: int | None,
+        request_id: str | None,
+    ) -> None:
+        """Metadata-only provenance record (docs/VIEW_ONCE_MEDIA_PIPELINE.md roadmap
+        phase 5). This is observability, never authority: it stores no bytes and must
+        never block or fail an already-authorized owner return, so a failure here is
+        logged and swallowed rather than raised. Called from both the fresh-return and
+        existing-return (retry) paths in ``_open``, so a transient failure on the first
+        attempt still gets reconciled on a retry of the same command message.
+        """
+        try:
+            # A SAVEPOINT, not the outer transaction: a failure here (including a genuine
+            # unique-constraint race on ux_private_media_artifacts_source) must roll back
+            # only this nested attempt, never the already-queued, already-stamped owner
+            # return or its audit log.
+            async with self.session.begin_nested():
+                artifact_result = await PrivateMediaArtifactService(self.session).get_or_create_from_observation(
+                    source_message_id=quoted_id,
+                    # The source identity is where the media originated (the same chat
+                    # ingress observation recorded it under), never the OWNER self-DM
+                    # destination the return is queued to -- otherwise this call can
+                    # never find the artifact ingress already created for this exact
+                    # source and mints a second, incorrectly-addressed one instead.
+                    source_chat_id=record["source_chat_id"],
+                    source_contact_id=record["source_contact_id"],
+                    owner_admin_account_id=owner.id,
+                    transport_provenance="view_once_command",
+                    media_kind=media_kind,
+                    media_mime=media_mime,
+                    byte_size=byte_size,
+                    request_id=request_id,
+                )
+            if not artifact_result.ok:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "private_media_artifact_observation_failed",
+                    source_message_id=quoted_id,
+                    error=artifact_result.error,
+                )
+        except Exception as exc:  # noqa: BLE001 - provenance recording must never break the return
+            log_event(
+                logger,
+                logging.WARNING,
+                "private_media_artifact_observation_failed",
+                source_message_id=quoted_id,
+                error=str(exc),
+            )
 
     # ----------------------------------------------------------------------------------
     # .vv info / list / delete
@@ -295,28 +454,79 @@ class ViewOnceCommandService:
     ) -> ViewOnceCommandResult:
         if record is None:
             return self._reply(f"No view-once metadata observed for source {quoted_id}.")
-        if record["deleted_at"] is not None:
+
+        already_deleted = record["deleted_at"] is not None
+
+        if not already_deleted:
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE view_once_media_metadata
+                    SET deleted_at = now(), capability_state = 'deleted', transport_available = false
+                    WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                    """
+                ),
+                {"source_message_id": quoted_id},
+            )
+            self.session.add(
+                AuditLog(
+                    action="view_once_metadata_deleted",
+                    entity_type="view_once_media_metadata",
+                    entity_id=quoted_id,
+                    details_json={"request_id": request_id, "source_message_id": quoted_id},
+                )
+            )
+            await self.session.flush()
+
+        # Keep the newer PrivateMediaArtifact table (if observation or a prior .vvopen
+        # ever recorded one for this exact source) in sync with this deletion, rather
+        # than leaving an active artifact row behind an OWNER-deleted view_once_media_
+        # metadata record. Retried even when the metadata row was already deleted:
+        # `delete_by_source` is idempotent, and this is the OWNER's only way to repair
+        # a split state left by an earlier attempt whose artifact cleanup transiently
+        # failed -- otherwise a repeat `.vv delete` on an already-deleted source would
+        # never try again. Same non-fatal posture as the two recording call sites: this
+        # must never turn a successful metadata delete into a failure.
+        artifact_cleanup_ok = True
+        try:
+            async with self.session.begin_nested():
+                artifact_result = await PrivateMediaArtifactService(self.session).delete_by_source(
+                    record["source_chat_id"], quoted_id, request_id=request_id
+                )
+            if not artifact_result.ok:
+                artifact_cleanup_ok = False
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "private_media_artifact_observation_failed",
+                    source_message_id=quoted_id,
+                    error=artifact_result.error,
+                )
+        except Exception as exc:  # noqa: BLE001 - artifact cleanup must never break the primary tombstone
+            artifact_cleanup_ok = False
+            log_event(
+                logger,
+                logging.WARNING,
+                "private_media_artifact_observation_failed",
+                source_message_id=quoted_id,
+                error=str(exc),
+            )
+
+        # The legacy source tombstone is authoritative for blocking future returns,
+        # but the linked artifact table may still contain contact/source metadata after
+        # a transient cleanup failure. Do not tell the OWNER that all metadata was
+        # deleted unless both stores confirm it. A repeat .vv delete is idempotent and
+        # retries the artifact tombstone without re-enabling the source.
+        if not artifact_cleanup_ok:
+            return self._reply(
+                "The view-once item is disabled and cannot be opened, but cleanup of its "
+                "linked artifact metadata did not complete. No media bytes were stored. "
+                "Please retry `.vv delete`; if it repeats, the audit log needs review."
+            )
+
+        if already_deleted:
             return self._reply("Zina's metadata for this item was already deleted.")
 
-        await self.session.execute(
-            text(
-                """
-                UPDATE view_once_media_metadata
-                SET deleted_at = now(), capability_state = 'deleted', transport_available = false
-                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
-                """
-            ),
-            {"source_message_id": quoted_id},
-        )
-        self.session.add(
-            AuditLog(
-                action="view_once_metadata_deleted",
-                entity_type="view_once_media_metadata",
-                entity_id=quoted_id,
-                details_json={"request_id": request_id, "source_message_id": quoted_id},
-            )
-        )
-        await self.session.flush()
         return self._reply(
             "Zina's metadata for this item was deleted. Zina never stored the media itself, "
             "so no media bytes were removed."
@@ -331,8 +541,8 @@ class ViewOnceCommandService:
             await self.session.execute(
                 text(
                     """
-                    SELECT source_message_id, source_chat_id, media_type, media_mime,
-                           capability_state, transport_available, first_observed_at,
+                    SELECT source_message_id, source_chat_id, source_contact_id, media_type,
+                           media_mime, capability_state, transport_available, first_observed_at,
                            last_observed_at, returned_to_owner_at, deleted_at
                     FROM view_once_media_metadata
                     WHERE source_message_id = :source_message_id
@@ -364,7 +574,80 @@ class ViewOnceCommandService:
 
     @classmethod
     def _is_trusted_locator(cls, media_url: str) -> bool:
-        return cls._TRUSTED_MEDIA_PATH in str(media_url or "")
+        """Accept only a file capability served by the configured WAHA origin."""
+        raw = str(media_url or "").strip()
+        if not raw or len(raw) > OutboundMediaMetadataService.MAX_URL_LENGTH:
+            return False
+        if any(character.isspace() for character in raw) or "\x00" in raw:
+            return False
+
+        try:
+            candidate = urlparse(raw)
+            configured = urlparse(str(settings.waha_service_url or "").strip())
+            candidate_port = candidate.port
+            configured_port = configured.port
+        except ValueError:
+            return False
+
+        candidate_scheme = candidate.scheme.lower()
+        configured_scheme = configured.scheme.lower()
+        if candidate_scheme not in {"http", "https"} or configured_scheme not in {"http", "https"}:
+            return False
+        if not candidate.netloc or not configured.netloc:
+            return False
+        if candidate.username is not None or candidate.password is not None:
+            return False
+        if configured.username is not None or configured.password is not None:
+            return False
+        if candidate.fragment:
+            return False
+
+        candidate_host = (candidate.hostname or "").lower()
+        configured_host = (configured.hostname or "").lower()
+        if not candidate_host or not configured_host:
+            return False
+
+        def effective_port(scheme: str, port: int | None) -> int:
+            if port is not None:
+                return port
+            return 443 if scheme == "https" else 80
+
+        if (
+            candidate_scheme,
+            candidate_host,
+            effective_port(candidate_scheme, candidate_port),
+        ) != (
+            configured_scheme,
+            configured_host,
+            effective_port(configured_scheme, configured_port),
+        ):
+            return False
+
+        raw_path = candidate.path or ""
+        # Require the literal route prefix before decoding. A proxy or HTTP framework
+        # may normalize percent-encoded path separators differently from this validator.
+        if not raw_path.startswith(cls._TRUSTED_MEDIA_PATH):
+            return False
+
+        # Check every decoding layer, not just the first one: a double-encoded traversal
+        # segment can survive one unquote() and be decoded later by a downstream layer.
+        path = raw_path
+        for _ in range(5):
+            if ".." in path or "\\" in path:
+                return False
+            decoded_path = unquote(path)
+            if decoded_path == path:
+                break
+            path = decoded_path
+        else:
+            # Excessive nested encoding is ambiguous; fail closed.
+            return False
+
+        return (
+            path.startswith(cls._TRUSTED_MEDIA_PATH)
+            and ".." not in path
+            and "\\" not in path
+        )
 
     @staticmethod
     def _quoted_source_message_id(payload: Any) -> str | None:

@@ -65,13 +65,22 @@ These are explicitly unfinished. Do not describe them as working.
 
 - **`PrivateMediaArtifact` byte storage.** Migration 032 adds the PostgreSQL metadata
   table (`private_media_artifacts`) and `PrivateMediaArtifactService` (create / get /
-  disable / delete / list-for-owner), covering opaque artifact ID, exact source
-  message/contact/chat identifiers, media kind/MIME/size/content hash, transport
-  provenance, retention policy, and lifecycle timestamps. This is metadata only: there
-  is still no private byte store (`storage_locator` stays NULL), and the service is not
-  called from any producer or delivery path yet. `retention_policy` is fail-closed to
-  `"none"` in code — any other value is refused — until quotas, TTL enforcement, and an
-  actual byte-storage backend exist behind this service.
+  disable / delete / list-for-owner / get-or-create-from-observation), covering opaque
+  artifact ID, exact source message/contact/chat identifiers, media kind/MIME/size/
+  content hash, transport provenance, retention policy, and lifecycle timestamps. This
+  is metadata only: there is still no private byte store (`storage_locator` stays
+  NULL). Migration 034 adds a unique index on `(source_chat_id, source_message_id)
+  WHERE deleted_at IS NULL` so repeated observation of one source message converges on
+  one artifact identity rather than duplicating.
+  `retention_policy` is fail-closed to `"none"` in code — any other value is refused —
+  until quotas, TTL enforcement, and an actual byte-storage backend exist behind this
+  service.
+  **Now wired (metadata only, no bytes):** `ViewOnceObservationService` (inbound
+  ingress) and `ViewOnceCommandService._open` (`.vvopen` owner return) both call
+  `get_or_create_from_observation` to record who/what/when was observed or returned.
+  Neither call can block, fail, or gate the message it describes — a persistence
+  failure here is caught inside a SAVEPOINT and logged, never raised into the ingress
+  or command path. No admin API or dashboard surface exists yet to read this data back.
 - **Persistent view-once retention.** Not implemented.
 - **`.vvretain on`.** Unavailable, and it must remain unavailable until the storage,
   quota, TTL, deletion, disable, audit, and restart-safety requirements below are met.
@@ -222,7 +231,7 @@ Content/media binding now covers the exact media locator, kind, and caption alon
 2. **Done.** Add explicit WAHA image/video/voice/file adapter methods and mock-only request-contract tests; do not change live routing yet.
 3. **Done.** Add media-type-aware Outbound Queue dispatch after final P0 authorization, with fail-closed unknown/conflicting types and no automatic replay on uncertain sends. Producer-side media is canonicalized at one boundary before the queue row is created.
 4. **Done.** `.vv`/`.vvopen` image return, `info`, `list`, and `delete` are implemented and tested end to end (with mocks) against the merged P0 main. Truthful video/audio handling through this command remains future work pending exact capability evidence for those media types.
-5. **Started, metadata layer only.** `PrivateMediaArtifactService` and the `private_media_artifacts` table (migration 032) exist with fail-closed `retention_policy="none"`. Private byte storage, quotas, TTL enforcement, and wiring this service into any producer or delivery path are not started.
+5. **Metadata wired, byte storage not started.** `PrivateMediaArtifactService` and the `private_media_artifacts` table (migrations 032/034) exist with fail-closed `retention_policy="none"`. View-once ingress observation and `.vvopen` owner returns now both write metadata-only provenance rows (idempotent per source message). Private byte storage, quotas, TTL enforcement, and an admin API/dashboard surface to read this data are not started.
 6. **Not started.** Add bounded image/video/audio AI-derived-artifact processing through existing Tool Registry/AI boundaries. No automatic Memory/KB promotion.
 7. **Partially done.** The active WAHA build was inspected for the webhook session contract (`populateSessionInfo`, `WAHAWebhook` DTO). View-once/revocation payload metadata has not been re-inspected against the deployed engine beyond the existing classification fixtures. If a required capability is absent, document the exact gap before considering an isolated Baileys prototype. Never run WAHA and Baileys simultaneously in production.
 

@@ -151,11 +151,21 @@ class OutboundAuthorizationService:
         `content_hash_for_message` unchanged, because there the recipient is already
         bound by the durable approval row.
         """
+        payload = {
+            "chat_id": str(getattr(message, "chat_id", "") or ""),
+            "content": cls.content_hash_for_message(message),
+        }
+        metadata = getattr(message, "formatting_json", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if metadata.get("source") == "owner_view_once":
+            # Bind the exact quoted source and the exact OWNER command that requested
+            # the return. The worker independently compares source_chat_id against the
+            # authoritative metadata row immediately before dispatch.
+            payload["view_once_source_message_id"] = str(metadata.get("source_message_id") or "")
+            payload["view_once_source_chat_id"] = str(metadata.get("source_chat_id") or "")
+            payload["view_once_command_message_id"] = str(metadata.get("command_message_id") or "")
         preimage = json.dumps(
-            {
-                "chat_id": str(getattr(message, "chat_id", "") or ""),
-                "content": cls.content_hash_for_message(message),
-            },
+            payload,
             separators=(",", ":"),
             sort_keys=True,
             ensure_ascii=False,

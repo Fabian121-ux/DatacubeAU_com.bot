@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount, CommandCatalogEntry, OutboundMessage
 from app.services.command_control_service import CommandControlService
+from app.services.view_once_command_service import ViewOnceCommandService
 from app.workers import background_workers
 
 
@@ -66,7 +67,8 @@ class _RecordingClient:
 OWNER_ID = "2348000000001@c.us"
 PEER_ID = "2348000000002@c.us"
 STRANGER_ID = "2348000000009@c.us"
-TRUSTED_URL = "http://waha:3000/api/files/vv.jpg"
+WAHA_BASE_URL = str(background_workers.settings.waha_service_url).rstrip("/")
+TRUSTED_URL = f"{WAHA_BASE_URL}/api/files/vv.jpg"
 
 
 async def _seed_catalog(db_session, *, enabled=True):
@@ -328,7 +330,7 @@ async def test_view_once_media_reaches_typed_image_dispatch(db_session, monkeypa
     "field, value",
     [
         ("chat_id", STRANGER_ID),
-        ("media_url", "http://waha:3000/api/files/swapped.jpg"),
+        ("media_url", f"{WAHA_BASE_URL}/api/files/swapped.jpg"),
         ("media_type", "video"),
         ("media_caption", "attacker caption"),
         ("message_text", "attacker text"),
@@ -360,6 +362,62 @@ async def test_duplicate_command_message_does_not_deliver_twice(db_session, monk
     client = _RecordingClient()
     await _deliver(db_session, monkeypatch, client)
     assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata_key, replacement",
+    [
+        ("source_message_id", "SRC-OTHER"),
+        ("source_chat_id", STRANGER_ID),
+        ("command_message_id", "VV-OTHER"),
+    ],
+)
+async def test_mutating_view_once_source_binding_after_queueing_never_reaches_waha(
+    db_session, monkeypatch, metadata_key, replacement
+):
+    """The owner digest binds the source, source chat, and exact command identity."""
+    row = await _queue_owner_media(db_session, monkeypatch)
+    metadata = dict(row.formatting_json)
+    metadata[metadata_key] = replacement
+    row.formatting_json = metadata
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_delete_after_enqueue_blocks_view_once_return_before_waha(db_session, monkeypatch):
+    """A source tombstoned after queueing must be refused by the worker's final fence."""
+    row = await _queue_owner_media(db_session, monkeypatch)
+    owner = (
+        await db_session.execute(
+            select(AdminAccount).where(AdminAccount.normalized_whatsapp_id == OWNER_ID)
+        )
+    ).scalar_one()
+    delete_message = MessageNormalizer().normalize(
+        _event(body="@Zina .vv delete", command_id="VV-DELETE", quoted_id="SRC-1")
+    )
+
+    deletion = await ViewOnceCommandService(db_session).handle(
+        "delete",
+        message=delete_message,
+        owner=owner,
+        transport_message_id="VV-DELETE",
+    )
+    assert "metadata for this item was deleted" in (deletion.reply_text or "").lower()
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+
+    assert client.calls == []
+    await db_session.refresh(row)
+    assert row.status == "deferred"
+    assert "view-once source was deleted" in (row.error_message or "").lower()
 
 
 @pytest.mark.asyncio
