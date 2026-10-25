@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.outbound_authorization_service import (
+    AuthorizationContext,
     AuthorizationDecision,
     OutboundAuthorizationService,
 )
@@ -134,3 +135,57 @@ async def test_authorize_queue_message_delegates_only_after_exact_context_valida
     assert context.outbound_queue_id == 10
     assert decision.allowed is True
     assert decision.approval_id == 9
+
+
+@pytest.mark.asyncio
+async def test_contact_policy_authorization_locks_policy_until_dispatch_transaction_finishes():
+    """A concurrent OWNER disable must serialize behind a policy-based send fence."""
+    class Result:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "FROM outbound_approvals" in sql:
+                return Result(scalar=None)
+            if "FROM contact_automation_policies" in sql:
+                return Result(mapping={
+                    "id": 41,
+                    "allowed_categories": ["normal_reply"],
+                    "prohibited_categories": [],
+                    "approval_required_categories": [],
+                    "quiet_hours_json": None,
+                })
+            raise AssertionError(f"Unexpected authorization query: {sql}")
+
+    session = Session()
+    context = AuthorizationContext(
+        outbound_queue_id=91,
+        inbound_message_id=51,
+        contact_id=17,
+        target_chat_id="2348012345678@c.us",
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    decision = await OutboundAuthorizationService(session).authorize(context)
+
+    assert decision.allowed is True
+    assert decision.authority_type == "contact_policy"
+    policy_sql = next(sql for sql in session.statements if "FROM contact_automation_policies" in sql)
+    assert "FOR UPDATE" in policy_sql.upper()
