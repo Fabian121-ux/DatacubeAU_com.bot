@@ -43,7 +43,8 @@ class ContactMessagingConsentService:
         "stop", "please stop", "stop please", "unsubscribe", "unsubscribe me",
         "please unsubscribe me", "unsubscribe me please", "opt out", "opt-out", "optout",
         "remove me", "stop messaging me", "stop texting me", "stop contacting me",
-        "stop sending me messages", "no more messages", "no more texts",
+        "stop sending me messages", "stop sending messages", "please stop sending messages",
+        "stop all messages", "no more messages", "no more texts",
         "do not contact me", "don't contact me", "dont contact me",
         "do not message me", "don't message me", "dont message me",
     })
