@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.models.schema import Contact
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.contact_sync_service import ContactSyncService
 from app.services.owner_management_command_service import OwnerManagementCommandService
 from app.services.waha_client import WAHAClient, WahaClientError
@@ -92,3 +93,39 @@ async def test_older_contact_page_cannot_overwrite_newer_saved_evidence(db_sessi
     assert outcome == "skipped"
     assert contact.contact_name == "Current Name"
     assert contact.identity_json["is_saved_contact"] is True
+
+@pytest.mark.asyncio
+async def test_contact_sync_serializes_chat_mapping_write_with_shared_lock(monkeypatch, db_session):
+    contact = Contact(whatsapp_id="2348044444444@c.us")
+    db_session.add(contact)
+    await db_session.flush()
+
+    observed = []
+
+    async def capture_mapping_lock(session, exact_chat_id):
+        assert session is db_session
+        assert exact_chat_id == "2348044444444@c.us"
+        # The lock must be acquired before the service mutates the mapping.
+        assert contact.chat_id is None
+        observed.append(exact_chat_id)
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_exact_chat_mapping",
+        staticmethod(capture_mapping_lock),
+    )
+
+    outcome, _ = await ContactSyncService(db_session, waha=object())._sync_one(
+        {
+            "id": "2348044444444@s.whatsapp.net",
+            "name": "Amanda",
+            "isMyContact": True,
+        },
+        sync_at=datetime.now(timezone.utc),
+    )
+
+    assert outcome == "updated"
+    assert observed == ["2348044444444@c.us"]
+    await db_session.refresh(contact)
+    assert contact.chat_id == "2348044444444@c.us"
+

@@ -9,6 +9,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import Contact
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.waha_client import WAHAClient
 from app.utils.time import utcnow
 
@@ -196,7 +197,14 @@ class ContactSyncService:
             if preferred_name:
                 row.display_name = preferred_name[:180]
 
-        row.chat_id = row.chat_id or (whatsapp_id if not whatsapp_id.endswith("@lid") else row.chat_id)
+        candidate_chat_id = whatsapp_id if not whatsapp_id.endswith("@lid") else None
+        if not row.chat_id and candidate_chat_id:
+            # Contact sync is another runtime writer of Contact.chat_id. It must use
+            # the same exact-chat lock as inbound routing and final outbound consent.
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session, candidate_chat_id
+            )
+            row.chat_id = candidate_chat_id
         row.waha_contact_id = raw_id[:120]
         if lid:
             row.waha_participant_id = lid[:120]
