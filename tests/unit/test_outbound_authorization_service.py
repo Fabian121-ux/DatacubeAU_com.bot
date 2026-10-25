@@ -1,6 +1,9 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.services.outbound_authorization_service import (
     AuthorizationContext,
@@ -189,3 +192,110 @@ async def test_contact_policy_authorization_locks_policy_until_dispatch_transact
     assert decision.authority_type == "contact_policy"
     policy_sql = next(sql for sql in session.statements if "FROM contact_automation_policies" in sql)
     assert "FOR UPDATE" in policy_sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_contact_policy_disable_and_authorization_serialize_in_both_orders(db_session, test_contact):
+    """Real PostgreSQL sessions prove policy disable cannot race a final authorization."""
+    policy_id = (
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO contact_automation_policies (
+                    contact_id, exact_chat_id, enabled, allowed_categories,
+                    prohibited_categories, approval_required_categories, created_by
+                )
+                VALUES (
+                    :contact_id, :chat_id, true, '["normal_reply"]'::jsonb,
+                    '[]'::jsonb, '[]'::jsonb, 'test-owner'
+                )
+                RETURNING id
+                """
+            ),
+            {"contact_id": test_contact.id, "chat_id": test_contact.whatsapp_id},
+        )
+    ).scalar_one()
+    await db_session.commit()
+
+    sessions = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    context = AuthorizationContext(
+        outbound_queue_id=91001,
+        inbound_message_id=91002,
+        contact_id=test_contact.id,
+        target_chat_id=test_contact.whatsapp_id,
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    # Dispatch authorization wins the row lock first: an OWNER disable must wait
+    # until the dispatch transaction releases the policy lock.
+    async with sessions() as dispatch_session, sessions() as owner_session:
+        decision = await OutboundAuthorizationService(dispatch_session).authorize(context)
+        assert decision.allowed is True
+        assert decision.authority_type == "contact_policy"
+
+        update_started = asyncio.Event()
+
+        async def disable_policy():
+            update_started.set()
+            await owner_session.execute(
+                text(
+                    """
+                    UPDATE contact_automation_policies
+                    SET enabled = false, disabled_at = now(), updated_at = now()
+                    WHERE id = :policy_id
+                    """
+                ),
+                {"policy_id": policy_id},
+            )
+            await owner_session.commit()
+
+        update_task = asyncio.create_task(disable_policy())
+        await update_started.wait()
+        await asyncio.sleep(0.05)
+        assert not update_task.done(), "policy disable must wait for the authorization transaction"
+        await dispatch_session.commit()
+        await asyncio.wait_for(update_task, timeout=3)
+
+    # Conversely, if the OWNER disable already owns the row lock, authorization
+    # must wait and then observe the disabled policy rather than approve from stale state.
+    async with sessions() as owner_session, sessions() as dispatch_session:
+        await owner_session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET enabled = true, disabled_at = NULL, updated_at = now()
+                WHERE id = :policy_id
+                """
+            ),
+            {"policy_id": policy_id},
+        )
+        await owner_session.commit()
+        await owner_session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET enabled = false, disabled_at = now(), updated_at = now()
+                WHERE id = :policy_id
+                """
+            ),
+            {"policy_id": policy_id},
+        )
+
+        authorization_started = asyncio.Event()
+
+        async def authorize_while_disable_is_uncommitted():
+            authorization_started.set()
+            return await OutboundAuthorizationService(dispatch_session).authorize(context)
+
+        authorization_task = asyncio.create_task(authorize_while_disable_is_uncommitted())
+        await authorization_started.wait()
+        await asyncio.sleep(0.05)
+        assert not authorization_task.done(), "authorization must wait for the in-flight OWNER disable"
+        await owner_session.commit()
+        decision = await asyncio.wait_for(authorization_task, timeout=3)
+        await dispatch_session.commit()
+
+    assert decision.allowed is False
+    assert decision.authority_type == "none"
+    assert decision.reason == "no exact active owner approval or contact automation policy"
