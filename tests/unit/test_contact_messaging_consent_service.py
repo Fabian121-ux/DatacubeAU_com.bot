@@ -230,10 +230,15 @@ async def test_expired_consent_and_wrong_exact_chat_fail_closed(db_session, test
         ("STOP", True),
         ("Please stop messaging me.", True),
         ("unsubscribe", True),
+        ("STOP, PLEASE!", True),
+        ("unsubscribe me", True),
+        ("Please unsubscribe me.", True),
+        ("unsubscribe me please", True),
         ("I don't want any more messages", True),
         ("do not contact me again", True),
         ("stop the deployment", False),
         ("don't stop", False),
+        ("please stop by later", False),
         ("what is the status?", False),
     ],
 )
@@ -500,4 +505,4 @@ async def test_dispatch_denies_ambiguous_current_chat_mapping(db_session, test_c
     decision = await service.authorize_outbound_queue_message(queue)
 
     assert decision.allowed is False
-    assert decision.reason == "exact chat ID does not resolve to exactly one current contact"
+    assert decision.reason == "current contact/chat mapping does not match recipient"

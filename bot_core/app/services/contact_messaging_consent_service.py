@@ -40,7 +40,8 @@ class ContactMessagingConsentService:
     CONSENT_TTL = timedelta(days=90)
     _OWNER_EVIDENCE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
     _OPT_OUT_EXACT = frozenset({
-        "stop", "please stop", "unsubscribe", "opt out", "opt-out", "optout",
+        "stop", "please stop", "stop please", "unsubscribe", "unsubscribe me",
+        "please unsubscribe me", "unsubscribe me please", "opt out", "opt-out", "optout",
         "remove me", "stop messaging me", "stop texting me", "stop contacting me",
         "stop sending me messages", "no more messages", "no more texts",
         "do not contact me", "don't contact me", "dont contact me",
@@ -59,8 +60,8 @@ class ContactMessagingConsentService:
     @classmethod
     def is_explicit_opt_out_message(cls, value: str | None) -> bool:
         raw = (value or "").casefold().replace("’", "'").strip()
-        raw = re.sub(r"\s+", " ", raw)
-        raw = re.sub(r"[.!?,;:]+$", "", raw).strip()
+        raw = re.sub(r"[.!?,;:]+", " ", raw)
+        raw = re.sub(r"\s+", " ", raw).strip()
         if raw in cls._OPT_OUT_EXACT:
             return True
         return any(pattern.search(raw) for pattern in cls._OPT_OUT_PATTERNS)
@@ -194,7 +195,7 @@ class ContactMessagingConsentService:
         if len(matching_contact_ids) != 1 or int(matching_contact_ids[0]) != contact_id:
             return ConsentDecision(
                 False,
-                "exact chat ID does not resolve to exactly one current contact",
+                "current contact/chat mapping does not match recipient",
                 contact_id,
             )
 
