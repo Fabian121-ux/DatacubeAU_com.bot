@@ -97,6 +97,14 @@ WHERE contact_id = (SELECT id FROM contacts WHERE whatsapp_id = '234000000000@c.
 UPDATE group_configs
 SET reply_mode = 'off', is_enabled = FALSE, cooldown_seconds = 91, updated_at = NOW()
 WHERE chat_id = '120363000000000000@g.us';
+UPDATE reply_rules
+SET response_text = 'operator-customized /help response',
+    is_enabled = FALSE,
+    priority = 7,
+    updated_at = NOW()
+WHERE keyword = '/help'
+  AND match_mode = 'exact'
+  AND chat_type_filter IS NULL;
 " >/dev/null
 
 second_output=""
@@ -137,6 +145,37 @@ if [ "$dm_state" != "false:91" ]; then
 fi
 if [ "$group_state" != "off:false:91" ]; then
   echo "Default redeploy overwrote edited group configuration: $group_state" >&2
+  exit 1
+fi
+
+# The default reply-rule seed must be idempotent too. ReplyRule has no unique
+# constraint, so bare ON CONFLICT DO NOTHING would silently duplicate every rule
+# on each deployment. A same-key operator edit must also survive a redeploy.
+default_rule_counts="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+SELECT COUNT(*)::text || ':' || COUNT(DISTINCT keyword)::text
+FROM reply_rules
+WHERE keyword IN (
+  'help', '/help', 'commands', 'status', '/status', 'ping', '/start',
+  'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+  'who are you', 'what is your name', 'what is datacube au'
+)
+  AND match_mode = 'exact'
+  AND chat_type_filter IS NULL;
+")"
+if [ "$default_rule_counts" != "16:16" ]; then
+  echo "Default reply-rule seed duplicated or omitted rows on redeploy: $default_rule_counts" >&2
+  exit 1
+fi
+
+custom_reply_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+SELECT response_text || ':' || is_enabled::text || ':' || priority::text
+FROM reply_rules
+WHERE keyword = '/help'
+  AND match_mode = 'exact'
+  AND chat_type_filter IS NULL;
+")"
+if [ "$custom_reply_state" != "operator-customized /help response:false:7" ]; then
+  echo "Default redeploy overwrote operator-edited reply rule: $custom_reply_state" >&2
   exit 1
 fi
 
