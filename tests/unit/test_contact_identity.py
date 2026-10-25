@@ -21,7 +21,7 @@ class FakeContactSession:
         self.added = None
         self.flushed = False
 
-    async def execute(self, _statement):
+    async def execute(self, _statement, _params=None):
         return FakeScalar(self.row)
 
     def add(self, row):
