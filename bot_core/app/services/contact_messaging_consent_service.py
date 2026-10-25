@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,9 @@ class ContactMessagingConsentService:
     """
 
     CONSENT_TTL = timedelta(days=90)
+    # Dedicated two-key advisory-lock namespace for exact WhatsApp chat mappings.
+    # hashtext collisions only serialize unrelated chats; they cannot authorize one.
+    _CHAT_MAPPING_LOCK_NAMESPACE = 0x5A494E41  # ASCII "ZINA"
     _OWNER_EVIDENCE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
     _OPT_OUT_EXACT = frozenset({
         "stop", "please stop", "stop please", "unsubscribe", "unsubscribe me",
@@ -57,6 +60,25 @@ class ContactMessagingConsentService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    async def lock_exact_chat_mapping(session: AsyncSession, exact_chat_id: str) -> None:
+        """Serialize exact-chat mapping writes with consent authorization.
+
+        Contact.chat_id is not unique, so locking only rows that currently match a
+        destination does not prevent another Contact row from becoming a conflicting
+        mapping after the lookup. Every DM mapping writer and the final consent fence
+        must acquire this transaction-scoped lock before locking Contact rows.
+        """
+        if not isinstance(exact_chat_id, str) or not exact_chat_id:
+            raise ValueError("exact chat ID is required for mapping lock")
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:exact_chat_id))"),
+            {
+                "namespace": ContactMessagingConsentService._CHAT_MAPPING_LOCK_NAMESPACE,
+                "exact_chat_id": exact_chat_id,
+            },
+        )
 
     @classmethod
     def is_explicit_opt_out_message(cls, value: str | None) -> bool:
@@ -180,6 +202,10 @@ class ContactMessagingConsentService:
         # the consent row. Acquire the same locks in the same order here. Otherwise a
         # dispatch can lock consent first while an already-arrived STOP is blocked on
         # that consent row, allowing the send to overtake the opt-out transaction.
+        # Serialize against inbound writers that may assign this exact destination to
+        # a different Contact row. The lock must precede every Contact row lock below.
+        await self.lock_exact_chat_mapping(self.session, exact_chat_id)
+
         # Lock all rows that currently claim this exact destination in stable order.
         # whatsapp_id is unique, but legacy chat_id mappings can still collide with
         # another contact's whatsapp_id or chat_id. Consent is contact-specific, so
@@ -221,6 +247,7 @@ class ContactMessagingConsentService:
     async def _resolve_owner_chat(self, exact_chat_id: str) -> Contact:
         if not self._is_direct_chat(exact_chat_id):
             raise ValueError("consent requires one exact direct-message chat ID")
+        await self.lock_exact_chat_mapping(self.session, exact_chat_id)
         rows = (
             await self.session.execute(
                 select(Contact)
@@ -283,8 +310,10 @@ class ContactMessagingConsentService:
             raise ValueError("contact ID and inbound evidence reference are required")
 
         # Keep the lock order inside this authority service, not only in InboundRouter.
-        # Every caller must lock the durable Contact row before touching the consent row,
-        # and the source chat must actually belong to that contact.
+        # Serialize destination mapping first, then lock the Contact row, then consent.
+        # This prevents a concurrent different Contact row from claiming this chat while
+        # an opt-out is being recorded. The source chat must belong to this contact.
+        await self.lock_exact_chat_mapping(self.session, exact_chat_id)
         locked_contact_id = (
             await self.session.execute(
                 select(Contact.id)
