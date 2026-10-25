@@ -1,11 +1,13 @@
 import asyncio
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.router import InboundRouter
 from app.models.schema import (
     Contact,
     ContactMessagingConsent,
@@ -101,6 +103,64 @@ async def test_final_consent_fence_locks_contact_before_send(db_session, test_co
         finally:
             await ingress_session.rollback()
             await worker_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_inbound_chat_remap_serializes_with_final_consent_mapping_lock(db_session, test_contact):
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=test_contact.whatsapp_id,
+        evidence_ref="owner-attested-chat-remap-race",
+        owner_identity="OWNER",
+    )
+    other = Contact(whatsapp_id="other-mapping-contact@c.us", chat_id="other-mapping-contact@c.us")
+    db_session.add(other)
+    await db_session.flush()
+    other_id = int(other.id)
+    other_whatsapp_id = other.whatsapp_id
+    queue_id = int(queue.id)
+    exact_chat_id = test_contact.whatsapp_id
+    await db_session.commit()
+
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with factory() as dispatch_session, factory() as ingress_session:
+        worker_queue = await dispatch_session.get(OutboundMessage, queue_id)
+        decision = await ContactMessagingConsentService(
+            dispatch_session
+        ).authorize_outbound_queue_message(worker_queue)
+        assert decision.allowed is True
+
+        # This is the production Contact.chat_id writer. A second Contact attempting
+        # to claim the already-authorized exact direct chat must wait on the same
+        # transaction-scoped mapping lock before it can update its own row.
+        normalized = SimpleNamespace(
+            sender_id=other_whatsapp_id,
+            sender_identity={},
+            sender_name=None,
+            chat_id=exact_chat_id,
+            chat_type=SimpleNamespace(value="dm"),
+        )
+        remap_task = asyncio.create_task(InboundRouter(ingress_session)._get_or_create_contact(normalized))
+        try:
+            await asyncio.sleep(0.1)
+            assert not remap_task.done(), "conflicting chat mapping must wait for the final consent transaction"
+        finally:
+            await dispatch_session.rollback()
+
+        remapped_contact = await asyncio.wait_for(remap_task, timeout=2)
+        assert int(remapped_contact.id) == other_id
+        await ingress_session.commit()
+
+    # Once the competing mapping commits, a later authorization sees ambiguity and
+    # fails closed. The worker-level ambiguity regression separately asserts zero
+    # mocked WAHA calls for this denial reason.
+    async with factory() as verify_session:
+        queued = await verify_session.get(OutboundMessage, queue_id)
+        denied = await ContactMessagingConsentService(
+            verify_session
+        ).authorize_outbound_queue_message(queued)
+        assert denied.allowed is False
+        assert denied.reason == "current contact/chat mapping does not match recipient"
 
 
 @pytest.mark.asyncio
