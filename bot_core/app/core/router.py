@@ -454,6 +454,13 @@ class InboundRouter:
                     )
 
     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
+        # Contact.chat_id is not unique. Serialize direct-chat mapping changes with
+        # the final outbound consent fence before taking any Contact row lock, so a
+        # second Contact cannot claim this exact chat between authorization and send.
+        if normalized.chat_type.value == "dm" and normalized.chat_id:
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session, normalized.chat_id
+            )
         whatsapp_id = normalized.sender_id
         identity = normalized.sender_identity or {}
         display_name = self._resolved_display_name(identity, normalized.sender_name)
