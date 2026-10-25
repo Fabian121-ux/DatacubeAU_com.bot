@@ -194,9 +194,18 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
     assert row.status == "sent"
 
 
+@pytest.mark.parametrize(
+    ("authority_type", "approval_id", "consent_state"),
+    [
+        ("contact_policy", None, "unknown"),
+        ("one_use_approval", 123, "unknown"),
+        ("contact_policy", None, "opted_out"),
+        ("one_use_approval", 123, "opted_out"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_external_contact_without_consent_is_blocked_even_when_policy_authorizes(
-    db_session, test_contact, monkeypatch
+async def test_external_contact_consent_is_required_even_when_authority_allows(
+    db_session, test_contact, monkeypatch, authority_type, approval_id, consent_state
 ):
     now = utcnow()
     test_contact.whatsapp_id = "222@c.us"
@@ -231,13 +240,22 @@ async def test_external_contact_without_consent_is_blocked_even_when_policy_auth
         updated_at=now - timedelta(seconds=1),
     )
     db_session.add(row)
+    if consent_state == "opted_out":
+        await ContactMessagingConsentService(db_session).record_inbound_opt_out(
+            contact_id=test_contact.id,
+            exact_chat_id="222@c.us",
+            evidence_ref="inbound-stop-test",
+        )
     await db_session.commit()
 
     async def _authorized(self, message):
         context = self.context_from_queue_message(message)
         assert context is not None
-        # This models a valid active contact policy with no one-use approval ID.
-        return context, AuthorizationDecision(True, "contact_policy", "active contact policy")
+        # Neither a live contact policy nor a one-use approval may bypass the final
+        # exact-contact consent fence. This is intentionally mocked as already allowed.
+        return context, AuthorizationDecision(
+            True, authority_type, f"active {authority_type}", approval_id=approval_id
+        )
 
     async def _safe(self, message, *, now=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -255,7 +273,8 @@ async def test_external_contact_without_consent_is_blocked_even_when_policy_auth
     assert client.calls == []
     assert row.status == "deferred"
     assert "contact consent denied" in (row.error_message or "")
-    assert "unknown" in (row.error_message or "")
+    expected_consent_reason = "unknown" if consent_state == "unknown" else "opted out"
+    assert expected_consent_reason in (row.error_message or "")
 
 
 @pytest.mark.asyncio
