@@ -414,7 +414,7 @@ async def test_inbound_opt_out_rejects_contact_chat_mismatch_without_mutation(db
     events = (
         await db_session.execute(
             select(ContactMessagingConsentEvent).where(
-                ContactMessagingConsent.contact_id == test_contact.id
+                ContactMessagingConsentEvent.contact_id == test_contact.id
             )
         )
     ).scalars().all()
