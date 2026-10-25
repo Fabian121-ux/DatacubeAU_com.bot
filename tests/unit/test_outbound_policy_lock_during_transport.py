@@ -158,7 +158,7 @@ async def test_owner_policy_disable_cannot_commit_during_final_worker_transport_
     )
     assert processed == 1
     # Initial claim plus a second check after the final policy/contact/consent fences.
-    assert safety_calls == [queue_id, queue_id]
+    assert safety_calls == [int(queue.id), int(queue.id)]
     assert client.calls == [(exact_chat_id, body)]
 
     await db_session.refresh(queue)
