@@ -266,7 +266,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             if not _is_owner_chat_id(message.chat_id):
                 pending_opt_out = await ContactMessagingConsentService(
                     session
-                ).has_pending_opt_out_intent(message.chat_id)
+                ).has_pending_opt_out_intent_for_contact(consent.contact_id)
                 if pending_opt_out:
                     await _mark_delivery_blocked(
                         session,

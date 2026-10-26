@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import re
 import unicodedata
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import bindparam, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,6 +122,65 @@ class ContactMessagingConsentService:
                 """
             ),
             {"exact_chat_id": exact_chat_id},
+        )
+        return bool(result.scalar_one())
+
+
+    async def _mapped_direct_chat_ids(self, contact_id: int) -> set[str]:
+        """Return current direct-chat aliases for a Contact row locked by the caller."""
+        result = await self.session.execute(
+            select(Contact.whatsapp_id, Contact.chat_id).where(Contact.id == contact_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return set()
+        return {
+            str(value).strip()
+            for value in row
+            if self._is_direct_chat(value)
+        }
+
+    async def _has_terminal_opt_out_for_contact(
+        self,
+        contact_id: int,
+        aliases: set[str] | None = None,
+    ) -> bool:
+        """Treat any recorded STOP for this Contact or its current aliases as terminal."""
+        mapped_aliases = aliases if aliases is not None else await self._mapped_direct_chat_ids(contact_id)
+        predicates = [ContactMessagingConsentEvent.contact_id == contact_id]
+        if mapped_aliases:
+            predicates.append(
+                ContactMessagingConsentEvent.exact_chat_id.in_(sorted(mapped_aliases))
+            )
+        result = await self.session.execute(
+            select(ContactMessagingConsentEvent.id)
+            .where(ContactMessagingConsentEvent.event_type == "opted_out")
+            .where(or_(*predicates))
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def has_pending_opt_out_intent_for_contact(self, contact_id: int | None) -> bool:
+        """Veto dispatch when any currently mapped alias has a claimed, unapplied STOP."""
+        if not isinstance(contact_id, int) or contact_id <= 0:
+            return True
+        aliases = await self._mapped_direct_chat_ids(contact_id)
+        if not aliases:
+            return True
+        statement = text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM inbound_webhook_receipts
+                WHERE chat_id IN :chat_ids
+                  AND opt_out_intent IS TRUE
+                  AND status = 'processing'
+            )
+            """
+        ).bindparams(bindparam("chat_ids", expanding=True))
+        result = await self.session.execute(
+            statement,
+            {"chat_ids": sorted(aliases)},
         )
         return bool(result.scalar_one())
 
@@ -262,6 +321,12 @@ class ContactMessagingConsentService:
                 contact_id,
             )
 
+        # Opt-out is contact-wide across currently mapped aliases. Check immutable
+        # history before trusting a grant for a different alias of the same Contact.
+        aliases = await self._mapped_direct_chat_ids(contact_id)
+        if await self._has_terminal_opt_out_for_contact(contact_id, aliases):
+            return ConsentDecision(False, "contact has opted out", contact_id)
+
         row = await self._lock_or_create(contact_id, exact_chat_id, instant)
         if row.status == "opted_out":
             return ConsentDecision(False, "contact has opted out", contact_id, int(row.id))
@@ -288,7 +353,9 @@ class ContactMessagingConsentService:
             await self.session.execute(
                 select(Contact)
                 .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
+                .order_by(Contact.id)
                 .limit(2)
+                .with_for_update()
             )
         ).scalars().all()
         if len(rows) != 1:
@@ -300,17 +367,13 @@ class ContactMessagingConsentService:
         contact = await self._resolve_owner_chat(exact_chat_id)
 
         # Current consent rows cascade with Contact deletion, but the audit events
-        # deliberately do not. Preserve the terminal opt-out invariant across contact
-        # deletion/re-import by consulting the immutable exact-chat history before
-        # creating a fresh consent row for a recreated Contact.
-        prior_opt_out = await self.session.execute(
-            select(ContactMessagingConsentEvent.id)
-            .where(ContactMessagingConsentEvent.exact_chat_id == exact_chat_id)
-            .where(ContactMessagingConsentEvent.event_type == "opted_out")
-            .limit(1)
-        )
-        if prior_opt_out.scalar_one_or_none() is not None:
-            raise ValueError("contact opted out; explicit contact re-consent is required before .contact consent reconsent")
+        # deliberately do not. Preserve terminal opt-out across contact deletion/re-import
+        # and across every currently mapped alias of the same Contact.
+        aliases = await self._mapped_direct_chat_ids(int(contact.id))
+        if await self._has_terminal_opt_out_for_contact(int(contact.id), aliases):
+            raise ValueError(
+                "contact opted out; explicit contact re-consent is required before .contact consent reconsent"
+            )
 
         instant = utcnow()
         row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)

@@ -211,6 +211,65 @@ async def test_inbound_opt_out_overrides_prior_grant_and_is_audited(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_opt_out_on_mapped_alias_blocks_other_alias_grant_and_dispatch(db_session, test_contact):
+    target_chat_id = test_contact.whatsapp_id
+    opt_out_alias = "333@c.us"
+    test_contact.chat_id = opt_out_alias
+    await db_session.flush()
+
+    queue = await _queue_with_source(db_session, test_contact, target_chat_id)
+    service = ContactMessagingConsentService(db_session)
+    await service.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-alias-stop",
+        owner_identity="OWNER",
+    )
+    await service.record_inbound_opt_out(
+        contact_id=int(test_contact.id),
+        exact_chat_id=opt_out_alias,
+        evidence_ref="inbound-stop-on-alias",
+    )
+
+    decision = await service.authorize_outbound_queue_message(queue)
+    assert decision.allowed is False
+    assert decision.reason == "contact has opted out"
+
+    with pytest.raises(ValueError, match="explicit contact re-consent"):
+        await service.grant_for_chat(
+            exact_chat_id=target_chat_id,
+            evidence_ref="owner-grant-after-alias-stop",
+            owner_identity="OWNER",
+        )
+
+
+@pytest.mark.asyncio
+async def test_pending_opt_out_intent_on_mapped_alias_vetoes_contact(db_session, test_contact):
+    opt_out_alias = "333@c.us"
+    test_contact.chat_id = opt_out_alias
+    await db_session.flush()
+
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, opt_out_intent,
+                status, claim_token, updated_at
+            )
+            VALUES (
+                'alias-stop-pending-test', 'test', :chat_id, 'alias-stop-pending-test',
+                TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"chat_id": opt_out_alias},
+    )
+
+    assert await ContactMessagingConsentService(
+        db_session
+    ).has_pending_opt_out_intent_for_contact(int(test_contact.id)) is True
+
+
+@pytest.mark.asyncio
 async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
     service = ContactMessagingConsentService(db_session)
     await service.record_inbound_opt_out(

@@ -483,7 +483,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
 ):
     now = utcnow()
     test_contact.whatsapp_id = "222@c.us"
-    test_contact.chat_id = "222@c.us"
+    test_contact.chat_id = "333@c.us"
     await db_session.flush()
     source = Message(
         contact_id=test_contact.id,
@@ -540,16 +540,16 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
 
     at_final_veto = asyncio.Event()
     resume_dispatch = asyncio.Event()
-    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent
+    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent_for_contact
 
-    async def pause_at_final_veto(service, exact_chat_id):
+    async def pause_at_final_veto(service, contact_id):
         at_final_veto.set()
         await resume_dispatch.wait()
-        return await original_pending_check(service, exact_chat_id)
+        return await original_pending_check(service, contact_id)
 
     monkeypatch.setattr(
         ContactMessagingConsentService,
-        "has_pending_opt_out_intent",
+        "has_pending_opt_out_intent_for_contact",
         pause_at_final_veto,
     )
     client = _RecordingClient()
@@ -561,19 +561,19 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         "session": "test",
         "payload": {
             "id": "STOP-RACE-1",
-            "chatId": "222@c.us",
-            "from": "222@c.us",
+            "chatId": "333@c.us",
+            "from": "333@c.us",
             "fromMe": False,
             "body": "STOP",
         },
     }
-    event_key = "test:222@c.us:STOP-RACE-1"
+    event_key = "test:333@c.us:STOP-RACE-1"
     async with factory() as receipt_session:
         claimed = await InboundIdempotencyService(receipt_session).claim(
             InboundReceipt(
                 event_key=event_key,
                 session_name="test",
-                chat_id="222@c.us",
+                chat_id="333@c.us",
                 message_id="STOP-RACE-1",
                 opt_out_intent=True,
             )
@@ -601,7 +601,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
             await verify_session.execute(
                 select(ContactMessagingConsent)
                 .where(ContactMessagingConsent.contact_id == contact_id)
-                .where(ContactMessagingConsent.exact_chat_id == "222@c.us")
+                .where(ContactMessagingConsent.exact_chat_id == "333@c.us")
             )
         ).scalar_one()
         assert consent.status == "opted_out"
@@ -610,7 +610,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
             await verify_session.execute(
                 select(ContactMessagingConsentEvent)
                 .where(ContactMessagingConsentEvent.contact_id == contact_id)
-                .where(ContactMessagingConsentEvent.exact_chat_id == "222@c.us")
+                .where(ContactMessagingConsentEvent.exact_chat_id == "333@c.us")
             )
         ).scalars().all()
         assert any(row.event_type == "opted_out" for row in events)
@@ -621,7 +621,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
             )
         ).scalars().all()
         assert any(
-            row.details_json.get("exact_chat_id") == "222@c.us"
+            row.details_json.get("exact_chat_id") == "333@c.us"
             and row.details_json.get("status") == "opted_out"
             for row in audits
         )
