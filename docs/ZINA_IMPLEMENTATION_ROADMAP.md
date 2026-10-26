@@ -1,4 +1,4 @@
-## Latest verification delta — 2026-10-26 10:20 UTC
+## Latest verification delta — 2026-10-26 12:31 UTC
 
 Partial live-state update only. This is not a full phase-by-phase audit or release approval. The historical audit below remains dated 2026-09-08.
 
@@ -11,7 +11,7 @@ Partial live-state update only. This is not a full phase-by-phase audit or relea
 - **#49 Outbound Message Library:** exact head `bcd0033e024b177561b8afd41589afe1897ba4de`; [run 39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) succeeded on 001–033 plus 036–037. One current unresolved thread concerns reserving retired `set_key` values after hard deletion. This is a library foundation only, not live selection/producer/dashboard integration.
 - **#55 database-leakage gate:** draft/open, head `2da7283a9a9d0e27a3c25b9a47a86570c3f8c8b2`; [run 40010785239](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40010785239) succeeded on its 001–033 branch. Its evidence is branch-local, not a current main release gate.
 - **#57 deployment seed safety:** draft/open, head `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba`; [run 40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) succeeded. It overlaps `deploy/scripts/run-migrations.sh` with #61 and still has an unresolved outdated review thread; validate both changes together after independent review.
-- **#59 documentation refresh:** this commit refreshes the top-level live-state overlays only; the older phase-by-phase audit remains explicitly historical. This new documentation head still requires its own exact-head CI run.
+- **#59 documentation refresh:** this commit refreshes the top-level live-state overlays only; the older phase-by-phase audit remains explicitly historical. This documentation head passed exact-head Tests run [40307628708](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40307628708) on 2026-10-26: 797 passed, 1 warning, 76.01% coverage, with fresh migrations 001–033. This documentation-branch result does not validate the integrated feature migrations or release gates.
 - **Migration order:** #48=034 → #50=035 → #49=036–037 → #60=038. #61's guard should be reviewed before dependent migrations are integrated. No branch-local run proves a fresh integrated 001–038 chain, an installed 033→038 upgrade, checksum/no-op rerun, or the separate DB-leakage/P0 adversarial gates.
 
 **NOT TEST READY.** Outstanding independent reviews, integrated migration/upgrade evidence, the current database-leakage gate, full P0 adversarial matrix, and dashboard/command-governance/observability gaps remain. No real WAHA action occurred; private-media retention remains OFF.
