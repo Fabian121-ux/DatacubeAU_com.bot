@@ -44,9 +44,12 @@ class ContactMessagingConsentService:
     _CHAT_MAPPING_LOCK_NAMESPACE = 0x5A494E41  # ASCII "ZINA"
     _OWNER_EVIDENCE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
     _OPT_OUT_EXACT = frozenset({
-        "stop", "please stop", "stop please", "unsubscribe", "unsubscribe me",
-        "please unsubscribe me", "unsubscribe me please", "opt out", "opt-out", "optout",
-        "remove me", "stop messaging me", "stop texting me", "stop contacting me",
+        "stop", "please stop", "stop please", "unsubscribe", "unsubscribe please",
+        "please unsubscribe", "unsubscribe me", "please unsubscribe me", "unsubscribe me please",
+        "opt out", "opt-out", "optout",
+        "remove me", "remove me from your list", "take me off your list",
+        "stop messaging", "stop texting", "stop contacting", "stop sending",
+        "stop messaging me", "stop texting me", "stop contacting me",
         "stop sending me messages", "stop sending messages", "please stop sending messages",
         "stop all messages", "no more messages", "no more texts",
         "do not contact me", "don't contact me", "dont contact me",
