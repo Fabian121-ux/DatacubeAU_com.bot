@@ -153,11 +153,21 @@ async def test_explicit_opt_out_without_transport_message_id_still_claims_pendin
     ingress, db_session
 ):
     """Missing WAHA IDs must not remove the pre-routing STOP veto."""
-    app, routed = ingress
+    _gateway_app, routed = ingress
+    # The configured combined gateway rejects missing source IDs. Exercise the
+    # lower-level webhook route separately to keep its defensive opt-out fence
+    # safe if a legacy/direct caller reaches it.
+    app = FastAPI()
+    app.include_router(inbound.router)
     event = _message_event(message_id=None, body="STOP")
     event_key = inbound._build_opt_out_intent_key(event, event["payload"])
 
-    body = await _post(app, event)
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://ingress",
+    ) as client:
+        response = await client.post("/webhooks/waha", json=event)
+    body = response.json()
 
     assert body["status"] == "accepted"
     receipt = (
