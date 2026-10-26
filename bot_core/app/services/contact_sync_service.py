@@ -139,6 +139,18 @@ class ContactSyncService:
             self._nested(payload, "_data", "isMyContact"),
         )
 
+        candidate_chat_id = whatsapp_id if not whatsapp_id.endswith("@lid") else None
+        if candidate_chat_id:
+            # Acquire the exact-chat mapping lock before _find_existing() can issue
+            # SELECT ... FOR UPDATE. That query may lock an existing Contact row, so
+            # taking the advisory lock afterwards reverses the dispatch lock order and
+            # can deadlock when a previously-unmapped Contact is assigned this chat.
+            # Locking even when a mapping already exists is intentional: the decision
+            # to update the mapping must be made from the row version read under lock.
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session, candidate_chat_id
+            )
+
         row = await self._find_existing(
             whatsapp_id=whatsapp_id,
             raw_id=raw_id,
@@ -179,16 +191,6 @@ class ContactSyncService:
         if row is None and not is_saved_contact:
             return "skipped", self._identity_keys_from_values(whatsapp_id, raw_id, lid)
 
-        candidate_chat_id = whatsapp_id if not whatsapp_id.endswith("@lid") else None
-        if candidate_chat_id and (row is None or not row.chat_id):
-            # Acquire the shared mapping lock before mutating or adding an ORM row.
-            # AsyncSession.execute() autoflushes pending changes before running the
-            # advisory-lock SELECT; taking this lock after editing row fields would
-            # silently acquire a Contact row lock first and invert the dispatch order
-            # (exact-chat lock -> Contact -> consent), allowing deadlocks under load.
-            await ContactMessagingConsentService.lock_exact_chat_mapping(
-                self.session, candidate_chat_id
-            )
 
         created = row is None
         if row is None:
