@@ -323,4 +323,103 @@ if [ "$dm_opt_in_state" != "true:6" ] || [ "$group_opt_in_state" != "mention_onl
   exit 1
 fi
 
+# Deterministically exercise concurrent default seeding. Hold the same advisory
+# lock that the seed transaction must acquire, start two independent seed
+# sessions, and require both to queue on that lock before releasing it. This
+# proves serialization rather than relying on a timing-sensitive duplicate race.
+psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c "
+DELETE FROM reply_rules
+WHERE keyword = 'what is datacube au'
+  AND match_mode = 'exact'
+  AND chat_type_filter IS NULL;
+" >/dev/null
+
+lock_holder_log="$ROOT/.seed-lock-holder-$GITHUB_RUN_ID.log"
+seed_one_log="$ROOT/.seed-concurrency-one-$GITHUB_RUN_ID.log"
+seed_two_log="$ROOT/.seed-concurrency-two-$GITHUB_RUN_ID.log"
+psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
+  "SELECT pg_advisory_lock(20261026, 2); SELECT pg_sleep(5); SELECT pg_advisory_unlock(20261026, 2);" \
+  >"$lock_holder_log" 2>&1 &
+lock_holder_pid=$!
+
+lock_ready=0
+for attempt in $(seq 1 50); do
+  held="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+    SELECT COUNT(*)
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND classid = 20261026::oid
+      AND objid = 2::oid
+      AND objsubid = 2
+      AND granted;
+  ")"
+  if [ "$held" = "1" ]; then
+    lock_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [ "$lock_ready" != "1" ]; then
+  kill "$lock_holder_pid" 2>/dev/null || true
+  wait "$lock_holder_pid" 2>/dev/null || true
+  cat "$lock_holder_log" >&2 || true
+  echo "Could not establish the disposable-DB seed advisory-lock barrier." >&2
+  exit 1
+fi
+
+psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/002_default_config.sql" >"$seed_one_log" 2>&1 &
+seed_one_pid=$!
+psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/002_default_config.sql" >"$seed_two_log" 2>&1 &
+seed_two_pid=$!
+
+waiting_count=0
+for attempt in $(seq 1 30); do
+  waiting_count="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+    SELECT COUNT(*)
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND classid = 20261026::oid
+      AND objid = 2::oid
+      AND objsubid = 2
+      AND NOT granted;
+  ")"
+  if [ "$waiting_count" -ge 2 ]; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [ "$waiting_count" -lt 2 ]; then
+  kill "$lock_holder_pid" 2>/dev/null || true
+  wait "$lock_holder_pid" 2>/dev/null || true
+  wait "$seed_one_pid" 2>/dev/null || true
+  wait "$seed_two_pid" 2>/dev/null || true
+  cat "$seed_one_log" "$seed_two_log" >&2 || true
+  echo "Both concurrent default seed sessions did not block on the shared advisory lock." >&2
+  exit 1
+fi
+
+wait "$lock_holder_pid"
+if ! wait "$seed_one_pid"; then
+  cat "$seed_one_log" >&2
+  exit 1
+fi
+if ! wait "$seed_two_pid"; then
+  cat "$seed_two_log" >&2
+  exit 1
+fi
+
+concurrent_default_count="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+SELECT COUNT(*)
+FROM reply_rules
+WHERE keyword = 'what is datacube au'
+  AND match_mode = 'exact'
+  AND chat_type_filter IS NULL;
+")"
+if [ "$concurrent_default_count" != "1" ]; then
+  echo "Concurrent default seed runs left $concurrent_default_count rows for the same reply-rule key; expected exactly one." >&2
+  exit 1
+fi
+rm -f "$lock_holder_log" "$seed_one_log" "$seed_two_log"
+
 echo "Deployment seed-policy regression passed: local fixture seeds are opt-in, default redeploy preserves edits, and explicit opt-in remains functional."

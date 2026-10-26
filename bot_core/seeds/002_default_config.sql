@@ -1,4 +1,9 @@
 -- Default bot configuration values
+-- Serialize concurrent deployments before either seed statement reads or writes defaults.
+-- This transaction-scoped advisory lock is held until all default config and reply-rule inserts commit.
+BEGIN;
+SELECT pg_advisory_xact_lock(20261026, 2);
+
 INSERT INTO bot_config (config_key, config_value) VALUES
   ('system_instructions', 'Generated automatically from the assistant identity/profile settings.'),
   ('ai_enabled',           'false'),
@@ -76,3 +81,5 @@ WHERE NOT EXISTS (
       AND existing.chat_type_filter IS NOT DISTINCT FROM d.chat_type_filter
 )
 ON CONFLICT DO NOTHING;
+
+COMMIT;
