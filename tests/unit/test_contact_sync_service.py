@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.schema import Contact
 from app.services.contact_intelligence_service import ContactIntelligenceService
@@ -220,4 +221,54 @@ async def test_sync_does_not_take_chat_mapping_lock_for_already_mapped_contact(d
         ("contact_lookup_unlocked", None),
         ("contact_lookup_for_update", None),
     ]
+
+@pytest.mark.asyncio
+async def test_sync_refreshes_locked_contact_after_mapping_lock_wait(db_session, monkeypatch):
+    exact_chat_id = "2348066666666@c.us"
+    concurrent_chat_id = "2348999999999@c.us"
+    contact = Contact(
+        whatsapp_id=exact_chat_id,
+        chat_id=None,
+        normalized_phone="2348066666666",
+        identity_json={"is_saved_contact": True},
+    )
+    db_session.add(contact)
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_exact_chat_mapping
+
+    async def racing_lock(session, chat_id):
+        # Simulate a competing compliant writer winning the advisory lock after our
+        # unlocked probe but before our SELECT ... FOR UPDATE. The second read must
+        # refresh the already-loaded ORM instance rather than overwrite this mapping.
+        async with async_sessionmaker(bind=session.bind, expire_on_commit=False)() as other:
+            await original_lock(other, chat_id)
+            other_contact = (
+                await other.execute(
+                    select(Contact).where(Contact.id == contact.id).with_for_update()
+                )
+            ).scalar_one()
+            other_contact.chat_id = concurrent_chat_id
+            await other.commit()
+        await original_lock(session, chat_id)
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_exact_chat_mapping",
+        staticmethod(racing_lock),
+    )
+
+    service = ContactSyncService(db_session, waha=_FakeWAHA([]))
+    outcome, _ = await service._sync_one(
+        {
+            "id": "2348066666666@s.whatsapp.net",
+            "name": "Concurrent Mapping Contact",
+            "isMyContact": True,
+        },
+        sync_at=utcnow(),
+    )
+
+    await db_session.refresh(contact)
+    assert outcome == "updated"
+    assert contact.chat_id == concurrent_chat_id
 

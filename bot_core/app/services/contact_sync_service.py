@@ -315,7 +315,11 @@ class ContactSyncService:
             .limit(1)
         )
         if for_update:
-            query = query.with_for_update()
+            # The unlocked probe may already have placed this row in SQLAlchemy's
+            # identity map. Refresh it after acquiring the row lock so concurrent
+            # mapping changes committed while waiting cannot be overwritten from stale
+            # in-memory state.
+            query = query.with_for_update().execution_options(populate_existing=True)
         return (await self.session.execute(query)).scalar_one_or_none()
 
     async def _acquire_sync_lock(self) -> None:
