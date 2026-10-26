@@ -198,6 +198,24 @@ class BotConfigService:
 
     async def introduction_reply(self) -> str:
         profile = await self.get_identity_profile()
+        unavailable_keys: set[str] = set()
+        try:
+            from app.services.identity_registry_service import IdentityRegistryService
+
+            unavailable_keys = await IdentityRegistryService(
+                self.session
+            ).unavailable_default_keys()
+        except Exception:
+            # Preserve the existing bot_config fallback during migration/bootstrap,
+            # matching identity_reply(); lifecycle suppression applies when the registry
+            # is readable and explicitly records the OWNER's disabled/deleted choice.
+            pass
+
+        # This introduction makes claims about both Zina and Fabian. Do not bypass
+        # Identity Registry lifecycle state through a second hardcoded fallback path.
+        if {"zina", "fabian"} & unavailable_keys:
+            return self._DELETED_FALLBACK_MESSAGE
+
         return (
             f"Hi. I'm {profile['assistant_name']}, {profile['owner_name']}'s AI assistant. "
             f"I help answer questions about {profile['owner_name']}, his projects, and Datacube AU."

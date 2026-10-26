@@ -196,3 +196,51 @@ async def test_project_identity_reply_is_unaffected_by_a_default_call_with_no_un
     # parameter.
     result = BotConfigService._project_identity_reply("what is datacube", "Fabian")
     assert "Datacube AU" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registry_key", "lifecycle"),
+    [
+        ("zina", "deleted"),
+        ("zina", "disabled"),
+        ("fabian", "deleted"),
+        ("fabian", "disabled"),
+    ],
+)
+async def test_introduction_reply_honors_deleted_or_disabled_default_identity(
+    db_session, registry_key, lifecycle
+):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    assert await bot_config.introduction_reply() == (
+        "Hi. I'm Zina, Fabian's AI assistant. "
+        "I help answer questions about Fabian, his projects, and Datacube AU."
+    )
+
+    if lifecycle == "deleted":
+        await registry.delete(registry_key)
+    else:
+        entry = await registry.get_by_key(registry_key)
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    assert await bot_config.introduction_reply() == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_introduction_reply_ignores_unrelated_disabled_default(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    entry = await registry.get_by_key("projects")
+    assert entry is not None
+    entry.is_enabled = False
+    await db_session.flush()
+
+    assert await BotConfigService(db_session).introduction_reply() == (
+        "Hi. I'm Zina, Fabian's AI assistant. "
+        "I help answer questions about Fabian, his projects, and Datacube AU."
+    )
