@@ -31,6 +31,27 @@ def test_idempotency_key_requires_transport_message_id():
     assert _build_idempotency_key({"event": "message", "payload": payload}, payload) is None
 
 
+def test_opt_out_fallback_key_is_stable_across_message_event_variants():
+    from app.api.inbound import _build_opt_out_intent_key
+
+    payload = {
+        "chatId": "15550000001@c.us",
+        "body": "STOP",
+        "timestamp": 1782470000,
+    }
+    first = {"event": "message", "session": "test", "payload": payload}
+    duplicate_variant = {"event": "message.any", "session": "test", "payload": payload}
+    changed_message = {"chatId": payload["chatId"], "body": "UNSUBSCRIBE", "timestamp": 1782470000}
+
+    assert _build_opt_out_intent_key(first, payload) == _build_opt_out_intent_key(
+        duplicate_variant, payload
+    )
+    assert _build_opt_out_intent_key(first, payload) != _build_opt_out_intent_key(
+        {"event": "message", "session": "test", "payload": changed_message},
+        changed_message,
+    )
+
+
 @pytest.mark.asyncio
 async def test_idempotency_claim_blocks_duplicate_until_failed_claim_is_released(db_session):
     service = InboundIdempotencyService(db_session)

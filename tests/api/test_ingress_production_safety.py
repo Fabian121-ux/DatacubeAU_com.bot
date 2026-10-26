@@ -149,6 +149,35 @@ async def test_explicit_contact_opt_out_is_claimed_before_routing(
 
 
 @pytest.mark.asyncio
+async def test_explicit_opt_out_without_transport_message_id_still_claims_pending_intent(
+    ingress, db_session
+):
+    """Missing WAHA IDs must not remove the pre-routing STOP veto."""
+    app, routed = ingress
+    event = _message_event(message_id=None, body="STOP")
+    event_key = inbound._build_opt_out_intent_key(event, event["payload"])
+
+    body = await _post(app, event)
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
+    assert await inbound.ContactMessagingConsentService(db_session).has_pending_opt_out_intent(
+        CONTACT_ID
+    )
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("message_id", "body_text"),
     [

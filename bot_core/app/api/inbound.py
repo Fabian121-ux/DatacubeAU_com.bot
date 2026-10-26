@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import logging
 from typing import Any
 
@@ -152,6 +154,11 @@ async def waha_webhook(
     # deliver the same message as both `message` and `message.any`, and webhook
     # retries must not execute owner commands twice.
     idempotency_key = _build_idempotency_key(event, payload)
+    if not idempotency_key and opt_out_intent:
+        # A STOP without a WAHA message ID still needs a durable veto before routing
+        # can block on the mapping lock. Fingerprint the stable payload so retries can
+        # reclaim the same receipt and message/message.any variants share the claim.
+        idempotency_key = _build_opt_out_intent_key(event, payload)
     if idempotency_key:
         receipt = InboundReceipt(
             event_key=idempotency_key,
@@ -540,6 +547,28 @@ def _build_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> st
     session_name = _resolve_session_name(event, payload) or "default"
     chat_id = _resolve_chat_id(payload) or "unknown-chat"
     return f"{session_name}:{chat_id}:{message_id}"
+
+
+def _build_opt_out_intent_key(event: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Build a stable, non-PII receipt key for a STOP when WAHA omits message ID.
+
+    This fallback is used only for explicit external-contact opt-outs. It must be
+    stable across retries and message/message.any variants so the durable pending
+    intent remains reclaimable rather than silently disappearing at the final fence.
+    """
+    canonical = {
+        "session": _resolve_session_name(event, payload) or "default",
+        "chat_id": _resolve_chat_id(payload) or "unknown-chat",
+        "payload": payload,
+    }
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return "optout-no-id:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _owner_action_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
