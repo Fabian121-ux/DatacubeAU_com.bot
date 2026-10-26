@@ -140,23 +140,54 @@ class ContactSyncService:
         )
 
         candidate_chat_id = whatsapp_id if not whatsapp_id.endswith("@lid") else None
+        mapping_lock_acquired = False
         if candidate_chat_id:
-            # Acquire the exact-chat mapping lock before _find_existing() can issue
-            # SELECT ... FOR UPDATE. That query may lock an existing Contact row, so
-            # taking the advisory lock afterwards reverses the dispatch lock order and
-            # can deadlock when a previously-unmapped Contact is assigned this chat.
-            # Locking even when a mapping already exists is intentional: the decision
-            # to update the mapping must be made from the row version read under lock.
-            await ContactMessagingConsentService.lock_exact_chat_mapping(
-                self.session, candidate_chat_id
+            # Probe without a row lock first so the common already-mapped-contact path
+            # does not hold a chat advisory lock for the entire full-contact scan.
+            row_hint = await self._find_existing(
+                whatsapp_id=whatsapp_id,
+                raw_id=raw_id,
+                lid=lid,
+                normalized_phone=normalized_phone,
+                for_update=False,
             )
+            if row_hint is None:
+                # Do not lock or create rows for new WAHA contacts that are not saved.
+                would_be_saved = explicit_saved if explicit_saved is not None else bool(contact_name)
+                if not would_be_saved:
+                    return "skipped", self._identity_keys_from_values(whatsapp_id, raw_id, lid)
+                await ContactMessagingConsentService.lock_exact_chat_mapping(
+                    self.session, candidate_chat_id
+                )
+                mapping_lock_acquired = True
+            elif not row_hint.chat_id:
+                # A missing mapping may be assigned below, so take the shared mapping
+                # lock before the subsequent SELECT ... FOR UPDATE.
+                await ContactMessagingConsentService.lock_exact_chat_mapping(
+                    self.session, candidate_chat_id
+                )
+                mapping_lock_acquired = True
 
-        row = await self._find_existing(
-            whatsapp_id=whatsapp_id,
-            raw_id=raw_id,
-            lid=lid,
-            normalized_phone=normalized_phone,
-        )
+            row = await self._find_existing(
+                whatsapp_id=whatsapp_id,
+                raw_id=raw_id,
+                lid=lid,
+                normalized_phone=normalized_phone,
+                for_update=True,
+            )
+            # If a row found by the unlocked probe disappeared before it could be
+            # locked, do not reinterpret that stale read as permission to create one.
+            if row_hint is not None and row is None:
+                return "skipped", self._identity_keys_from_values(whatsapp_id, raw_id, lid)
+        else:
+            # Bare LIDs cannot receive a chat mapping here, so no advisory lock is needed.
+            row = await self._find_existing(
+                whatsapp_id=whatsapp_id,
+                raw_id=raw_id,
+                lid=lid,
+                normalized_phone=normalized_phone,
+                for_update=True,
+            )
 
         # The advisory transaction lock serializes full sync() calls. Keep this
         # timestamp guard too because focused unit/service calls to _sync_one remain
@@ -211,7 +242,9 @@ class ContactSyncService:
             if preferred_name:
                 row.display_name = preferred_name[:180]
 
-        if not row.chat_id and candidate_chat_id:
+        if not row.chat_id and candidate_chat_id and mapping_lock_acquired:
+            # If a mapped row became unmapped after the unlocked probe, defer repair
+            # until the next sync rather than assigning without the advisory lock.
             row.chat_id = candidate_chat_id
         row.waha_contact_id = raw_id[:120]
         if lid:
@@ -268,21 +301,22 @@ class ContactSyncService:
         raw_id: str,
         lid: str | None,
         normalized_phone: str | None,
+        for_update: bool = True,
     ) -> Contact | None:
         conditions = [Contact.whatsapp_id == whatsapp_id, Contact.waha_contact_id == raw_id]
         if lid:
             conditions.extend([Contact.whatsapp_id == lid, Contact.waha_participant_id == lid])
         if normalized_phone:
             conditions.append(Contact.normalized_phone == normalized_phone)
-        return (
-            await self.session.execute(
-                select(Contact)
-                .where(or_(*conditions))
-                .order_by(Contact.updated_at.desc(), Contact.id.desc())
-                .limit(1)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
+        query = (
+            select(Contact)
+            .where(or_(*conditions))
+            .order_by(Contact.updated_at.desc(), Contact.id.desc())
+            .limit(1)
+        )
+        if for_update:
+            query = query.with_for_update()
+        return (await self.session.execute(query)).scalar_one_or_none()
 
     async def _acquire_sync_lock(self) -> None:
         bind = self.session.get_bind()
