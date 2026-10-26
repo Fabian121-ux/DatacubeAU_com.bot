@@ -226,6 +226,37 @@ async def test_revocation_event_is_never_routed_for_reply(ingress):
 
 
 @pytest.mark.asyncio
+async def test_message_without_exact_chat_id_is_never_claimed_or_routed(ingress, db_session):
+    """Sender-ID fallback must not replace the exact transport reply target."""
+    app, routed = ingress
+    event = {
+        "event": "message",
+        "session": "test",
+        "payload": {
+            "id": "MISSING-CHAT-STOP",
+            "sender": {"id": CONTACT_ID},
+            "fromMe": False,
+            "body": "STOP",
+        },
+    }
+
+    body = await _post(app, event)
+
+    assert body["status"] == "ignored"
+    assert body["reason"] == "missing_exact_chat_id"
+    assert routed == []
+    receipt_count = (
+        await db_session.execute(
+            text(
+                "SELECT count(*) FROM inbound_webhook_receipts "
+                "WHERE event_key LIKE '%MISSING-CHAT-STOP'"
+            )
+        )
+    ).scalar_one()
+    assert receipt_count == 0
+
+
+@pytest.mark.asyncio
 async def test_event_without_source_message_id_is_never_routed(ingress):
     app, routed = ingress
     event = {"event": "message", "session": "test", "payload": {"chatId": CONTACT_ID, "body": "hi"}}
