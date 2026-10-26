@@ -118,6 +118,12 @@ async def test_ordinary_contact_dm_is_still_routed(ingress):
         ("STOP-CLAIM-3", "Unsubscribe me 📵"),
         ("STOP-CLAIM-4", "STOP MESSAGING 🙏"),
         ("STOP-CLAIM-5", "unsubscribe please 📵"),
+        ("STOP-CLAIM-6", "stop texting"),
+        ("STOP-CLAIM-7", "stop contacting"),
+        ("STOP-CLAIM-8", "stop sending"),
+        ("STOP-CLAIM-9", "please unsubscribe"),
+        ("STOP-CLAIM-10", "remove me from your list"),
+        ("STOP-CLAIM-11", "take me off your list"),
     ],
 )
 async def test_explicit_contact_opt_out_is_claimed_before_routing(
@@ -138,6 +144,37 @@ async def test_explicit_contact_opt_out_is_claimed_before_routing(
         )
     ).one()
     assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message_id", "body_text"),
+    [
+        ("CONTEXT-OPT-OUT-1", "stop messaging about the deployment"),
+        ("CONTEXT-OPT-OUT-2", "unsubscribe please send the report"),
+        ("CONTEXT-OPT-OUT-3", "don't stop"),
+    ],
+)
+async def test_contextual_mentions_do_not_claim_opt_out(
+    ingress, db_session, message_id, body_text
+):
+    """Contextual mentions must not become durable opt-out vetoes."""
+    app, routed = ingress
+    body = await _post(app, _message_event(message_id=message_id, body=body_text))
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": f"test:{CONTACT_ID}:{message_id}"},
+        )
+    ).one()
+    assert receipt.opt_out_intent is False
     assert receipt.status == "processing"
     assert len(routed) == 1
 
