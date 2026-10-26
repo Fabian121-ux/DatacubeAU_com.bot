@@ -6,6 +6,88 @@ if [ -z "${DATABASE_URL_SYNC:-}" ]; then
   exit 1
 fi
 
+# Local fixture identities must never be rewritten by a normal production deploy.
+# RUN_LOCAL_SEEDS is an explicit opt-in for disposable development/test environments.
+RUN_LOCAL_SEEDS="${RUN_LOCAL_SEEDS:-false}"
+case "$RUN_LOCAL_SEEDS" in
+  true|false) ;;
+  *)
+    echo "RUN_LOCAL_SEEDS must be exactly 'true' or 'false'." >&2
+    exit 1
+    ;;
+esac
+
+# The production Compose migration service sets this marker explicitly. Even if
+# RUN_LOCAL_SEEDS is accidentally added to .env.production, fixture upserts fail
+# closed unless the operator explicitly overrides the marker for a dev/test run.
+if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
+  case "${ZINA_DEPLOYMENT_ENV:-}" in
+    development|test) ;;
+    *)
+      echo "RUN_LOCAL_SEEDS=true requires ZINA_DEPLOYMENT_ENV=development or test." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# The deployment marker is an operator-controlled hint, not proof of where psql
+# will connect. Require a narrowly named disposable database on a local endpoint
+# before allowing fixture upserts, so overriding ZINA_DEPLOYMENT_ENV alone cannot
+# turn the production Compose migration service into a fixture-seed operation.
+if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
+  python3 - "${DATABASE_URL_SYNC}" <<'PY'
+import os
+import re
+import sys
+from urllib.parse import unquote, urlsplit
+
+try:
+    parsed = urlsplit(sys.argv[1])
+    host = parsed.hostname
+    port = parsed.port
+except ValueError as exc:
+    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC has an invalid host or port.") from exc
+
+if parsed.scheme != "postgresql":
+    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC must use a PostgreSQL URL.")
+if parsed.query or parsed.fragment:
+    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC query parameters/fragments are forbidden.")
+if host not in {"localhost", "127.0.0.1", "::1", "host.docker.internal"}:
+    raise SystemExit("Refusing local fixture seeds: target host must be local or host.docker.internal.")
+if port not in {None, 5432, 5433}:
+    raise SystemExit("Refusing local fixture seeds: target port must be 5432 or 5433.")
+if host == "host.docker.internal" and port != 5433:
+    raise SystemExit("Refusing local fixture seeds: host.docker.internal must use the documented disposable port 5433.")
+
+database = unquote(parsed.path.lstrip("/"))
+is_local_disposable = database == "zina_disposable"
+
+# The CI namespace is not a generic prefix allowlist. Bind it to this exact
+# workflow run/attempt so a misleading name such as zina_seed_policy_production
+# cannot opt in outside Actions or point at another run's database.
+run_id = os.environ.get("GITHUB_RUN_ID", "")
+run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+expected_ci_database = (
+    f"zina_seed_policy_{run_id}_{run_attempt}"
+    if os.environ.get("GITHUB_ACTIONS") == "true"
+    and run_id.isdecimal()
+    and run_attempt.isdecimal()
+    else ""
+)
+is_current_ci_disposable = bool(
+    expected_ci_database
+    and re.fullmatch(r"zina_seed_policy_[0-9]+_[0-9]+", database)
+    and database == expected_ci_database
+)
+if not (is_local_disposable or is_current_ci_disposable):
+    raise SystemExit(
+        "Refusing local fixture seeds: database name must identify a disposable "
+        "zina_disposable database or this exact GitHub Actions run's "
+        "zina_seed_policy_<run_id>_<run_attempt> database."
+    )
+PY
+fi
+
 APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
@@ -19,6 +101,7 @@ if [ ! -f "$MIGRATION_VALIDATOR" ]; then
   exit 1
 fi
 python "$MIGRATION_VALIDATOR" "$MIGRATIONS_DIR"
+
 
 psql_cmd() {
   psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
@@ -129,7 +212,19 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
 done
 
 for seed in "$SEEDS_DIR"/*.sql; do
-  echo "Applying seed $(basename "$seed")"
+  [ -f "$seed" ] || continue
+  seed_name="$(basename "$seed")"
+
+  case "$seed_name" in
+    *_local_seed.sql)
+      if [ "$RUN_LOCAL_SEEDS" != "true" ]; then
+        echo "Skipping local-only seed $seed_name (set RUN_LOCAL_SEEDS=true to opt in)"
+        continue
+      fi
+      ;;
+  esac
+
+  echo "Applying seed $seed_name"
   psql_cmd -f "$seed"
 done
 
