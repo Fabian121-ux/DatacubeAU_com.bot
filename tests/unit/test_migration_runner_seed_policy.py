@@ -123,6 +123,7 @@ def test_local_seed_opt_in_rejects_non_disposable_database_targets(
     # upserts against the production Compose service/database or an arbitrary remote DB.
     env = os.environ.copy()
     env["DATABASE_URL_SYNC"] = database_url
+    env["DATABASE_URL"] = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
     env["RUN_LOCAL_SEEDS"] = "true"
     env["ZINA_DEPLOYMENT_ENV"] = "development"
 
@@ -146,6 +147,7 @@ def test_ci_seed_namespace_is_refused_outside_github_actions() -> None:
     env["GITHUB_RUN_ID"] = "123"
     env["GITHUB_RUN_ATTEMPT"] = "1"
     env["DATABASE_URL_SYNC"] = "postgresql://postgres:postgres@localhost:5432/zina_seed_policy_123_1"
+    env["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5432/zina_seed_policy_123_1"
     env["RUN_LOCAL_SEEDS"] = "true"
     env["ZINA_DEPLOYMENT_ENV"] = "development"
 
