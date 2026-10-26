@@ -10,6 +10,16 @@ APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
 
+# Validate the entire migration bundle before the first database call. This must
+# precede even schema_migrations DDL so a missing predecessor cannot partially
+# mutate an installed database.
+MIGRATION_VALIDATOR="$APP_ROOT/bot_core/scripts/validate_migration_sequence.py"
+if [ ! -f "$MIGRATION_VALIDATOR" ]; then
+  echo "Migration sequence validator is missing: $MIGRATION_VALIDATOR" >&2
+  exit 1
+fi
+python "$MIGRATION_VALIDATOR" "$MIGRATIONS_DIR"
+
 psql_cmd() {
   psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
 }
