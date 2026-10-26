@@ -179,11 +179,34 @@ PUBLIC_BASE_URL=http://YOUR_DROPLET_IP
 docker compose --env-file .env.production build
 ```
 
-9. Start the stack. The `migrate` service runs migrations and seed SQL automatically before the API starts:
+9. Start the stack. The `migrate` service runs migrations and default configuration seeds automatically before the API starts. Local fixture seeds (for example, the sample DM/group identities in `001_local_seed.sql`) are skipped by default so a redeploy cannot reset their enabled flags, cooldowns, or group reply mode.
 
 ```bash
 docker compose --env-file .env.production up -d
 ```
+
+Only on a **disposable development/test database**, pass `RUN_LOCAL_SEEDS=true` explicitly and set `ZINA_DEPLOYMENT_ENV=development` (or `test`) to the migration process to apply `*_local_seed.sql` fixtures. Never add the flag to `.env.production` or enable it in production. The production Compose migration service hard-sets `ZINA_DEPLOYMENT_ENV=production`, so an accidentally inherited local-seed flag is rejected. The normal `002_default_config.sql` seed is still re-applied on each runner invocation, but uses `ON CONFLICT DO NOTHING`; recorded migrations are checksum-skipped.
+
+The migration service inherits database URLs from `.env.production`, so an opt-in must explicitly override **both** database URL variables and must target a disposable database that already exists and is reachable from the container. For a disposable PostgreSQL instance exposed on the host at port `5433` (use URL-encoded credentials if needed):
+
+```bash
+export ZINA_DISPOSABLE_DB_URL_SYNC='postgresql://zina_dev:REPLACE_WITH_DEV_PASSWORD@host.docker.internal:5433/zina_disposable'
+export ZINA_DISPOSABLE_DB_URL='postgresql+asyncpg://zina_dev:REPLACE_WITH_DEV_PASSWORD@host.docker.internal:5433/zina_disposable'
+
+# Review both URLs before running. They must point to the disposable database,
+# never the production database configured in .env.production.
+docker compose --env-file .env.production run --rm --no-deps \
+  --add-host host.docker.internal:host-gateway \
+  -e RUN_LOCAL_SEEDS=true \
+  -e ZINA_DEPLOYMENT_ENV=development \
+  -e DATABASE_URL_SYNC="$ZINA_DISPOSABLE_DB_URL_SYNC" \
+  -e DATABASE_URL="$ZINA_DISPOSABLE_DB_URL" \
+  migrate
+
+unset ZINA_DISPOSABLE_DB_URL_SYNC ZINA_DISPOSABLE_DB_URL
+```
+
+This uses `.env.production` only for Compose interpolation; `--no-deps` avoids starting the configured PostgreSQL service, and the explicit `-e` arguments replace both database URLs inside the migration container. Do not run this against a production host or reuse production credentials.
 
 10. Run the end-to-end smoke check:
 
