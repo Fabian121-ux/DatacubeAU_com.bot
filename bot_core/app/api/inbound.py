@@ -70,10 +70,31 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
+    # A reply target must come from the transport's exact chat identity, not the
+    # normalizer's sender-ID fallback. Without this guard a malformed STOP can be
+    # claimed with chat_id=NULL while routing falls back to sender_id; the worker's
+    # final pending-opt-out veto then cannot see the receipt and could send past STOP.
+    exact_chat_id = _resolve_chat_id(payload)
+    if not exact_chat_id:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook_ignored",
+            request_id=request_id,
+            event_name=event_name or "message",
+            message_id=message_id,
+            reason="missing_exact_chat_id",
+        )
+        return {
+            "status": "ignored",
+            "reason": "missing_exact_chat_id",
+            "event_name": event_name or "message",
+        }
+
     # Status posts, channels/newsletters, and broadcast lists are not conversations.
     # Reject them before the idempotency claim and before any routing side effect so
     # they can never become a reply candidate.
-    if _is_non_conversational_chat(_resolve_chat_id(payload)):
+    if _is_non_conversational_chat(exact_chat_id):
         log_event(
             logger,
             logging.INFO,
@@ -135,7 +156,7 @@ async def waha_webhook(
         receipt = InboundReceipt(
             event_key=idempotency_key,
             session_name=_resolve_session_name(event, payload),
-            chat_id=_resolve_chat_id(payload),
+            chat_id=exact_chat_id,
             message_id=message_id,
             opt_out_intent=opt_out_intent,
         )
