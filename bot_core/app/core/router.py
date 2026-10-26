@@ -466,6 +466,23 @@ class InboundRouter:
         display_name = self._resolved_display_name(identity, normalized.sender_name)
         stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1).with_for_update()
         model = (await self.session.execute(stmt)).scalar_one_or_none()
+        if model is None and normalized.chat_type.value == "dm" and normalized.chat_id:
+            # WAHA can present a direct chat ID that differs from the canonical sender
+            # ID. Reuse a unique existing chat mapping instead of creating a duplicate
+            # Contact; an ambiguous alias is not safe identity evidence.
+            alias_matches = (
+                await self.session.execute(
+                    select(Contact)
+                    .where(Contact.chat_id == normalized.chat_id)
+                    .order_by(Contact.id)
+                    .limit(2)
+                    .with_for_update()
+                )
+            ).scalars().all()
+            if len(alias_matches) > 1:
+                raise ValueError("ambiguous exact chat mapping; refusing to create a duplicate contact")
+            if alias_matches:
+                model = alias_matches[0]
         if model:
             if display_name and display_name != model.display_name and not getattr(model, "is_name_verified", False):
                 model.display_name = display_name

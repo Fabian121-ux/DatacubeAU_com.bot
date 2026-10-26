@@ -211,6 +211,63 @@ async def test_inbound_opt_out_overrides_prior_grant_and_is_audited(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_inbound_router_reuses_unique_chat_alias_without_duplicate(db_session, test_contact):
+    canonical_id = test_contact.whatsapp_id
+    alias_chat_id = "333@c.us"
+    test_contact.chat_id = alias_chat_id
+    await db_session.flush()
+
+    normalized = SimpleNamespace(
+        sender_id=alias_chat_id,
+        sender_identity={},
+        sender_name=None,
+        chat_id=alias_chat_id,
+        chat_type=SimpleNamespace(value="dm"),
+    )
+    resolved = await InboundRouter(db_session)._get_or_create_contact(normalized)
+
+    assert int(resolved.id) == int(test_contact.id)
+    assert resolved.whatsapp_id == canonical_id
+    assert resolved.chat_id == alias_chat_id
+    mapped_ids = (
+        await db_session.execute(
+            select(Contact.id)
+            .where(Contact.chat_id == alias_chat_id)
+            .order_by(Contact.id)
+        )
+    ).scalars().all()
+    assert mapped_ids == [test_contact.id]
+
+
+@pytest.mark.asyncio
+async def test_inbound_router_fails_closed_on_ambiguous_chat_alias(db_session, test_contact):
+    alias_chat_id = "333@c.us"
+    test_contact.chat_id = alias_chat_id
+    other = Contact(
+        whatsapp_id="444@c.us",
+        chat_id=alias_chat_id,
+        display_name="Second alias claimant",
+    )
+    db_session.add(other)
+    await db_session.flush()
+
+    normalized = SimpleNamespace(
+        sender_id="555@c.us",
+        sender_identity={},
+        sender_name=None,
+        chat_id=alias_chat_id,
+        chat_type=SimpleNamespace(value="dm"),
+    )
+    with pytest.raises(ValueError, match="ambiguous exact chat mapping"):
+        await InboundRouter(db_session)._get_or_create_contact(normalized)
+
+    new_contact = await db_session.execute(
+        select(Contact.id).where(Contact.whatsapp_id == "555@c.us")
+    )
+    assert new_contact.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 async def test_opt_out_on_mapped_alias_blocks_other_alias_grant_and_dispatch(db_session, test_contact):
     target_chat_id = test_contact.whatsapp_id
     opt_out_alias = "333@c.us"
