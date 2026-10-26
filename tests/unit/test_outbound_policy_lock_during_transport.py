@@ -347,7 +347,7 @@ async def test_stale_in_flight_reservation_blocks_second_worker_after_final_fenc
                     prohibited_categories, approval_required_categories, created_by
                 )
                 VALUES (
-                    :contact_id, :chat_id, true, '[\"normal_reply\"]'::jsonb,
+                    :contact_id, :chat_id, true, '["normal_reply"]'::jsonb,
                     '[]'::jsonb, '[]'::jsonb, 'test-owner'
                 )
                 """
