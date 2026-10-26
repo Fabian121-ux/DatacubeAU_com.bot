@@ -110,10 +110,20 @@ async def test_ordinary_contact_dm_is_still_routed(ingress):
 
 
 @pytest.mark.asyncio
-async def test_explicit_contact_opt_out_is_claimed_before_routing(ingress, db_session):
-    """The final worker fence must see STOP even if routing is waiting on a lock."""
+@pytest.mark.parametrize(
+    ("message_id", "body_text"),
+    [
+        ("STOP-CLAIM-1", "STOP"),
+        ("STOP-CLAIM-2", "STOP 🙏"),
+        ("STOP-CLAIM-3", "Unsubscribe me 📵"),
+    ],
+)
+async def test_explicit_contact_opt_out_is_claimed_before_routing(
+    ingress, db_session, message_id, body_text
+):
+    """The final worker fence must see explicit opt-outs with harmless emoji too."""
     app, routed = ingress
-    body = await _post(app, _message_event(message_id="STOP-CLAIM-1", body="STOP"))
+    body = await _post(app, _message_event(message_id=message_id, body=body_text))
 
     assert body["status"] == "accepted"
     receipt = (
@@ -122,7 +132,7 @@ async def test_explicit_contact_opt_out_is_claimed_before_routing(ingress, db_se
                 "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
                 "WHERE event_key = :event_key"
             ),
-            {"event_key": f"test:{CONTACT_ID}:STOP-CLAIM-1"},
+            {"event_key": f"test:{CONTACT_ID}:{message_id}"},
         )
     ).one()
     assert receipt.opt_out_intent is True

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
+import unicodedata
 
 from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -82,8 +83,15 @@ class ContactMessagingConsentService:
 
     @classmethod
     def is_explicit_opt_out_message(cls, value: str | None) -> bool:
-        raw = (value or "").casefold().replace("’", "'").strip()
-        raw = re.sub(r"[.!?,;:]+", " ", raw)
+        # NFKC plus separator normalization catches unambiguous STOP/UNSUBSCRIBE
+        # messages with trailing emoji or other symbols, without broad substring
+        # matching. Keep apostrophes and hyphens so the explicit phrase rules remain
+        # readable (e.g. "don't contact me" and "opt-out").
+        raw = unicodedata.normalize("NFKC", (value or "").replace("’", "'")).casefold()
+        raw = "".join(
+            char if char.isalnum() or char.isspace() or char in {"'", "-"} else " "
+            for char in raw
+        )
         raw = re.sub(r"\s+", " ", raw).strip()
         if raw in cls._OPT_OUT_EXACT:
             return True
