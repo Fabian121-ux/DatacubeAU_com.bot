@@ -171,9 +171,9 @@ def _run_seed_guard_with_database_urls(
     psql_marker = tmp_path / "psql-was-called"
     fake_psql = fake_bin / "psql"
     fake_psql.write_text(
-        "#!/bin/sh\\n"
-        ': "${PSQL_MARKER:?}"\\n'
-        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        "#!/bin/sh\n"
+        ': "${PSQL_MARKER:?}"\n'
+        'printf "called\n" >> "$PSQL_MARKER"\n',
         encoding="utf-8",
     )
     fake_psql.chmod(0o755)
