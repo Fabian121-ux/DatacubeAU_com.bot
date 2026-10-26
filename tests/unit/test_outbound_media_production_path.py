@@ -29,7 +29,9 @@ from app.core.reply_planner import PlannedReply
 from app.core.router import InboundRouter
 from app.models.enums import DecisionType
 from app.models.schema import Contact, OutboundMessage
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.owner_outbound_approval_service import OwnerOutboundApprovalService
 from app.services.waha_client import WahaClientError
 from app.workers import background_workers
 
@@ -352,3 +354,65 @@ async def test_text_only_producer_path_is_unchanged(db_session, monkeypatch):
     assert client.calls == [("send_text", {"chatId": OWNER_CHAT, "text": text})]
     assert row.message_text == text
     assert row.status == "sent"
+
+
+@pytest.mark.asyncio
+async def test_terminal_opt_out_on_mapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
+    """A STOP on one current Contact alias vetoes an approved send to its other alias."""
+    target_chat_id = "2348000000002@c.us"
+    opt_out_alias = "2348000000003@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Alias opt-out regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="An already-consented reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-EXT-ALIAS-STOP",
+    )
+    assert row.status == "deferred"
+    assert row.formatting_json["delivery_policy"] == "approval_required"
+
+    # Keep both identifiers mapped to the same durable Contact after queue creation.
+    # Approval and consent for A must not override a later STOP received on B.
+    contact.chat_id = opt_out_alias
+    await db_session.flush()
+
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await db_session.refresh(row)
+
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-alias-stop",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    await consent.record_inbound_opt_out(
+        contact_id=int(contact.id),
+        exact_chat_id=opt_out_alias,
+        evidence_ref="inbound-stop-on-second-alias",
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "contact consent denied: contact has opted out" in (row.error_message or "")
