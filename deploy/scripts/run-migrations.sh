@@ -35,23 +35,69 @@ fi
 # before allowing fixture upserts, so overriding ZINA_DEPLOYMENT_ENV alone cannot
 # turn the production Compose migration service into a fixture-seed operation.
 if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
-  python3 - "${DATABASE_URL_SYNC}" <<'PY'
+  python3 - "${DATABASE_URL_SYNC}" "${DATABASE_URL:-}" <<'PY'
 import os
 import re
 import sys
 from urllib.parse import unquote, urlsplit
 
-try:
-    parsed = urlsplit(sys.argv[1])
-    host = parsed.hostname
-    port = parsed.port
-except ValueError as exc:
-    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC has an invalid host or port.") from exc
+sync_value, async_value = sys.argv[1:3]
+if not async_value:
+    raise SystemExit(
+        "Refusing local fixture seeds: DATABASE_URL is required to verify the schema-audit target."
+    )
 
-if parsed.scheme != "postgresql":
-    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC must use a PostgreSQL URL.")
-if parsed.query or parsed.fragment:
-    raise SystemExit("Refusing local fixture seeds: DATABASE_URL_SYNC query parameters/fragments are forbidden.")
+
+def parse_endpoint(value, label, allowed_schemes):
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise SystemExit(
+            f"Refusing local fixture seeds: {label} has an invalid host or port."
+        ) from exc
+
+    if parsed.scheme not in allowed_schemes:
+        raise SystemExit(
+            f"Refusing local fixture seeds: {label} must use an allowed PostgreSQL URL scheme."
+        )
+    if parsed.query or parsed.fragment:
+        raise SystemExit(
+            f"Refusing local fixture seeds: {label} query parameters/fragments are forbidden."
+        )
+    if not host:
+        raise SystemExit(
+            f"Refusing local fixture seeds: {label} must include a hostname."
+        )
+
+    database = unquote(parsed.path.lstrip("/"))
+    if not database:
+        raise SystemExit(
+            f"Refusing local fixture seeds: {label} must include a database name."
+        )
+    # Credentials and query strings are deliberately excluded from comparison
+    # and error messages. Normalize scheme differences, hostname case/trailing
+    # dots, default PostgreSQL ports, and percent-encoded database names.
+    endpoint = (host.lower().rstrip("."), port or 5432, database)
+    return parsed, endpoint
+
+
+parsed, sync_endpoint = parse_endpoint(
+    sync_value, "DATABASE_URL_SYNC", {"postgresql"}
+)
+_, async_endpoint = parse_endpoint(
+    async_value, "DATABASE_URL", {"postgresql", "postgresql+asyncpg"}
+)
+if sync_endpoint != async_endpoint:
+    raise SystemExit(
+        "Refusing local fixture seeds: DATABASE_URL_SYNC and DATABASE_URL must "
+        "target the same host, port, and database."
+    )
+
+host = parsed.hostname
+port = parsed.port
+database = sync_endpoint[2]
 if host not in {"localhost", "127.0.0.1", "::1", "host.docker.internal"}:
     raise SystemExit("Refusing local fixture seeds: target host must be local or host.docker.internal.")
 if port not in {None, 5432, 5433}:
@@ -59,7 +105,6 @@ if port not in {None, 5432, 5433}:
 if host == "host.docker.internal" and port != 5433:
     raise SystemExit("Refusing local fixture seeds: host.docker.internal must use the documented disposable port 5433.")
 
-database = unquote(parsed.path.lstrip("/"))
 is_local_disposable = database == "zina_disposable"
 
 # The CI namespace is not a generic prefix allowlist. Bind it to this exact

@@ -162,3 +162,94 @@ def test_ci_seed_namespace_is_refused_outside_github_actions() -> None:
     assert result.returncode != 0
     assert "database name must identify a disposable" in (result.stdout + result.stderr)
 
+def _run_seed_guard_with_database_urls(
+    tmp_path: Path,
+    database_url: str | None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql_marker = tmp_path / "psql-was-called"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        "#!/bin/sh\\n"
+        ': "${PSQL_MARKER:?}"\\n'
+        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL_SYNC": "postgresql://postgres:secret@localhost:5432/zina_disposable",
+            "RUN_LOCAL_SEEDS": "true",
+            "ZINA_DEPLOYMENT_ENV": "development",
+            "APP_ROOT": str(ROOT),
+            "PSQL_MARKER": str(psql_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+        }
+    )
+    if database_url is None:
+        env.pop("DATABASE_URL", None)
+    else:
+        env["DATABASE_URL"] = database_url
+
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return result, psql_marker
+
+
+@pytest.mark.parametrize(
+    ("database_url", "expected_message"),
+    [
+        (
+            "postgresql+asyncpg://postgres:secret@localhost:5432/other_database",
+            "must target the same host, port, and database",
+        ),
+        (
+            "postgresql+asyncpg://postgres:secret@127.0.0.1:5432/zina_disposable",
+            "must target the same host, port, and database",
+        ),
+        (
+            "postgresql+asyncpg://postgres:secret@localhost:5433/zina_disposable",
+            "must target the same host, port, and database",
+        ),
+        (
+            "postgresql+asyncpg://postgres:secret@localhost:5432/zina_disposable?sslmode=require",
+            "DATABASE_URL query parameters/fragments are forbidden",
+        ),
+        (
+            "postgresql+asyncpg://postgres:secret@localhost:5432/zina_disposable#other",
+            "DATABASE_URL query parameters/fragments are forbidden",
+        ),
+    ],
+)
+def test_local_seed_opt_in_rejects_mismatched_schema_audit_target_before_database_access(
+    tmp_path: Path,
+    database_url: str,
+    expected_message: str,
+) -> None:
+    result, psql_marker = _run_seed_guard_with_database_urls(tmp_path, database_url)
+
+    assert result.returncode != 0
+    assert expected_message in (result.stdout + result.stderr)
+    assert not psql_marker.exists(), "URL mismatch reached psql before the guard rejected it"
+    assert "secret" not in (result.stdout + result.stderr), "database credentials must not be logged"
+
+
+def test_local_seed_opt_in_requires_async_schema_audit_url_before_database_access(
+    tmp_path: Path,
+) -> None:
+    result, psql_marker = _run_seed_guard_with_database_urls(tmp_path, None)
+
+    assert result.returncode != 0
+    assert "DATABASE_URL is required" in (result.stdout + result.stderr)
+    assert not psql_marker.exists(), "missing audit URL reached psql before the guard rejected it"
+
