@@ -14,6 +14,15 @@ class FakeScalar:
     def scalar_one_or_none(self):
         return self.row
 
+    def scalars(self):
+        # Match the SQLAlchemy Result.scalars() API used by the alias lookup.
+        return self
+
+    def all(self):
+        # The fake session models a single canonical row; when that lookup misses,
+        # the alternate-chat lookup must return no rows rather than raising.
+        return [] if self.row is None else [self.row]
+
 
 class FakeContactSession:
     def __init__(self, row=None):
