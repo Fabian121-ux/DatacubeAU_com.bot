@@ -116,6 +116,8 @@ async def test_ordinary_contact_dm_is_still_routed(ingress):
         ("STOP-CLAIM-1", "STOP"),
         ("STOP-CLAIM-2", "STOP 🙏"),
         ("STOP-CLAIM-3", "Unsubscribe me 📵"),
+        ("STOP-CLAIM-4", "STOP MESSAGING 🙏"),
+        ("STOP-CLAIM-5", "unsubscribe please 📵"),
     ],
 )
 async def test_explicit_contact_opt_out_is_claimed_before_routing(
