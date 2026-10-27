@@ -49,18 +49,8 @@ CREATE INDEX IF NOT EXISTS ix_contact_messaging_consent_events_identity
 ALTER TABLE inbound_webhook_receipts
     ADD COLUMN IF NOT EXISTS opt_out_intent BOOLEAN NOT NULL DEFAULT FALSE;
 
--- A transport chat alias is not always the durable identity of the sender.
--- Preserve normalized sender IDs on pending STOP receipts so the final fence can
--- correlate an unmapped/LID alias with a currently known Contact.
-ALTER TABLE inbound_webhook_receipts
-    ADD COLUMN IF NOT EXISTS sender_identity_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
-
 CREATE INDEX IF NOT EXISTS ix_inbound_webhook_receipts_pending_opt_out
     ON inbound_webhook_receipts (chat_id, updated_at)
-    WHERE opt_out_intent IS TRUE AND status = 'processing';
-
-CREATE INDEX IF NOT EXISTS ix_inbound_webhook_receipts_pending_opt_out_sender_ids
-    ON inbound_webhook_receipts USING GIN (sender_identity_ids)
     WHERE opt_out_intent IS TRUE AND status = 'processing';
 
 CREATE OR REPLACE FUNCTION prevent_contact_messaging_consent_event_mutation()
