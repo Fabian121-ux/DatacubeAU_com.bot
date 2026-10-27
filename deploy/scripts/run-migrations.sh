@@ -30,108 +30,11 @@ if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
   esac
 fi
 
-# The deployment marker is an operator-controlled hint, not proof of where psql
-# will connect. Require a narrowly named disposable database on a local endpoint
-# before allowing fixture upserts, so overriding ZINA_DEPLOYMENT_ENV alone cannot
-# turn the production Compose migration service into a fixture-seed operation.
-if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
-  python3 - "${DATABASE_URL_SYNC}" "${DATABASE_URL:-}" <<'PY'
-import os
-import re
-import sys
-from urllib.parse import unquote, urlsplit
-
-sync_value, async_value = sys.argv[1:3]
-if not async_value:
-    raise SystemExit(
-        "Refusing local fixture seeds: DATABASE_URL is required to verify the schema-audit target."
-    )
-
-
-def parse_endpoint(value, label, allowed_schemes):
-    try:
-        parsed = urlsplit(value)
-        host = parsed.hostname
-        port = parsed.port
-    except ValueError as exc:
-        raise SystemExit(
-            f"Refusing local fixture seeds: {label} has an invalid host or port."
-        ) from exc
-
-    if parsed.scheme not in allowed_schemes:
-        raise SystemExit(
-            f"Refusing local fixture seeds: {label} must use an allowed PostgreSQL URL scheme."
-        )
-    if parsed.query or parsed.fragment:
-        raise SystemExit(
-            f"Refusing local fixture seeds: {label} query parameters/fragments are forbidden."
-        )
-    if not host:
-        raise SystemExit(
-            f"Refusing local fixture seeds: {label} must include a hostname."
-        )
-
-    database = unquote(parsed.path.lstrip("/"))
-    if not database:
-        raise SystemExit(
-            f"Refusing local fixture seeds: {label} must include a database name."
-        )
-    # Credentials and query strings are deliberately excluded from comparison
-    # and error messages. Normalize scheme differences, hostname case/trailing
-    # dots, default PostgreSQL ports, and percent-encoded database names.
-    endpoint = (host.lower().rstrip("."), port or 5432, database)
-    return parsed, endpoint
-
-
-parsed, sync_endpoint = parse_endpoint(
-    sync_value, "DATABASE_URL_SYNC", {"postgresql"}
-)
-_, async_endpoint = parse_endpoint(
-    async_value, "DATABASE_URL", {"postgresql", "postgresql+asyncpg"}
-)
-if sync_endpoint != async_endpoint:
-    raise SystemExit(
-        "Refusing local fixture seeds: DATABASE_URL_SYNC and DATABASE_URL must "
-        "target the same host, port, and database."
-    )
-
-host = parsed.hostname
-port = parsed.port
-database = sync_endpoint[2]
-if host not in {"localhost", "127.0.0.1", "::1", "host.docker.internal"}:
-    raise SystemExit("Refusing local fixture seeds: target host must be local or host.docker.internal.")
-if port not in {None, 5432, 5433}:
-    raise SystemExit("Refusing local fixture seeds: target port must be 5432 or 5433.")
-if host == "host.docker.internal" and port != 5433:
-    raise SystemExit("Refusing local fixture seeds: host.docker.internal must use the documented disposable port 5433.")
-
-is_local_disposable = database == "zina_disposable"
-
-# The CI namespace is not a generic prefix allowlist. Bind it to this exact
-# workflow run/attempt so a misleading name such as zina_seed_policy_production
-# cannot opt in outside Actions or point at another run's database.
-run_id = os.environ.get("GITHUB_RUN_ID", "")
-run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
-expected_ci_database = (
-    f"zina_seed_policy_{run_id}_{run_attempt}"
-    if os.environ.get("GITHUB_ACTIONS") == "true"
-    and run_id.isdecimal()
-    and run_attempt.isdecimal()
-    else ""
-)
-is_current_ci_disposable = bool(
-    expected_ci_database
-    and re.fullmatch(r"zina_seed_policy_[0-9]+_[0-9]+", database)
-    and database == expected_ci_database
-)
-if not (is_local_disposable or is_current_ci_disposable):
-    raise SystemExit(
-        "Refusing local fixture seeds: database name must identify a disposable "
-        "zina_disposable database or this exact GitHub Actions run's "
-        "zina_seed_policy_<run_id>_<run_attempt> database."
-    )
-PY
-fi
+# Migrations always target DATABASE_URL_SYNC, while schema_audit.py prefers
+# DATABASE_URL when it is set. Verify both identify the same database before the
+# first psql invocation, regardless of whether local fixture seeds are enabled.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+python3 "$SCRIPT_DIR/validate_migration_database_target.py" "${DATABASE_URL_SYNC}" "${DATABASE_URL:-}" "$RUN_LOCAL_SEEDS"
 
 APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
