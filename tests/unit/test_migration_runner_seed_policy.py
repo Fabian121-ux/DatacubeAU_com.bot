@@ -299,3 +299,64 @@ def test_schema_audit_target_must_match_migration_target_when_local_seeds_are_di
     assert "sync-secret" not in output
     assert "audit-secret" not in output
 
+@pytest.mark.parametrize(
+    ("sync_url", "audit_url"),
+    [
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable?host=override.example",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable",
+        ),
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable?host=override.example",
+        ),
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable?port=5433",
+        ),
+    ],
+)
+def test_database_url_query_cannot_override_target_even_when_local_seeds_are_disabled(
+    sync_url: str,
+    audit_url: str,
+) -> None:
+    result = subprocess.run(
+        [
+            "python3",
+            str(ROOT / "deploy" / "scripts" / "validate_migration_database_target.py"),
+            sync_url,
+            audit_url,
+            "false",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "query parameters cannot override database target fields" in output
+    assert "sync-secret" not in output
+    assert "audit-secret" not in output
+
+
+def test_non_target_asyncpg_connection_option_is_allowed_when_seeds_are_disabled() -> None:
+    result = subprocess.run(
+        [
+            "python3",
+            str(ROOT / "deploy" / "scripts" / "validate_migration_database_target.py"),
+            "postgresql://postgres:secret@localhost:5432/zina_disposable",
+            "postgresql+asyncpg://postgres:secret@localhost:5432/zina_disposable?ssl=require",
+            "false",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
