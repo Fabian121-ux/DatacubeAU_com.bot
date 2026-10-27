@@ -1,3 +1,17 @@
+## Live verification delta — 2026-10-27 02:23 UTC (partial; not release approval)
+
+This supersedes earlier live-state notes only. The full phase audit dated 2026-09-08 remains historical.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033. Latest visible main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08; current combined status returned no entries, so current main-green is not established. Main `.github/workflows/tests.yml` still applies `bot_core/migrations/*.sql` without continuity preflight.
+- Exact-head Tests runs: #62 `4ab17cc6beee2a658304eafaf438cf9d511bbb26` / [40432416474](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40432416474) success; #61 `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` / [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; #60 `102426f30edb82f38f9fabdd3e6945f9412789f7` / [40411752033](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40411752033) success; #59 `22f48f54be6c1af012d7622dd642e22d65bd99b6` / [40323920422](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40323920422) success before this update; #57 `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` / [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; #55 `2da7283a9a9d0e27a3c25b9a47a86570c3f8c8b2` / [40010785239](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40010785239) success; #50 `f78bc9bb7ec6ef448e755c355adfa79ae4273ae1` / [40368630895](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40368630895) success; #49 `bcd0033e024b177561b8afd41589afe1897ba4de` / [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; #48 `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` / [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success. These are branch-local results, not integrated-release evidence.
+- Fresh review-thread state: #62 1 unresolved; #61 0; #60 3 unresolved (2 outdated, 1 current migration-038 audit-trigger thread); #59 0; #57 1 outdated; #55 0; #50 2 unresolved current architecture decisions; #49 1 unresolved current retired-set-key thread; #48 15 total, 0 unresolved. A reply claiming a fix is not independent review or thread resolution.
+- Current migration files: main 001–033; #48=034; #50=035; #49=036–037 (its former duplicate/no-op 034 is absent from the current PR #49 tree); #60=038. The filename collision is removed on current feature branches, but #61 sequence guard and #62 deployment preflight remain open. No combined fresh 001–038 chain, installed 033→038 upgrade, checksum/no-op rerun, integrated DB-leakage audit, or full P0 adversarial matrix is proven.
+- #60 contact consent/terminal opt-out exists on a draft branch, not main. Its exact-head CI passes but three review threads remain unresolved. #50 still needs a human decision: centralize tombstone-aware checks across every introduction path, and do not infer legacy seed provenance from `updated_at = created_at` after pre-upgrade reads; use reliable immutable provenance or leave ambiguous rows unclassified.
+
+NOT TEST READY. Private-media retention remains OFF. REAL WAHA ACTIONS: NONE.
+
+---
+
 ## Latest verification delta — 2026-10-26 12:31 UTC
 
 Partial live-state update only. This is not a full phase-by-phase audit or release approval. The historical audit below remains dated 2026-09-08.
