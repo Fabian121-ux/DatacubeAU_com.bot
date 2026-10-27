@@ -101,3 +101,47 @@ async def test_failed_opt_out_claim_preserves_pending_intent_for_retry(db_sessio
     assert await service.claim(receipt) is True
     await service.mark_completed(receipt.event_key)
 
+
+@pytest.mark.asyncio
+async def test_opt_out_claim_locks_dispatch_boundary_before_receipt_insert_and_commit(monkeypatch):
+    from app.services.contact_messaging_consent_service import ContactMessagingConsentService
+
+    events = []
+
+    class FakeResult:
+        @staticmethod
+        def scalar_one_or_none():
+            return "claim-token"
+
+    class FakeSession:
+        async def execute(self, statement, params):
+            events.append(("insert", params["chat_id"], params["opt_out_intent"]))
+            return FakeResult()
+
+        async def commit(self):
+            events.append(("commit",))
+
+    async def record_boundary_lock(session, exact_chat_id):
+        assert session is fake_session
+        events.append(("boundary", exact_chat_id))
+
+    fake_session = FakeSession()
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        record_boundary_lock,
+    )
+    receipt = InboundReceipt(
+        event_key="test:333@c.us:STOP-BOUNDARY-ORDER",
+        session_name="test",
+        chat_id="333@c.us",
+        message_id="STOP-BOUNDARY-ORDER",
+        opt_out_intent=True,
+    )
+
+    assert await InboundIdempotencyService(fake_session).claim(receipt) is True
+    assert events == [
+        ("boundary", "333@c.us"),
+        ("insert", "333@c.us", True),
+        ("commit",),
+    ]

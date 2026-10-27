@@ -776,3 +776,47 @@ async def test_dispatch_denies_ambiguous_current_chat_mapping(db_session, test_c
 
     assert decision.allowed is False
     assert decision.reason == "current contact/chat mapping does not match recipient"
+
+@pytest.mark.asyncio
+async def test_opt_out_receipt_claim_waits_for_final_dispatch_boundary(db_session, test_contact):
+    from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
+
+    chat_id = test_contact.whatsapp_id
+    Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with Session() as dispatch_session, Session() as ingress_session:
+        # The worker takes this lock only at its final pre-transport boundary.
+        await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+            dispatch_session, chat_id
+        )
+        receipt = InboundReceipt(
+            event_key=f"test:{chat_id}:STOP-DISPATCH-BOUNDARY-{test_contact.id}",
+            session_name="test",
+            chat_id=chat_id,
+            message_id="STOP-DISPATCH-BOUNDARY",
+            opt_out_intent=True,
+        )
+        started = asyncio.Event()
+
+        async def claim_receipt():
+            started.set()
+            return await InboundIdempotencyService(ingress_session).claim(receipt)
+
+        task = asyncio.create_task(claim_receipt())
+        await started.wait()
+        await asyncio.sleep(0.05)
+        assert not task.done(), "STOP receipt must serialize behind an already-in-flight dispatch boundary"
+
+        await dispatch_session.commit()
+        assert await asyncio.wait_for(task, timeout=3) is True
+
+    pending = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": receipt.event_key},
+        )
+    ).one()
+    assert pending.opt_out_intent is True
+    assert pending.status == "processing"

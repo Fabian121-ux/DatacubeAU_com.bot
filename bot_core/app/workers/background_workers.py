@@ -264,6 +264,9 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             # blocks the send. Once this read completes, the single transport attempt is
             # considered in-flight and cannot be reliably cancelled after network entry.
             if not _is_owner_chat_id(message.chat_id):
+                await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+                    session, message.chat_id
+                )
                 pending_opt_out = await ContactMessagingConsentService(
                     session
                 ).has_pending_opt_out_intent_for_contact(consent.contact_id)

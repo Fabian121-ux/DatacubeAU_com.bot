@@ -42,6 +42,7 @@ class ContactMessagingConsentService:
     # Dedicated two-key advisory-lock namespace for exact WhatsApp chat mappings.
     # hashtext collisions only serialize unrelated chats; they cannot authorize one.
     _CHAT_MAPPING_LOCK_NAMESPACE = 0x5A494E41  # ASCII "ZINA"
+    _OPT_OUT_DISPATCH_LOCK_NAMESPACE = 0x5A494E42  # ASCII "ZINB"
     _OWNER_EVIDENCE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
     _OPT_OUT_EXACT = frozenset({
         "stop", "please stop", "stop please", "unsubscribe", "unsubscribe please",
@@ -80,6 +81,30 @@ class ContactMessagingConsentService:
             text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:exact_chat_id))"),
             {
                 "namespace": ContactMessagingConsentService._CHAT_MAPPING_LOCK_NAMESPACE,
+                "exact_chat_id": exact_chat_id,
+            },
+        )
+
+    @staticmethod
+    async def lock_opt_out_dispatch_boundary(
+        session: AsyncSession,
+        exact_chat_id: str,
+    ) -> None:
+        """Serialize STOP receipt commits with the worker's final pre-send veto.
+
+        This deliberately uses a separate lock from contact-mapping writes. The
+        worker acquires it only after authority, consent, safety, and media planning
+        are complete, immediately before checking pending opt-out receipts. Ingress
+        acquires it before committing an explicit STOP receipt. Thus a STOP committed
+        first vetoes the send; if dispatch owns the boundary first, its single
+        transport attempt is already in flight for ordering purposes.
+        """
+        if not ContactMessagingConsentService._is_direct_chat(exact_chat_id):
+            raise ValueError("opt-out dispatch boundary requires an exact direct chat ID")
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:exact_chat_id))"),
+            {
+                "namespace": ContactMessagingConsentService._OPT_OUT_DISPATCH_LOCK_NAMESPACE,
                 "exact_chat_id": exact_chat_id,
             },
         )

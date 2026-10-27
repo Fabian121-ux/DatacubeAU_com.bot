@@ -7,6 +7,8 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
+
 
 @dataclass(slots=True, frozen=True)
 class InboundReceipt:
@@ -60,6 +62,14 @@ class InboundIdempotencyService:
         _claim_tokens.set(updated)
 
     async def claim(self, receipt: InboundReceipt) -> bool:
+        # A STOP receipt must serialize with the worker's final pre-transport veto.
+        # The worker holds this separate boundary lock only immediately before its
+        # one send attempt, so a prior STOP commits first and is visible to the veto.
+        if receipt.opt_out_intent:
+            await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+                self.session, receipt.chat_id or ""
+            )
+
         claim_token = str(uuid4())
         result = await self.session.execute(
             text(
