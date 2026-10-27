@@ -360,3 +360,69 @@ def test_non_target_asyncpg_connection_option_is_allowed_when_seeds_are_disabled
 
     assert result.returncode == 0, result.stdout + result.stderr
 
+def test_sync_target_query_override_is_rejected_before_psql_when_audit_url_is_absent(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql_marker = tmp_path / "psql-was-called"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        "#!/bin/sh\n"
+        "printf 'called\\n' >> \"$PSQL_MARKER\"\n",
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL_SYNC": (
+                "postgresql://postgres:sync-secret@localhost:5432/"
+                "zina_disposable?host=override.example"
+            ),
+            "RUN_LOCAL_SEEDS": "false",
+            "ZINA_DEPLOYMENT_ENV": "production",
+            "APP_ROOT": str(ROOT),
+            "PSQL_MARKER": str(psql_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+        }
+    )
+    env.pop("DATABASE_URL", None)
+
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert "query parameters cannot override database target fields" in output
+    assert not psql_marker.exists(), "invalid sync URL reached psql before rejection"
+    assert "sync-secret" not in output
+
+
+def test_valid_sync_target_is_checked_and_allowed_when_audit_url_is_absent() -> None:
+    result = subprocess.run(
+        [
+            "python3",
+            str(ROOT / "deploy" / "scripts" / "validate_migration_database_target.py"),
+            "postgresql://postgres:secret@localhost:5432/zina_disposable?sslmode=require",
+            "",
+            "false",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "secret" not in (result.stdout + result.stderr)
+
