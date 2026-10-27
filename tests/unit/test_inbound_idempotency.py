@@ -102,6 +102,49 @@ async def test_failed_opt_out_claim_preserves_pending_intent_for_retry(db_sessio
     await service.mark_completed(receipt.event_key)
 
 
+@pytest.mark.parametrize("complete_first", [False, True])
+@pytest.mark.asyncio
+async def test_explicit_opt_out_promotes_existing_non_opt_out_receipt(db_session, complete_first):
+    """A text-bearing duplicate must not lose STOP behind an earlier event variant."""
+    event_key = f"test:444@c.us:OPT-OUT-PROMOTION-{complete_first}"
+    ordinary = InboundReceipt(
+        event_key=event_key,
+        session_name="test",
+        chat_id="444@c.us",
+        message_id="OPT-OUT-PROMOTION",
+        opt_out_intent=False,
+    )
+    opt_out = InboundReceipt(
+        event_key=event_key,
+        session_name="test",
+        chat_id="444@c.us",
+        message_id="OPT-OUT-PROMOTION",
+        opt_out_intent=True,
+    )
+    service = InboundIdempotencyService(db_session)
+
+    assert await service.claim(ordinary) is True
+    if complete_first:
+        await service.mark_completed(event_key)
+
+    # A second WAHA event variant can expose the STOP text after the first variant
+    # already claimed (or even completed) the same idempotency key. It must promote
+    # the durable veto and acquire a new lease instead of being discarded as a duplicate.
+    assert await service.claim(opt_out) is True
+    pending = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert pending.opt_out_intent is True
+    assert pending.status == "processing"
+    await service.mark_completed(event_key)
+
+
 @pytest.mark.asyncio
 async def test_opt_out_claim_locks_dispatch_boundary_before_receipt_insert_and_commit(monkeypatch):
     from app.services.contact_messaging_consent_service import ContactMessagingConsentService

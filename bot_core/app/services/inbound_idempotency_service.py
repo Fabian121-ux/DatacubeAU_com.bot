@@ -65,6 +65,9 @@ class InboundIdempotencyService:
         # A STOP receipt must serialize with the worker's final pre-transport veto.
         # The worker holds this separate boundary lock only immediately before its
         # one send attempt, so a prior STOP commits first and is visible to the veto.
+        # If a duplicate WAHA variant reveals STOP after a non-STOP variant already
+        # claimed this event key, the SQL below promotes and reclaims that receipt
+        # immediately; an active/completed non-STOP claim must never mask an opt-out.
         if receipt.opt_out_intent:
             await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
                 self.session, receipt.chat_id or ""
@@ -102,9 +105,17 @@ class InboundIdempotencyService:
                     status = 'processing',
                     claim_token = EXCLUDED.claim_token,
                     updated_at = NOW()
-                WHERE inbound_webhook_receipts.status = 'processing'
-                  AND inbound_webhook_receipts.updated_at
-                      < NOW() - (:lease_seconds * INTERVAL '1 second')
+                WHERE (
+                    (
+                        inbound_webhook_receipts.status = 'processing'
+                        AND inbound_webhook_receipts.updated_at
+                            < NOW() - (:lease_seconds * INTERVAL '1 second')
+                    )
+                    OR (
+                        EXCLUDED.opt_out_intent IS TRUE
+                        AND inbound_webhook_receipts.opt_out_intent IS NOT TRUE
+                    )
+                )
                 RETURNING claim_token
                 """
             ),
