@@ -255,3 +255,47 @@ def test_local_seed_opt_in_requires_async_schema_audit_url_before_database_acces
     assert "DATABASE_URL is required" in (result.stdout + result.stderr)
     assert not psql_marker.exists(), "missing audit URL reached psql before the guard rejected it"
 
+def test_schema_audit_target_must_match_migration_target_when_local_seeds_are_disabled(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql_marker = tmp_path / "psql-was-called"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        "#!/bin/sh\\n"
+        ': "${PSQL_MARKER:?}"\\n'
+        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL_SYNC": "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
+            "DATABASE_URL": "postgresql+asyncpg://postgres:audit-secret@localhost:5432/other_database",
+            "RUN_LOCAL_SEEDS": "false",
+            "ZINA_DEPLOYMENT_ENV": "production",
+            "APP_ROOT": str(ROOT),
+            "PSQL_MARKER": str(psql_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+        }
+    )
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "DATABASE_URL_SYNC and DATABASE_URL must target the same host, port, and database" in output
+    assert not psql_marker.exists(), "mismatched audit target reached psql before the guard rejected it"
+    assert "sync-secret" not in output
+    assert "audit-secret" not in output
+
