@@ -820,3 +820,58 @@ async def test_opt_out_receipt_claim_waits_for_final_dispatch_boundary(db_sessio
     ).one()
     assert pending.opt_out_intent is True
     assert pending.status == "processing"
+
+@pytest.mark.asyncio
+async def test_opt_out_receipt_claim_serializes_across_contact_aliases(db_session, test_contact):
+    from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
+
+    primary_chat_id = test_contact.whatsapp_id
+    stop_alias = "333@c.us"
+    test_contact.chat_id = stop_alias
+    # The competing sessions must see the same durable Contact identity.
+    await db_session.commit()
+
+    Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with Session() as dispatch_session, Session() as ingress_session:
+        # Model the worker's final fence for alias A while a STOP arrives on alias B.
+        await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+            dispatch_session, primary_chat_id
+        )
+        receipt = InboundReceipt(
+            event_key=f"test:{stop_alias}:STOP-CROSS-ALIAS-{test_contact.id}",
+            session_name="test",
+            chat_id=stop_alias,
+            message_id="STOP-CROSS-ALIAS",
+            opt_out_intent=True,
+        )
+        started = asyncio.Event()
+
+        async def claim_receipt():
+            started.set()
+            return await InboundIdempotencyService(ingress_session).claim(receipt)
+
+        task = asyncio.create_task(claim_receipt())
+        try:
+            await started.wait()
+            await asyncio.sleep(0.05)
+            assert not task.done(), (
+                "a STOP on a mapped alias must serialize behind the same Contact lock "
+                "held by the final outbound fence"
+            )
+        finally:
+            await dispatch_session.commit()
+
+        assert await asyncio.wait_for(task, timeout=3) is True
+
+    pending = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": receipt.event_key},
+        )
+    ).one()
+    assert pending.opt_out_intent is True
+    assert pending.status == "processing"
+

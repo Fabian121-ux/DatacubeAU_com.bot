@@ -42,7 +42,6 @@ class ContactMessagingConsentService:
     # Dedicated two-key advisory-lock namespace for exact WhatsApp chat mappings.
     # hashtext collisions only serialize unrelated chats; they cannot authorize one.
     _CHAT_MAPPING_LOCK_NAMESPACE = 0x5A494E41  # ASCII "ZINA"
-    _OPT_OUT_DISPATCH_LOCK_NAMESPACE = 0x5A494E42  # ASCII "ZINB"
     _OWNER_EVIDENCE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
     _OPT_OUT_EXACT = frozenset({
         "stop", "please stop", "stop please", "unsubscribe", "unsubscribe please",
@@ -90,23 +89,24 @@ class ContactMessagingConsentService:
         session: AsyncSession,
         exact_chat_id: str,
     ) -> None:
-        """Serialize STOP receipt commits with the worker's final pre-send veto.
+        """Serialize contact-wide STOP receipts with the final pre-send veto.
 
-        This deliberately uses a separate lock from contact-mapping writes. The
-        worker acquires it only after authority, consent, safety, and media planning
-        are complete, immediately before checking pending opt-out receipts. Ingress
-        acquires it before committing an explicit STOP receipt. Thus a STOP committed
-        first vetoes the send; if dispatch owns the boundary first, its single
-        transport attempt is already in flight for ordering purposes.
+        Lock the exact-chat mapping first, then every Contact row currently claiming
+        that chat in stable ID order. The Contact row is the shared identity lock:
+        a STOP received on alias B therefore serializes with a send to alias A for
+        the same Contact. If no Contact is mapped yet, the mapping lock prevents a
+        writer from assigning this chat until the STOP receipt commits.
         """
         if not ContactMessagingConsentService._is_direct_chat(exact_chat_id):
             raise ValueError("opt-out dispatch boundary requires an exact direct chat ID")
+        await ContactMessagingConsentService.lock_exact_chat_mapping(session, exact_chat_id)
+        # Contact.chat_id is not unique, so lock every claimant in stable order. The
+        # worker separately fails closed unless exactly one current mapping is valid.
         await session.execute(
-            text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:exact_chat_id))"),
-            {
-                "namespace": ContactMessagingConsentService._OPT_OUT_DISPATCH_LOCK_NAMESPACE,
-                "exact_chat_id": exact_chat_id,
-            },
+            select(Contact.id)
+            .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
+            .order_by(Contact.id)
+            .with_for_update()
         )
 
     @classmethod
