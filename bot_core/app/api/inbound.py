@@ -141,6 +141,7 @@ async def waha_webhook(
     # outbound fence while the STOP is still waiting to update consent state.
     opt_out_intent = False
     sender_identity_ids: tuple[str, ...] = ()
+    sender_contact_ids: tuple[str, ...] = ()
     if not _is_from_me(payload):
         normalized_for_consent = MessageNormalizer().normalize(event)
         opt_out_intent = (
@@ -174,15 +175,23 @@ async def waha_webhook(
         # reclaim the same receipt and message/message.any variants share the claim.
         idempotency_key = _build_opt_out_intent_key(event, payload)
     if idempotency_key:
-        receipt = InboundReceipt(
-            event_key=idempotency_key,
-            session_name=_resolve_session_name(event, payload),
-            chat_id=exact_chat_id,
-            message_id=message_id,
-            opt_out_intent=opt_out_intent,
-            sender_identity_ids=sender_identity_ids,
-        )
         async with SessionLocal() as db:
+            if opt_out_intent and sender_identity_ids:
+                # Resolve stable Contact IDs before the durable receipt is committed,
+                # but do not acquire Contact/mapping locks yet. claim() commits the
+                # veto receipt before waiting on the shared dispatch boundary.
+                sender_contact_ids = await ContactMessagingConsentService(
+                    db
+                ).resolve_contact_ids_for_sender_identity_ids(sender_identity_ids)
+            receipt = InboundReceipt(
+                event_key=idempotency_key,
+                session_name=_resolve_session_name(event, payload),
+                chat_id=exact_chat_id,
+                message_id=message_id,
+                opt_out_intent=opt_out_intent,
+                sender_identity_ids=sender_identity_ids,
+                sender_contact_ids=sender_contact_ids,
+            )
             claimed = await InboundIdempotencyService(db).claim(receipt)
         if not claimed:
             log_event(

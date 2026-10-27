@@ -151,6 +151,31 @@ class ContactMessagingConsentService:
         return bool(result.scalar_one())
 
 
+    async def resolve_contact_ids_for_sender_identity_ids(
+        self, sender_identity_ids: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Resolve sender aliases to stable Contact IDs without taking dispatch locks.
+
+        This read happens before the STOP receipt is committed. The receipt then carries
+        the resolved IDs across any later alias remapping, so the final worker veto does
+        not have to rediscover identity from mutable Contact.whatsapp_id/chat_id fields.
+        """
+        identities = sorted(
+            {
+                value.strip()
+                for value in sender_identity_ids
+                if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+            }
+        )
+        if not identities:
+            return ()
+        result = await self.session.execute(
+            select(Contact.id)
+            .where(or_(Contact.whatsapp_id.in_(identities), Contact.chat_id.in_(identities)))
+            .order_by(Contact.id)
+        )
+        return tuple(str(contact_id) for contact_id in result.scalars().all())
+
     async def _mapped_direct_chat_ids(self, contact_id: int) -> set[str]:
         """Return current direct-chat aliases for a Contact row locked by the caller."""
         result = await self.session.execute(
@@ -200,6 +225,7 @@ class ContactMessagingConsentService:
                 WHERE (
                     chat_id IN :chat_ids
                     OR sender_identity_ids ?| :identity_ids
+                    OR sender_contact_ids ? :contact_id
                 )
                   AND opt_out_intent IS TRUE
                   AND status = 'processing'
@@ -214,6 +240,7 @@ class ContactMessagingConsentService:
             {
                 "chat_ids": sorted(aliases),
                 "identity_ids": sorted(aliases),
+                "contact_id": str(contact_id),
             },
         )
         return bool(result.scalar_one())

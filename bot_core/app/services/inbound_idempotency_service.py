@@ -19,6 +19,7 @@ class InboundReceipt:
     message_id: str | None
     opt_out_intent: bool = False
     sender_identity_ids: tuple[str, ...] = ()
+    sender_contact_ids: tuple[str, ...] = ()
 
 
 class InboundClaimLostError(RuntimeError):
@@ -81,6 +82,7 @@ class InboundIdempotencyService:
                     chat_id,
                     message_id,
                     sender_identity_ids,
+                    sender_contact_ids,
                     opt_out_intent,
                     status,
                     claim_token,
@@ -92,6 +94,7 @@ class InboundIdempotencyService:
                     :chat_id,
                     :message_id,
                     CAST(:sender_identity_ids AS jsonb),
+                    CAST(:sender_contact_ids AS jsonb),
                     :opt_out_intent,
                     'processing',
                     :claim_token,
@@ -107,6 +110,13 @@ class InboundIdempotencyService:
                             COALESCE(inbound_webhook_receipts.sender_identity_ids, '[]'::jsonb)
                             || EXCLUDED.sender_identity_ids
                         ) AS identities(identity_id)
+                    ),
+                    sender_contact_ids = (
+                        SELECT COALESCE(jsonb_agg(DISTINCT contact_id), '[]'::jsonb)
+                        FROM jsonb_array_elements(
+                            COALESCE(inbound_webhook_receipts.sender_contact_ids, '[]'::jsonb)
+                            || EXCLUDED.sender_contact_ids
+                        ) AS identities(contact_id)
                     ),
                     opt_out_intent = inbound_webhook_receipts.opt_out_intent OR EXCLUDED.opt_out_intent,
                     status = 'processing',
@@ -132,6 +142,7 @@ class InboundIdempotencyService:
                 "chat_id": receipt.chat_id,
                 "message_id": receipt.message_id,
                 "sender_identity_ids": json.dumps(list(receipt.sender_identity_ids)),
+                "sender_contact_ids": json.dumps(list(receipt.sender_contact_ids)),
                 "opt_out_intent": bool(receipt.opt_out_intent),
                 "claim_token": claim_token,
                 "lease_seconds": self.PROCESSING_LEASE_SECONDS,

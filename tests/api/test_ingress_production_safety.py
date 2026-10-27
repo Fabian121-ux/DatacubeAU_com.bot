@@ -396,7 +396,7 @@ async def test_opt_out_ingress_preserves_sender_identity_for_unmapped_chat_alias
     receipt = (
         await db_session.execute(
             text(
-                "SELECT chat_id, sender_identity_ids, opt_out_intent, status "
+                "SELECT chat_id, sender_identity_ids, sender_contact_ids, opt_out_intent, status "
                 "FROM inbound_webhook_receipts WHERE event_key = :event_key"
             ),
             {"event_key": f"test:{unmapped_chat_id}:{message_id}"},
@@ -404,9 +404,16 @@ async def test_opt_out_ingress_preserves_sender_identity_for_unmapped_chat_alias
     ).one()
     assert receipt.chat_id == unmapped_chat_id
     assert set(receipt.sender_identity_ids) == {CONTACT_ID, unmapped_chat_id}
+    assert set(receipt.sender_contact_ids) == {str(contact.id)}
     assert receipt.opt_out_intent is True
     assert receipt.status == "processing"
-    assert await ContactMessagingConsentService(
-        db_session
-    ).has_pending_opt_out_intent_for_contact(int(contact.id)) is True
+    consent = ContactMessagingConsentService(db_session)
+    assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True
+
+    # The receipt must remain correlated after mutable transport aliases change. The
+    # worker must not need to rediscover this STOP through Contact.whatsapp_id/chat_id.
+    contact.whatsapp_id = "2348000000003@c.us"
+    contact.chat_id = "2348000000003@c.us"
+    await db_session.flush()
+    assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True
     assert len(routed) == 1
