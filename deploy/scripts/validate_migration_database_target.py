@@ -73,17 +73,21 @@ def main() -> int:
         raise SystemExit("RUN_LOCAL_SEEDS must be exactly 'true' or 'false'.")
     local_seed_mode = run_local_seeds == "true"
 
+    # Always validate the migration URL, even when schema_audit.py will fall back
+    # to it because DATABASE_URL is unset. Otherwise a target-overriding URI query
+    # (for example ?host=...) could bypass this guard and redirect psql itself.
+    sync_parsed, sync_endpoint = parse_endpoint(
+        sync_value, "DATABASE_URL_SYNC", local_seed_mode=local_seed_mode
+    )
+
     if not audit_value:
         if local_seed_mode:
             raise SystemExit(
                 "Refusing local fixture seeds: DATABASE_URL is required to verify the schema-audit target."
             )
-        # schema_audit.py falls back to DATABASE_URL_SYNC when DATABASE_URL is absent.
+        # schema_audit.py falls back to the already-validated DATABASE_URL_SYNC.
         return 0
 
-    sync_parsed, sync_endpoint = parse_endpoint(
-        sync_value, "DATABASE_URL_SYNC", local_seed_mode=local_seed_mode
-    )
     _, audit_endpoint = parse_endpoint(
         audit_value, "DATABASE_URL", local_seed_mode=local_seed_mode
     )
