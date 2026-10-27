@@ -74,7 +74,6 @@ CLEANUP_MODELS = (
     FAQEntry,
     IdentityRegistryEntry,
     CommandCatalogEntry,
-    Contact,
     AdminAccount,
     AuditLog,
     BotConfig,
@@ -131,6 +130,9 @@ async def _purge_database_state(session) -> None:
                 )
             else:
                 await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+    # Consent history is cleared above in disposable test teardown before Contact
+    # rows are deleted. Production code cannot disable this order or the DB trigger.
+    await session.execute(delete(Contact))
     await session.commit()
 
 

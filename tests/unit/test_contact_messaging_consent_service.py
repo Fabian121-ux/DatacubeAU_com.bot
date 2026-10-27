@@ -358,41 +358,59 @@ async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
 
 
 @pytest.mark.asyncio
-async def test_terminal_opt_out_survives_contact_delete_and_recreation(db_session, test_contact):
-    exact_chat_id = test_contact.whatsapp_id
+async def test_terminal_opt_out_prevents_delete_and_alias_regrant(db_session, test_contact):
+    original_chat_id = test_contact.whatsapp_id
+    contact_id = int(test_contact.id)
     service = ContactMessagingConsentService(db_session)
     await service.record_inbound_opt_out(
-        contact_id=int(test_contact.id),
-        exact_chat_id=exact_chat_id,
+        contact_id=contact_id,
+        exact_chat_id=original_chat_id,
         evidence_ref="inbound-stop-before-contact-delete",
     )
     await db_session.commit()
 
-    # Live consent state is intentionally FK-cascaded, while the append-only event
-    # history is not. Recreating the same Contact must not turn that history into
-    # fresh UNKNOWN state which an OWNER grant can silently override.
-    await db_session.delete(test_contact)
-    await db_session.commit()
+    # TRUNCATE bypasses row DELETE triggers unless a separate statement trigger
+    # is installed. Neither bulk cleanup nor a normal delete may erase the durable
+    # identity that owns terminal opt-out history.
+    with pytest.raises(DBAPIError, match="terminal messaging opt-out"):
+        await db_session.execute(text("TRUNCATE TABLE contacts CASCADE"))
+    await db_session.rollback()
 
-    replacement = Contact(
-        whatsapp_id=exact_chat_id,
-        chat_id=exact_chat_id,
-        display_name="Recreated contact",
-    )
-    db_session.add(replacement)
-    await db_session.flush()
+    # Physical deletion/re-import would create a new Contact ID and sever the
+    # append-only event's identity link. Keep this Contact tombstone until a
+    # reviewed anonymization workflow can preserve the opt-out veto.
+    with pytest.raises(DBAPIError, match="terminal messaging opt-out"):
+        await db_session.delete(test_contact)
+        await db_session.flush()
+    await db_session.rollback()
 
+    retained = (
+        await db_session.execute(select(Contact).where(Contact.id == contact_id))
+    ).scalar_one()
     with pytest.raises(ValueError, match="explicit contact re-consent"):
-        await ContactMessagingConsentService(db_session).grant_for_chat(
-            exact_chat_id=exact_chat_id,
-            evidence_ref="owner-grant-after-contact-recreation",
+        await service.grant_for_chat(
+            exact_chat_id=original_chat_id,
+            evidence_ref="owner-grant-after-delete-attempt",
+            owner_identity="OWNER",
+        )
+
+    # A chat alias change on the same durable Contact cannot reset the terminal
+    # state either; history is checked by Contact ID as well as current aliases.
+    replacement_alias = "15550000009@c.us"
+    retained.whatsapp_id = replacement_alias
+    retained.chat_id = replacement_alias
+    await db_session.flush()
+    with pytest.raises(ValueError, match="explicit contact re-consent"):
+        await service.grant_for_chat(
+            exact_chat_id=replacement_alias,
+            evidence_ref="owner-grant-after-alias-change",
             owner_identity="OWNER",
         )
 
     live_state = await db_session.execute(
         select(ContactMessagingConsent.id).where(
-            ContactMessagingConsent.contact_id == replacement.id,
-            ContactMessagingConsent.exact_chat_id == exact_chat_id,
+            ContactMessagingConsent.contact_id == contact_id,
+            ContactMessagingConsent.exact_chat_id == replacement_alias,
         )
     )
     assert live_state.scalar_one_or_none() is None
@@ -400,12 +418,13 @@ async def test_terminal_opt_out_survives_contact_delete_and_recreation(db_sessio
     history = (
         await db_session.execute(
             select(ContactMessagingConsentEvent).where(
-                ContactMessagingConsentEvent.exact_chat_id == exact_chat_id,
+                ContactMessagingConsentEvent.contact_id == contact_id,
                 ContactMessagingConsentEvent.event_type == "opted_out",
             )
         )
     ).scalars().all()
     assert len(history) == 1
+    assert history[0].exact_chat_id == original_chat_id
     assert history[0].evidence_ref == "inbound-stop-before-contact-delete"
 
 

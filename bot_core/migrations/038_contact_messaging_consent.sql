@@ -74,4 +74,54 @@ CREATE TRIGGER trg_contact_messaging_consent_events_no_truncate
     BEFORE TRUNCATE ON contact_messaging_consent_events
     FOR EACH STATEMENT EXECUTE FUNCTION prevent_contact_messaging_consent_event_mutation();
 
+
+-- A terminal opt-out is bound to the durable Contact identity, not only the
+-- current chat alias. Do not allow physical deletion/re-import to manufacture
+-- a fresh Contact ID and bypass that immutable history. An explicit future
+-- erasure workflow must anonymize the Contact while preserving this veto.
+CREATE OR REPLACE FUNCTION prevent_contact_delete_after_terminal_opt_out()
+RETURNS trigger AS $
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM contact_messaging_consent_events
+        WHERE contact_id = OLD.id
+          AND event_type = 'opted_out'
+    ) THEN
+        RAISE EXCEPTION
+            'contact has terminal messaging opt-out; preserve identity continuity';
+    END IF;
+    RETURN OLD;
+END;
+$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_contacts_preserve_terminal_messaging_opt_out ON contacts;
+CREATE TRIGGER trg_contacts_preserve_terminal_messaging_opt_out
+    BEFORE DELETE ON contacts
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_contact_delete_after_terminal_opt_out();
+
+-- TRUNCATE bypasses row-level DELETE triggers, so preserve the same identity
+-- invariant for bulk contact cleanup while any terminal opt-out history exists.
+CREATE OR REPLACE FUNCTION prevent_contact_truncate_after_terminal_opt_out()
+RETURNS trigger AS $
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM contact_messaging_consent_events
+        WHERE event_type = 'opted_out'
+    ) THEN
+        RAISE EXCEPTION
+            'contacts contain terminal messaging opt-out history; TRUNCATE is refused';
+    END IF;
+    RETURN NULL;
+END;
+$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_contacts_preserve_terminal_opt_out_no_truncate ON contacts;
+CREATE TRIGGER trg_contacts_preserve_terminal_opt_out_no_truncate
+    BEFORE TRUNCATE ON contacts
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION prevent_contact_truncate_after_terminal_opt_out();
+
 COMMIT;
