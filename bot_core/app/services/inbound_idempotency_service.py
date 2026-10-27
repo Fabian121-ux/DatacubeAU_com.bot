@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass
+import json
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -17,6 +18,7 @@ class InboundReceipt:
     chat_id: str | None
     message_id: str | None
     opt_out_intent: bool = False
+    sender_identity_ids: tuple[str, ...] = ()
 
 
 class InboundClaimLostError(RuntimeError):
@@ -78,6 +80,7 @@ class InboundIdempotencyService:
                     session_name,
                     chat_id,
                     message_id,
+                    sender_identity_ids,
                     opt_out_intent,
                     status,
                     claim_token,
@@ -88,6 +91,7 @@ class InboundIdempotencyService:
                     :session_name,
                     :chat_id,
                     :message_id,
+                    CAST(:sender_identity_ids AS jsonb),
                     :opt_out_intent,
                     'processing',
                     :claim_token,
@@ -97,6 +101,13 @@ class InboundIdempotencyService:
                 SET session_name = EXCLUDED.session_name,
                     chat_id = EXCLUDED.chat_id,
                     message_id = EXCLUDED.message_id,
+                    sender_identity_ids = (
+                        SELECT COALESCE(jsonb_agg(DISTINCT identity_id), '[]'::jsonb)
+                        FROM jsonb_array_elements(
+                            COALESCE(inbound_webhook_receipts.sender_identity_ids, '[]'::jsonb)
+                            || EXCLUDED.sender_identity_ids
+                        ) AS identities(identity_id)
+                    ),
                     opt_out_intent = inbound_webhook_receipts.opt_out_intent OR EXCLUDED.opt_out_intent,
                     status = 'processing',
                     claim_token = EXCLUDED.claim_token,
@@ -120,6 +131,7 @@ class InboundIdempotencyService:
                 "session_name": receipt.session_name,
                 "chat_id": receipt.chat_id,
                 "message_id": receipt.message_id,
+                "sender_identity_ids": json.dumps(list(receipt.sender_identity_ids)),
                 "opt_out_intent": bool(receipt.opt_out_intent),
                 "claim_token": claim_token,
                 "lease_seconds": self.PROCESSING_LEASE_SECONDS,

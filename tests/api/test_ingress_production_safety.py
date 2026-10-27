@@ -137,7 +137,7 @@ async def test_explicit_contact_opt_out_is_claimed_before_routing(
     receipt = (
         await db_session.execute(
             text(
-                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "SELECT opt_out_intent, status, sender_identity_ids FROM inbound_webhook_receipts "
                 "WHERE event_key = :event_key"
             ),
             {"event_key": f"test:{CONTACT_ID}:{message_id}"},
@@ -145,6 +145,7 @@ async def test_explicit_contact_opt_out_is_claimed_before_routing(
     ).one()
     assert receipt.opt_out_intent is True
     assert receipt.status == "processing"
+    assert receipt.sender_identity_ids == [CONTACT_ID]
     assert len(routed) == 1
 
 

@@ -140,6 +140,7 @@ async def waha_webhook(
     # per-chat mapping lock. The durable receipt becomes a veto signal for the final
     # outbound fence while the STOP is still waiting to update consent state.
     opt_out_intent = False
+    sender_identity_ids: tuple[str, ...] = ()
     if not _is_from_me(payload):
         normalized_for_consent = MessageNormalizer().normalize(event)
         opt_out_intent = (
@@ -149,6 +150,19 @@ async def waha_webhook(
                 normalized_for_consent.message_text
             )
         )
+        if opt_out_intent:
+            # Preserve sender identity independently of the transport chat alias.
+            # A STOP on an unmapped alias may still identify an existing Contact.
+            sender_identity_ids = tuple(
+                dict.fromkeys(
+                    value.strip()
+                    for value in [
+                        normalized_for_consent.sender_id,
+                        *normalized_for_consent.sender_alternate_ids,
+                    ]
+                    if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+                )
+            )
 
     # Claim every message event before *any* command/action side effect. WAHA may
     # deliver the same message as both `message` and `message.any`, and webhook
@@ -166,6 +180,7 @@ async def waha_webhook(
             chat_id=exact_chat_id,
             message_id=message_id,
             opt_out_intent=opt_out_intent,
+            sender_identity_ids=sender_identity_ids,
         )
         async with SessionLocal() as db:
             claimed = await InboundIdempotencyService(db).claim(receipt)

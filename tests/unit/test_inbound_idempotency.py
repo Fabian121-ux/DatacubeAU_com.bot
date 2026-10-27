@@ -120,6 +120,7 @@ async def test_explicit_opt_out_promotes_existing_non_opt_out_receipt(db_session
         chat_id="444@c.us",
         message_id="OPT-OUT-PROMOTION",
         opt_out_intent=True,
+        sender_identity_ids=("444@c.us",),
     )
     service = InboundIdempotencyService(db_session)
 
@@ -134,7 +135,7 @@ async def test_explicit_opt_out_promotes_existing_non_opt_out_receipt(db_session
     pending = (
         await db_session.execute(
             text(
-                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "SELECT opt_out_intent, status, sender_identity_ids FROM inbound_webhook_receipts "
                 "WHERE event_key = :event_key"
             ),
             {"event_key": event_key},
@@ -142,6 +143,7 @@ async def test_explicit_opt_out_promotes_existing_non_opt_out_receipt(db_session
     ).one()
     assert pending.opt_out_intent is True
     assert pending.status == "processing"
+    assert pending.sender_identity_ids == ["444@c.us"]
     await service.mark_completed(event_key)
 
 

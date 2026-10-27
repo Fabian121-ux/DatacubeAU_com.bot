@@ -24,7 +24,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.reply_planner import PlannedReply
 from app.core.router import InboundRouter
@@ -521,3 +521,68 @@ async def test_worker_blocks_scheduled_action_after_contact_mapping_changes(db_s
     assert client.calls == []
     assert row.status == "deferred"
     assert "current contact/chat mapping does not match recipient" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_pending_stop_on_unmapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
+    """Sender identity must connect an unmapped STOP alias to the queued Contact."""
+    target_chat_id = "2348000000041@c.us"
+    unmapped_stop_chat_id = "987654321@lid"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Unmapped alias opt-out regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="An already-consented reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-EXT-UNMAPPED-ALIAS-STOP",
+    )
+    assert row.status == "deferred"
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-unmapped-stop",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    # The transport alias is intentionally absent from Contact.whatsapp_id/chat_id.
+    # The stable sender identity is the only link to this Contact.
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, sender_identity_ids,
+                opt_out_intent, status, claim_token, updated_at
+            )
+            VALUES (
+                'unmapped-alias-stop-worker-test', 'test', :chat_id,
+                'unmapped-alias-stop-worker-test', jsonb_build_array(:sender_id),
+                TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"chat_id": unmapped_stop_chat_id, "sender_id": target_chat_id},
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "pending inbound opt-out intent" in (row.error_message or "")

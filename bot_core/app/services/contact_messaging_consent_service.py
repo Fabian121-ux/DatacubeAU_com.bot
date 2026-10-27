@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 import re
 import unicodedata
 
-from sqlalchemy import bindparam, or_, select, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import Text, bindparam, or_, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.scheduled_action import ScheduledAction
@@ -186,7 +186,7 @@ class ContactMessagingConsentService:
         return result.scalar_one_or_none() is not None
 
     async def has_pending_opt_out_intent_for_contact(self, contact_id: int | None) -> bool:
-        """Veto dispatch when any currently mapped alias has a claimed, unapplied STOP."""
+        """Veto dispatch for a pending STOP by transport alias or sender identity."""
         if not isinstance(contact_id, int) or contact_id <= 0:
             return True
         aliases = await self._mapped_direct_chat_ids(contact_id)
@@ -197,15 +197,24 @@ class ContactMessagingConsentService:
             SELECT EXISTS (
                 SELECT 1
                 FROM inbound_webhook_receipts
-                WHERE chat_id IN :chat_ids
+                WHERE (
+                    chat_id IN :chat_ids
+                    OR sender_identity_ids ?| :identity_ids
+                )
                   AND opt_out_intent IS TRUE
                   AND status = 'processing'
             )
             """
-        ).bindparams(bindparam("chat_ids", expanding=True))
+        ).bindparams(
+            bindparam("chat_ids", expanding=True),
+            bindparam("identity_ids", type_=ARRAY(Text())),
+        )
         result = await self.session.execute(
             statement,
-            {"chat_ids": sorted(aliases)},
+            {
+                "chat_ids": sorted(aliases),
+                "identity_ids": sorted(aliases),
+            },
         )
         return bool(result.scalar_one())
 

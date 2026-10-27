@@ -885,3 +885,31 @@ async def test_opt_out_receipt_commits_before_waiting_on_contact_alias_lock(db_s
 
         assert await asyncio.wait_for(task, timeout=3) is True
 
+
+@pytest.mark.asyncio
+async def test_pending_opt_out_intent_on_unmapped_alias_matches_sender_identity(db_session, test_contact):
+    """A STOP from an unmapped transport alias still vetoes the sender's known Contact."""
+    opt_out_chat_id = "unmapped-lid-987@lid"
+    test_contact.chat_id = None
+    await db_session.flush()
+
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, sender_identity_ids,
+                opt_out_intent, status, claim_token, updated_at
+            )
+            VALUES (
+                'unmapped-alias-stop-pending-test', 'test', :chat_id,
+                'unmapped-alias-stop-pending-test', jsonb_build_array(:sender_id),
+                TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"chat_id": opt_out_chat_id, "sender_id": test_contact.whatsapp_id},
+    )
+
+    assert await ContactMessagingConsentService(
+        db_session
+    ).has_pending_opt_out_intent_for_contact(int(test_contact.id)) is True
