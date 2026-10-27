@@ -913,3 +913,50 @@ async def test_pending_opt_out_intent_on_unmapped_alias_matches_sender_identity(
     assert await ContactMessagingConsentService(
         db_session
     ).has_pending_opt_out_intent_for_contact(int(test_contact.id)) is True
+
+
+@pytest.mark.asyncio
+async def test_pending_stop_receipt_prevents_contact_chat_alias_remap(db_session, test_contact):
+    """A pending STOP remains discoverable when its Contact receives another alias."""
+    original_chat_id = test_contact.chat_id or test_contact.whatsapp_id
+    test_contact.chat_id = original_chat_id
+    await db_session.flush()
+
+    # Simulate a legacy/unresolved receipt: the STOP is durably processing, but
+    # no Contact ID was available when ingress committed it. The old alias and
+    # sender identity are the only correlation evidence until routing completes.
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, sender_identity_ids,
+                sender_contact_ids, opt_out_intent, status, claim_token, updated_at
+            )
+            VALUES (
+                'pending-stop-before-alias-remap', 'test', :chat_id,
+                'pending-stop-before-alias-remap', jsonb_build_array(:sender_id),
+                '[]'::jsonb, TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"chat_id": original_chat_id, "sender_id": test_contact.whatsapp_id},
+    )
+
+    new_chat_id = "15559990001@c.us"
+    normalized = SimpleNamespace(
+        sender_id=test_contact.whatsapp_id,
+        sender_identity={},
+        sender_name=None,
+        chat_id=new_chat_id,
+        chat_type=SimpleNamespace(value="dm"),
+    )
+    resolved = await InboundRouter(db_session)._get_or_create_contact(normalized)
+    await db_session.flush()
+
+    assert int(resolved.id) == int(test_contact.id)
+    assert resolved.chat_id == original_chat_id
+    assert (
+        await db_session.execute(
+            select(Contact.id).where(Contact.chat_id == new_chat_id)
+        )
+    ).scalar_one_or_none() is None

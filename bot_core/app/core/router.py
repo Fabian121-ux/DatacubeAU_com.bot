@@ -486,7 +486,36 @@ class InboundRouter:
         if model:
             if display_name and display_name != model.display_name and not getattr(model, "is_name_verified", False):
                 model.display_name = display_name
-            self._apply_contact_identity(model, normalized, identity)
+
+            # A pending STOP receipt is a durable veto even before routing has
+            # materialized its append-only consent event. Do not move this Contact
+            # away from the aliases used by that receipt: for legacy/unresolved
+            # receipts sender_contact_ids may be empty, so alias matching remains
+            # necessary until the STOP is applied. The final worker fence continues
+            # to deny any queued send while the receipt is processing.
+            preserve_chat_mapping = False
+            if (
+                normalized.chat_type.value == "dm"
+                and normalized.chat_id
+                and model.chat_id != normalized.chat_id
+            ):
+                preserve_chat_mapping = await ContactMessagingConsentService(
+                    self.session
+                ).has_pending_opt_out_intent_for_contact(int(model.id))
+                if preserve_chat_mapping:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "contact_chat_mapping_change_deferred_pending_opt_out",
+                        contact_id=int(model.id),
+                    )
+
+            self._apply_contact_identity(
+                model,
+                normalized,
+                identity,
+                update_chat_mapping=not preserve_chat_mapping,
+            )
             model.updated_at = utcnow()
             return model
 
@@ -506,8 +535,15 @@ class InboundRouter:
         return fallback
 
     @staticmethod
-    def _apply_contact_identity(model: Contact, normalized: NormalizedMessage, identity: dict[str, Any]) -> None:
-        model.chat_id = normalized.chat_id
+    def _apply_contact_identity(
+        model: Contact,
+        normalized: NormalizedMessage,
+        identity: dict[str, Any],
+        *,
+        update_chat_mapping: bool = True,
+    ) -> None:
+        if update_chat_mapping:
+            model.chat_id = normalized.chat_id
         model.whatsapp_phone = identity.get("phone") or model.whatsapp_phone
         model.normalized_phone = identity.get("normalized_phone") or model.normalized_phone
         model.waha_contact_id = identity.get("waha_contact_id") or model.waha_contact_id
