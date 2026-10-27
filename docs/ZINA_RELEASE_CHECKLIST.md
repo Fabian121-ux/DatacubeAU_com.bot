@@ -1,3 +1,16 @@
+## Live release-verification delta — 2026-10-27 02:30 UTC (partial; NOT TEST READY)
+
+See the [roadmap live-verification delta](ZINA_IMPLEMENTATION_ROADMAP.md) at the top of this branch for the exact open PR heads, latest branch CI runs and review-thread counts.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033; a fresh green main status is not established.
+- Current feature migration order: #48=034, #50=035, #49=036–037, #60=038. The duplicate 034 file is absent from #49's current tree, but sequence/deployment guards #61/#62 are unmerged and the combined chain is unverified.
+- P0 contact consent is on draft PR #60, not main. PR #50 still has two unresolved architecture decisions: tombstone-aware introduction paths and safe legacy seed provenance.
+- Fresh 001–038, installed 033→038 upgrade, repeated/no-op run, integrated leakage audit, full P0 adversarial matrix and independent review gates remain incomplete.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.** Private-media retention remains OFF.
+
+---
+
 ## Latest verification delta — 2026-10-26 12:31 UTC
 
 Partial live-state correction only; this is not release approval. The full phase-by-phase audit below remains historical.
