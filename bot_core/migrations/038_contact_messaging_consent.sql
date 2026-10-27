@@ -80,7 +80,7 @@ CREATE TRIGGER trg_contact_messaging_consent_events_no_truncate
 -- a fresh Contact ID and bypass that immutable history. An explicit future
 -- erasure workflow must anonymize the Contact while preserving this veto.
 CREATE OR REPLACE FUNCTION prevent_contact_delete_after_terminal_opt_out()
-RETURNS trigger AS $
+RETURNS trigger AS $$
 BEGIN
     IF EXISTS (
         SELECT 1
@@ -93,7 +93,7 @@ BEGIN
     END IF;
     RETURN OLD;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_contacts_preserve_terminal_messaging_opt_out ON contacts;
 CREATE TRIGGER trg_contacts_preserve_terminal_messaging_opt_out
@@ -104,7 +104,7 @@ CREATE TRIGGER trg_contacts_preserve_terminal_messaging_opt_out
 -- TRUNCATE bypasses row-level DELETE triggers, so preserve the same identity
 -- invariant for bulk contact cleanup while any terminal opt-out history exists.
 CREATE OR REPLACE FUNCTION prevent_contact_truncate_after_terminal_opt_out()
-RETURNS trigger AS $
+RETURNS trigger AS $$
 BEGIN
     IF EXISTS (
         SELECT 1
@@ -116,7 +116,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_contacts_preserve_terminal_opt_out_no_truncate ON contacts;
 CREATE TRIGGER trg_contacts_preserve_terminal_opt_out_no_truncate
