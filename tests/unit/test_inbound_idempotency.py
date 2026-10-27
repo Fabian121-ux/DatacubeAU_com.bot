@@ -146,7 +146,7 @@ async def test_explicit_opt_out_promotes_existing_non_opt_out_receipt(db_session
 
 
 @pytest.mark.asyncio
-async def test_opt_out_claim_locks_dispatch_boundary_before_receipt_insert_and_commit(monkeypatch):
+async def test_opt_out_claim_commits_receipt_before_dispatch_boundary_lock(monkeypatch):
     from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 
     events = []
@@ -184,7 +184,7 @@ async def test_opt_out_claim_locks_dispatch_boundary_before_receipt_insert_and_c
 
     assert await InboundIdempotencyService(fake_session).claim(receipt) is True
     assert events == [
-        ("boundary", "333@c.us"),
         ("insert", "333@c.us", True),
         ("commit",),
+        ("boundary", "333@c.us"),
     ]

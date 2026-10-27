@@ -778,13 +778,14 @@ async def test_dispatch_denies_ambiguous_current_chat_mapping(db_session, test_c
     assert decision.reason == "current contact/chat mapping does not match recipient"
 
 @pytest.mark.asyncio
-async def test_opt_out_receipt_claim_waits_for_final_dispatch_boundary(db_session, test_contact):
+async def test_opt_out_receipt_commits_before_waiting_for_final_dispatch_boundary(db_session, test_contact):
     from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 
     chat_id = test_contact.whatsapp_id
     Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
     async with Session() as dispatch_session, Session() as ingress_session:
-        # The worker takes this lock only at its final pre-transport boundary.
+        # Model a worker that already holds the final boundary. STOP must be
+        # committed and visible before its claim waits for this lock.
         await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
             dispatch_session, chat_id
         )
@@ -804,25 +805,31 @@ async def test_opt_out_receipt_claim_waits_for_final_dispatch_boundary(db_sessio
         task = asyncio.create_task(claim_receipt())
         await started.wait()
         await asyncio.sleep(0.05)
-        assert not task.done(), "STOP receipt must serialize behind an already-in-flight dispatch boundary"
+        assert not task.done(), "claim should wait after committing, while the dispatch boundary is held"
+
+        async with Session() as observer_session:
+            pending = (
+                await observer_session.execute(
+                    text(
+                        "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                        "WHERE event_key = :event_key"
+                    ),
+                    {"event_key": receipt.event_key},
+                )
+            ).one_or_none()
+            assert pending is not None, "STOP receipt must be committed before boundary-lock wait"
+            assert pending.opt_out_intent is True
+            assert pending.status == "processing"
+            assert await ContactMessagingConsentService(
+                observer_session
+            ).has_pending_opt_out_intent_for_contact(int(test_contact.id)) is True
 
         await dispatch_session.commit()
         assert await asyncio.wait_for(task, timeout=3) is True
 
-    pending = (
-        await db_session.execute(
-            text(
-                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
-                "WHERE event_key = :event_key"
-            ),
-            {"event_key": receipt.event_key},
-        )
-    ).one()
-    assert pending.opt_out_intent is True
-    assert pending.status == "processing"
 
 @pytest.mark.asyncio
-async def test_opt_out_receipt_claim_serializes_across_contact_aliases(db_session, test_contact):
+async def test_opt_out_receipt_commits_before_waiting_on_contact_alias_lock(db_session, test_contact):
     from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 
     primary_chat_id = test_contact.whatsapp_id
@@ -833,7 +840,8 @@ async def test_opt_out_receipt_claim_serializes_across_contact_aliases(db_sessio
 
     Session = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
     async with Session() as dispatch_session, Session() as ingress_session:
-        # Model the worker's final fence for alias A while a STOP arrives on alias B.
+        # Model a worker holding Contact through the final fence for alias A,
+        # while STOP arrives on alias B of the same Contact.
         await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
             dispatch_session, primary_chat_id
         )
@@ -854,24 +862,26 @@ async def test_opt_out_receipt_claim_serializes_across_contact_aliases(db_sessio
         try:
             await started.wait()
             await asyncio.sleep(0.05)
-            assert not task.done(), (
-                "a STOP on a mapped alias must serialize behind the same Contact lock "
-                "held by the final outbound fence"
-            )
+            assert not task.done(), "STOP processing should wait on the Contact lock after receipt commit"
+
+            async with Session() as observer_session:
+                pending = (
+                    await observer_session.execute(
+                        text(
+                            "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                            "WHERE event_key = :event_key"
+                        ),
+                        {"event_key": receipt.event_key},
+                    )
+                ).one_or_none()
+                assert pending is not None, "cross-alias STOP must be visible before Contact-lock wait"
+                assert pending.opt_out_intent is True
+                assert pending.status == "processing"
+                assert await ContactMessagingConsentService(
+                    observer_session
+                ).has_pending_opt_out_intent_for_contact(int(test_contact.id)) is True
         finally:
             await dispatch_session.commit()
 
         assert await asyncio.wait_for(task, timeout=3) is True
-
-    pending = (
-        await db_session.execute(
-            text(
-                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
-                "WHERE event_key = :event_key"
-            ),
-            {"event_key": receipt.event_key},
-        )
-    ).one()
-    assert pending.opt_out_intent is True
-    assert pending.status == "processing"
 

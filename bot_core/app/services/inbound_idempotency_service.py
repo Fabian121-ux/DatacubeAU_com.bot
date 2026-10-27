@@ -62,16 +62,12 @@ class InboundIdempotencyService:
         _claim_tokens.set(updated)
 
     async def claim(self, receipt: InboundReceipt) -> bool:
-        # A STOP receipt must serialize with the worker's final pre-transport veto.
-        # The worker holds this separate boundary lock only immediately before its
-        # one send attempt, so a prior STOP commits first and is visible to the veto.
-        # If a duplicate WAHA variant reveals STOP after a non-STOP variant already
-        # claimed this event key, the SQL below promotes and reclaims that receipt
-        # immediately; an active/completed non-STOP claim must never mask an opt-out.
-        if receipt.opt_out_intent:
-            await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
-                self.session, receipt.chat_id or ""
-            )
+        # Keep STOP visibility ahead of all mapping/contact locks. Outbound consent
+        # preflight can hold those locks for the duration of a send; acquiring them
+        # here would let that worker reach its final veto while this STOP is invisible.
+        # The durable claim below is therefore committed first; the shared dispatch
+        # boundary is acquired afterward to serialize STOP processing with a dispatch
+        # that has already won its final pre-transport boundary.
 
         claim_token = str(uuid4())
         result = await self.session.execute(
@@ -134,6 +130,10 @@ class InboundIdempotencyService:
         await self.session.commit()
         if claimed:
             self._remember_token(receipt.event_key, str(returned_token))
+            if receipt.opt_out_intent:
+                await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+                    self.session, receipt.chat_id or ""
+                )
         return claimed
 
     async def mark_completed(self, event_key: str, *, commit: bool = True) -> None:
