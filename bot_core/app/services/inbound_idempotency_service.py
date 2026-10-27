@@ -150,6 +150,40 @@ class InboundIdempotencyService:
         )
         returned_token = result.scalar_one_or_none()
         claimed = returned_token is not None
+        if not claimed and receipt.opt_out_intent:
+            # A duplicate STOP must not acquire a second routing lease, but it may
+            # enrich a still-pending receipt if a Contact became resolvable after the
+            # first claim. Keep claim_token/status/updated_at untouched so this cannot
+            # steal the active worker or extend its processing lease.
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE inbound_webhook_receipts
+                    SET sender_identity_ids = (
+                            SELECT COALESCE(jsonb_agg(DISTINCT identity_id), '[]'::jsonb)
+                            FROM jsonb_array_elements(
+                                COALESCE(sender_identity_ids, '[]'::jsonb)
+                                || CAST(:sender_identity_ids AS jsonb)
+                            ) AS identities(identity_id)
+                        ),
+                        sender_contact_ids = (
+                            SELECT COALESCE(jsonb_agg(DISTINCT contact_id), '[]'::jsonb)
+                            FROM jsonb_array_elements(
+                                COALESCE(sender_contact_ids, '[]'::jsonb)
+                                || CAST(:sender_contact_ids AS jsonb)
+                            ) AS identities(contact_id)
+                        ),
+                        opt_out_intent = TRUE
+                    WHERE event_key = :event_key
+                      AND status = 'processing'
+                    """
+                ),
+                {
+                    "event_key": receipt.event_key,
+                    "sender_identity_ids": json.dumps(list(receipt.sender_identity_ids)),
+                    "sender_contact_ids": json.dumps(list(receipt.sender_contact_ids)),
+                },
+            )
         await self.session.commit()
         if claimed:
             self._remember_token(receipt.event_key, str(returned_token))

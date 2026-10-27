@@ -417,3 +417,55 @@ async def test_opt_out_ingress_preserves_sender_identity_for_unmapped_chat_alias
     await db_session.flush()
     assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True
     assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pending_stop_enriches_stable_contact_correlation(ingress, db_session):
+    """A duplicate STOP may enrich its veto receipt without claiming routing twice."""
+    from app.models.schema import Contact
+    from app.services.contact_messaging_consent_service import ContactMessagingConsentService
+
+    app, routed = ingress
+    unmapped_chat_id = "987654322@lid"
+    message_id = "UNMAPPED-ALIAS-STOP-RETRY"
+    event = _message_event(chat_id=unmapped_chat_id, message_id=message_id, body="STOP")
+    event["payload"]["sender"] = {"id": CONTACT_ID}
+
+    first = await _post(app, event)
+    assert first["status"] == "accepted"
+    event_key = f"test:{unmapped_chat_id}:{message_id}"
+    initial = (
+        await db_session.execute(
+            text("SELECT sender_contact_ids, status FROM inbound_webhook_receipts WHERE event_key = :event_key"),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert initial.sender_contact_ids == []
+    assert initial.status == "processing"
+
+    contact = Contact(
+        whatsapp_id=CONTACT_ID,
+        chat_id=CONTACT_ID,
+        display_name="Late-mapped STOP sender identity regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    duplicate = await _post(app, event)
+    assert duplicate["status"] == "duplicate"
+    assert len(routed) == 1
+    enriched = (
+        await db_session.execute(
+            text("SELECT sender_contact_ids, status FROM inbound_webhook_receipts WHERE event_key = :event_key"),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert set(enriched.sender_contact_ids) == {str(contact.id)}
+    assert enriched.status == "processing"
+
+    consent = ContactMessagingConsentService(db_session)
+    assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True
+    contact.whatsapp_id = "2348000000004@c.us"
+    contact.chat_id = "2348000000004@c.us"
+    await db_session.flush()
+    assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True
