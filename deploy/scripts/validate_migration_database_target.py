@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
@@ -28,6 +28,19 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
         raise SystemExit(
             f"Refusing local fixture seeds: {label} query parameters/fragments are forbidden."
         )
+    if parsed.query and not local_seed_mode:
+        target_override_keys = {
+            "host", "hostaddr", "port", "database", "dbname", "service",
+            "servicefile", "unix_sock",
+        }
+        query_keys = {
+            key.lower()
+            for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
+        }
+        if query_keys & target_override_keys:
+            raise SystemExit(
+                f"Refusing migration run: {label} query parameters cannot override database target fields."
+            )
     if parsed.fragment:
         raise SystemExit(
             f"Refusing migration run: {label} URL fragments are not valid database targets."
