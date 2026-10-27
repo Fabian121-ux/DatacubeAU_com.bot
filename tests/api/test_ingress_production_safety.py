@@ -361,3 +361,52 @@ async def test_one_source_never_routes_to_multiple_recipients(ingress):
     assert len(routed) == 1
     payload = inbound._resolve_payload(routed[0])
     assert inbound._resolve_chat_id(payload) == CONTACT_ID
+
+
+@pytest.mark.asyncio
+async def test_opt_out_ingress_preserves_sender_identity_for_unmapped_chat_alias(
+    ingress, db_session
+):
+    """An unmapped LID chat must retain its canonical sender ID for the worker veto."""
+    from app.models.schema import Contact
+    from app.services.contact_messaging_consent_service import ContactMessagingConsentService
+
+    contact = Contact(
+        whatsapp_id=CONTACT_ID,
+        chat_id=CONTACT_ID,
+        display_name="Unmapped alias sender identity regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    unmapped_chat_id = "987654321@lid"
+    message_id = "UNMAPPED-ALIAS-INGRESS-STOP"
+    event = _message_event(
+        chat_id=unmapped_chat_id,
+        message_id=message_id,
+        body="STOP",
+    )
+    # WAHA's transport chat alias can differ from the sender's canonical identity.
+    event["payload"]["sender"] = {"id": CONTACT_ID}
+
+    app, routed = ingress
+    body = await _post(app, event)
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT chat_id, sender_identity_ids, opt_out_intent, status "
+                "FROM inbound_webhook_receipts WHERE event_key = :event_key"
+            ),
+            {"event_key": f"test:{unmapped_chat_id}:{message_id}"},
+        )
+    ).one()
+    assert receipt.chat_id == unmapped_chat_id
+    assert set(receipt.sender_identity_ids) == {CONTACT_ID, unmapped_chat_id}
+    assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
+    assert await ContactMessagingConsentService(
+        db_session
+    ).has_pending_opt_out_intent_for_contact(int(contact.id)) is True
+    assert len(routed) == 1
