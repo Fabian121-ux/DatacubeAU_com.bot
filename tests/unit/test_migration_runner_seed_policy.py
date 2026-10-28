@@ -434,3 +434,62 @@ def test_valid_sync_target_is_checked_and_allowed_when_audit_url_is_absent() -> 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "secret" not in (result.stdout + result.stderr)
 
+
+
+def test_psql_calls_ignore_inherited_libpq_options_and_service_configuration(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    env_marker = tmp_path / "psql-environment.txt"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        """#!/bin/sh
+{
+  printf '%s\\n' "PGOPTIONS=${PGOPTIONS-<unset>}"
+  printf '%s\\n' "PGSERVICE=${PGSERVICE-<unset>}"
+  printf '%s\\n' "PGSERVICEFILE=${PGSERVICEFILE-<unset>}"
+  printf '%s\\n' "---"
+} >> "$PSQL_ENV_MARKER"
+calls=$(grep -c '^---$' "$PSQL_ENV_MARKER")
+if [ "$calls" -ge 2 ]; then exit 23; fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL_SYNC": "postgresql://postgres:secret@localhost:5432/zina_disposable",
+            "DATABASE_URL": "postgresql+asyncpg://postgres:secret@localhost:5432/zina_disposable",
+            "RUN_LOCAL_SEEDS": "false",
+            "ZINA_DEPLOYMENT_ENV": "production",
+            "APP_ROOT": str(ROOT),
+            "PSQL_ENV_MARKER": str(env_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            "PGOPTIONS": "-csearch_path=tenant",
+            "PGSERVICE": "untrusted-service",
+            "PGSERVICEFILE": str(tmp_path / "untrusted-pg_service.conf"),
+        }
+    )
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    # The fake client succeeds for CREATE TABLE, then deliberately fails on the
+    # first scalar query so both psql_cmd() and sql_scalar() are exercised.
+    assert result.returncode != 0
+    captured = env_marker.read_text(encoding="utf-8")
+    assert captured.count("---\\n") == 2
+    assert captured.count("PGOPTIONS=<unset>\\n") == 2
+    assert captured.count("PGSERVICE=<unset>\\n") == 2
+    assert captured.count("PGSERVICEFILE=<unset>\\n") == 2
+    assert "secret" not in (result.stdout + result.stderr)

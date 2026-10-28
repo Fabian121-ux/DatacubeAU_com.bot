@@ -51,12 +51,16 @@ fi
 python "$MIGRATION_VALIDATOR" "$MIGRATIONS_DIR"
 
 
+# Do not inherit libpq session options or service-file configuration into
+# schema-changing commands. PGOPTIONS can override search_path, while PGSERVICE
+# and PGSERVICEFILE can inject connection/session defaults outside the validated URI.
 psql_cmd() {
-  psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
+  env -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
+    psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
 }
 
 sql_scalar() {
-  psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "$1"
+  psql_cmd -Atc "$1"
 }
 
 table_exists() {
