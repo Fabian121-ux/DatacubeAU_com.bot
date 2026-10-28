@@ -446,12 +446,12 @@ def test_psql_calls_ignore_inherited_libpq_options_and_service_configuration(
     fake_psql.write_text(
         """#!/bin/sh
 {
-  printf '%s\\n' "PGOPTIONS=${PGOPTIONS-<unset>}"
-  printf '%s\\n' "PGSERVICE=${PGSERVICE-<unset>}"
-  printf '%s\\n' "PGSERVICEFILE=${PGSERVICEFILE-<unset>}"
-  printf '%s\\n' "---"
+  printf 'PGOPTIONS=%s|' "${PGOPTIONS-<unset>}"
+  printf 'PGSERVICE=%s|' "${PGSERVICE-<unset>}"
+  printf 'PGSERVICEFILE=%s|' "${PGSERVICEFILE-<unset>}"
+  printf '%s' '---|'
 } >> "$PSQL_ENV_MARKER"
-calls=$(grep -c '^---$' "$PSQL_ENV_MARKER")
+calls=$(grep -o -- '---|' "$PSQL_ENV_MARKER" | wc -l)
 if [ "$calls" -ge 2 ]; then exit 23; fi
 exit 0
 """,
@@ -488,8 +488,8 @@ exit 0
     # first scalar query so both psql_cmd() and sql_scalar() are exercised.
     assert result.returncode != 0
     captured = env_marker.read_text(encoding="utf-8")
-    assert captured.count("---\n") == 2
-    assert captured.count("PGOPTIONS=<unset>\n") == 2
-    assert captured.count("PGSERVICE=<unset>\n") == 2
-    assert captured.count("PGSERVICEFILE=<unset>\n") == 2
+    assert captured.count("---|") == 2
+    assert captured.count("PGOPTIONS=<unset>|") == 2
+    assert captured.count("PGSERVICE=<unset>|") == 2
+    assert captured.count("PGSERVICEFILE=<unset>|") == 2
     assert "secret" not in (result.stdout + result.stderr)
