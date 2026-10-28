@@ -433,13 +433,13 @@ class ContactMessagingConsentService:
         aliases = await self._mapped_direct_chat_ids(int(contact.id))
         if await self._has_terminal_opt_out_for_contact(int(contact.id), aliases):
             raise ValueError(
-                "contact opted out; explicit contact re-consent is required before .contact consent reconsent"
+                "contact has a terminal opt-out; current policy does not permit a new grant"
             )
 
         instant = utcnow()
         row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)
         if row.status == "opted_out":
-            raise ValueError("contact opted out; explicit contact re-consent is required before .contact consent reconsent")
+            raise ValueError("contact has a terminal opt-out; current policy does not permit a new grant")
         row.status = "consented"
         row.provenance = "owner_attested"
         row.evidence_ref = evidence_ref.strip()

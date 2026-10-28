@@ -291,7 +291,7 @@ async def test_opt_out_on_mapped_alias_blocks_other_alias_grant_and_dispatch(db_
     assert decision.allowed is False
     assert decision.reason == "contact has opted out"
 
-    with pytest.raises(ValueError, match="explicit contact re-consent"):
+    with pytest.raises(ValueError, match="terminal opt-out"):
         await service.grant_for_chat(
             exact_chat_id=target_chat_id,
             evidence_ref="owner-grant-after-alias-stop",
@@ -336,7 +336,7 @@ async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
     )
 
     # An OWNER revoke must not rewrite a contact's terminal opt-out into a
-    # state from which a later grant can bypass explicit contact re-consent.
+    # state from which a later grant can bypass terminal opt-out policy.
     with pytest.raises(ValueError, match="terminal opt-out"):
         await service.revoke_for_chat(
             exact_chat_id=test_contact.whatsapp_id,
@@ -344,7 +344,7 @@ async def test_owner_grant_cannot_override_opt_out(db_session, test_contact):
             owner_identity="OWNER",
         )
 
-    with pytest.raises(ValueError, match="explicit contact re-consent"):
+    with pytest.raises(ValueError, match="terminal opt-out"):
         await service.grant_for_chat(
             exact_chat_id=test_contact.whatsapp_id,
             evidence_ref="owner-attested-again",
@@ -387,7 +387,7 @@ async def test_terminal_opt_out_prevents_delete_and_alias_regrant(db_session, te
     retained = (
         await db_session.execute(select(Contact).where(Contact.id == contact_id))
     ).scalar_one()
-    with pytest.raises(ValueError, match="explicit contact re-consent"):
+    with pytest.raises(ValueError, match="terminal opt-out"):
         await service.grant_for_chat(
             exact_chat_id=original_chat_id,
             evidence_ref="owner-grant-after-delete-attempt",
@@ -400,7 +400,7 @@ async def test_terminal_opt_out_prevents_delete_and_alias_regrant(db_session, te
     retained.whatsapp_id = replacement_alias
     retained.chat_id = replacement_alias
     await db_session.flush()
-    with pytest.raises(ValueError, match="explicit contact re-consent"):
+    with pytest.raises(ValueError, match="terminal opt-out"):
         await service.grant_for_chat(
             exact_chat_id=replacement_alias,
             evidence_ref="owner-grant-after-alias-change",
