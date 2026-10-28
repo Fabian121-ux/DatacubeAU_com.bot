@@ -1,12 +1,14 @@
-## Live release-verification delta — 2026-10-27 04:30 UTC (partial; NOT TEST READY)
+# Zina Release Checklist
 
-See the [roadmap live-verification delta](ZINA_IMPLEMENTATION_ROADMAP.md) at the top of this branch for exact open PR heads, latest branch CI runs and review-thread counts.
+## Live release-verification delta — 2026-10-28 06:30 UTC (partial; NOT TEST READY)
 
-- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033; latest main Tests run is the 2026-09-08 success, and fresh main-green is not established.
-- Current feature migration order is #48=034, #50=035, #49=036–037, #60=038. The duplicate 034 file is absent from #49's current tree, but sequence/deployment guards #61/#62 remain unmerged. The combined chain is unverified.
-- P0 contact consent remains on draft PR #60, not main. Exact-head run [40449887204](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40449887204) passed 890 tests at 76.36% coverage after migration 038 gained guards against deleting or truncating Contacts with terminal opt-out history. The workflow applied 001–033 plus 038 only, not 034–038 as an integrated chain.
-- PR #50 still has two unresolved architecture decisions: tombstone-aware introduction paths and safe legacy seed provenance. PR #60 still has three unresolved inline review threads and needs independent review of the terminal opt-out identity/deletion policy.
-- Fresh 001–038, installed 033→038 upgrade, repeated/no-op run, integrated leakage audit, full P0 adversarial matrix and independent review gates remain incomplete. Do not begin controlled WhatsApp testing.
+See the [roadmap live-verification delta](ZINA_IMPLEMENTATION_ROADMAP.md) for the exact inspected PR heads and dependency notes. This checklist distinguishes branch-local tests from an integrated release candidate.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last commit and latest main Tests run [#405](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) were on 2026-09-08. October branch tests do not establish current main-green.
+- **Latest P0 head:** PR [#60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) at `dd944fdff88afe6de64a82b3dff40786f99f8f26); exact-head Tests [#622](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40643929083) passed on 2026-10-28: **900 passed, 1 warning, 76.41% coverage**. This workflow applied migrations 001–033 and 038–040, not the contiguous 001–040 chain.
+- **Migration order still awaiting integration:** #48=034, #50=035, #49=036–037, #60=038–040. Sequence gate #61 and deployment preflight #62 remain open. #60 is draft with 3 unresolved inline review threads; #50 has two unresolved architectural decisions. A green CI result is not independent review or release approval.
+- **Required before controlled testing:** fresh PostgreSQL chain 001–040; installed 033→040 upgrade and repeat/no-op run; exact-candidate DB-leakage audit; P0 adversarial matrix; independent review of blocking consent/identity findings; updated controlled-test plan.
+- **Safety:** unknown/revoked consent and terminal opt-out must deny at the final worker fence. No real WhatsApp sends, production database mutations, production WAHA reconnection, or private-media retention activation during engineering.
 
 ## Engineering gates (mechanical — re-verify every run)
 
