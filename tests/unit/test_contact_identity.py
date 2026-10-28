@@ -14,6 +14,9 @@ class FakeScalar:
     def scalar_one_or_none(self):
         return self.row
 
+    def one_or_none(self):
+        return self.row
+
     def scalars(self):
         # Match the SQLAlchemy Result.scalars() API used by the alias lookup.
         return self
@@ -32,7 +35,13 @@ class FakeContactSession:
         self.added = None
         self.flushed = False
 
-    async def execute(self, _statement, _params=None):
+    async def execute(self, statement, _params=None):
+        # _mapped_direct_chat_ids selects two scalar columns, while the router's
+        # contact lookups select the ORM entity. Preserve each result shape.
+        descriptions = getattr(statement, "column_descriptions", ())
+        if len(descriptions) == 2:
+            row = None if self.row is None else (self.row.whatsapp_id, self.row.chat_id)
+            return FakeScalar(row)
         return FakeScalar(self.row)
 
     def add(self, row):
