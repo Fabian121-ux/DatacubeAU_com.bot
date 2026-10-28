@@ -31,7 +31,7 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
     if parsed.query and not local_seed_mode:
         target_override_keys = {
             "host", "hostaddr", "port", "database", "dbname", "service",
-            "servicefile", "unix_sock",
+            "servicefile", "unix_sock", "options",
         }
         query_keys = {
             key.lower()
@@ -39,7 +39,7 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
         }
         if query_keys & target_override_keys:
             raise SystemExit(
-                f"Refusing migration run: {label} query parameters cannot override database target fields."
+                f"Refusing migration run: {label} query parameters cannot override database target or session settings."
             )
     if parsed.fragment:
         raise SystemExit(
@@ -56,8 +56,8 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
             f"Refusing migration run: {label} must include a database name."
         )
 
-    # Never compare or print credentials. Query parameters can be valid connection
-    # options for normal deployments; local fixture mode deliberately forbids them.
+    # Never compare or print credentials. Non-target options such as sslmode remain
+    # valid for normal deployments; local fixture mode forbids all query parameters.
     endpoint = (host.lower().rstrip("."), port if port is not None else 5432, database)
     return parsed, endpoint
 
