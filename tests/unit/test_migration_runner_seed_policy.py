@@ -488,8 +488,8 @@ exit 0
     # first scalar query so both psql_cmd() and sql_scalar() are exercised.
     assert result.returncode != 0
     captured = env_marker.read_text(encoding="utf-8")
-    assert captured.count("---\\n") == 2
-    assert captured.count("PGOPTIONS=<unset>\\n") == 2
-    assert captured.count("PGSERVICE=<unset>\\n") == 2
-    assert captured.count("PGSERVICEFILE=<unset>\\n") == 2
+    assert captured.count("---\n") == 2
+    assert captured.count("PGOPTIONS=<unset>\n") == 2
+    assert captured.count("PGSERVICE=<unset>\n") == 2
+    assert captured.count("PGSERVICEFILE=<unset>\n") == 2
     assert "secret" not in (result.stdout + result.stderr)
