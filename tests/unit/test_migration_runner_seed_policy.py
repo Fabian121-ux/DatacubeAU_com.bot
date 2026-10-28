@@ -307,6 +307,14 @@ def test_schema_audit_target_must_match_migration_target_when_local_seeds_are_di
             "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable",
         ),
         (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable?options=-csearch_path%3Dtenant",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable",
+        ),
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable?options=-csearch_path%3Dtenant",
+        ),
+        (
             "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
             "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable?host=override.example",
         ),
@@ -337,7 +345,7 @@ def test_database_url_query_cannot_override_target_even_when_local_seeds_are_dis
 
     output = result.stdout + result.stderr
     assert result.returncode != 0
-    assert "query parameters cannot override database target fields" in output
+    assert "query parameters cannot override database target or session settings" in output
     assert "sync-secret" not in output
     assert "audit-secret" not in output
 
@@ -379,7 +387,7 @@ def test_sync_target_query_override_is_rejected_before_psql_when_audit_url_is_ab
         {
             "DATABASE_URL_SYNC": (
                 "postgresql://postgres:sync-secret@localhost:5432/"
-                "zina_disposable?host=override.example"
+                "zina_disposable?options=-csearch_path%3Dtenant"
             ),
             "RUN_LOCAL_SEEDS": "false",
             "ZINA_DEPLOYMENT_ENV": "production",
@@ -402,7 +410,7 @@ def test_sync_target_query_override_is_rejected_before_psql_when_audit_url_is_ab
     output = result.stdout + result.stderr
 
     assert result.returncode != 0
-    assert "query parameters cannot override database target fields" in output
+    assert "query parameters cannot override database target or session settings" in output
     assert not psql_marker.exists(), "invalid sync URL reached psql before rejection"
     assert "sync-secret" not in output
 
