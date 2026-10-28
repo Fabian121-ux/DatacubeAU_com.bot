@@ -792,9 +792,12 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
                 ).one_or_none()
                 if receipt is not None and receipt.opt_out_intent is True:
                     assert receipt.status == "processing"
-                    assert await ContactMessagingConsentService(
-                        observer_session
-                    ).has_pending_opt_out_intent_for_contact(contact_id) is True
+                    # This method is monkeypatched to pause the worker. Use the saved
+                    # original for the observer, or the observer would wait on the same
+                    # release event and deadlock the test before it can release the worker.
+                    assert await original_pending_check(
+                        ContactMessagingConsentService(observer_session), contact_id
+                    ) is True
                     break
                 await asyncio.sleep(0.01)
             else:
