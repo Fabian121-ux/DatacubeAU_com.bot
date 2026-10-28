@@ -1,5 +1,16 @@
 # Zina Release Checklist
 
+## Live release-verification delta — 2026-10-28 13:25 UTC (partial; NOT TEST READY)
+
+This is the latest inspected status overlay. The detailed checklist below is older and must be revalidated against current source before release.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last known main Tests run [#405](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08. October feature-branch tests do not establish current main-green.
+- **Current deployment preflight:** PR #62 head `023f6968303417e0f5905dce4c3bb37e47c61b55`; [Tests #628](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40695780640) passed 838 tests, 1 warning, 76.01% coverage. The new libpq `options` rejection is covered, including proof the unsafe URL is rejected before `psql`. This run validates migrations 001–033 only.
+- **Migration plan:** #48=034, #50=035, #49=036–037, #60=038–040. The integrated candidate has not passed fresh 001–040, installed 033→040 upgrade/re-run, or DB-leakage validation. PR #61's sequence gate and PR #62's runner preflight are unmerged.
+- **P0 consent:** PR #60 head `dd944fdff88afe6de64a82b3dff40786f99f8f26`; [Tests #622](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40643929083) passed 900 tests, 76.41% coverage, but the branch still has 3 unresolved review threads and is draft. Issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) still requires independent review and a human decision on the dispatch-reservation boundary.
+- **Other unresolved architecture:** PR #49 has 1 unresolved retired-key thread; PR #50 has 2 unresolved identity-introduction/legacy-provenance threads. The original migration-number collision is renumbered on the candidate heads but is not integrated/validated end to end.
+- **Safety:** no real WhatsApp sends, production database mutations, production WAHA reconnection, or private-media retention activation occurred. **NOT TEST READY.**
+
 ## Live release-verification delta — 2026-10-28 06:30 UTC (partial; NOT TEST READY)
 
 See the [roadmap live-verification delta](ZINA_IMPLEMENTATION_ROADMAP.md) for the exact inspected PR heads and dependency notes. This checklist distinguishes branch-local tests from an integrated release candidate.
