@@ -11,6 +11,9 @@ class FakeScalar:
     def __init__(self, row):
         self.row = row
 
+    def scalar_one(self):
+        return self.row
+
     def scalar_one_or_none(self):
         return self.row
 
@@ -36,6 +39,12 @@ class FakeContactSession:
         self.flushed = False
 
     async def execute(self, statement, _params=None):
+        # The consent service asks PostgreSQL whether a pending STOP/opt-out
+        # exists. Model SELECT EXISTS as a scalar boolean, not as the Contact row
+        # returned by the other ORM queries in this fake session.
+        if str(statement).lstrip().upper().startswith("SELECT EXISTS"):
+            return FakeScalar(False)
+
         # _mapped_direct_chat_ids selects two scalar columns, while the router's
         # contact lookups select the ORM entity. Preserve each result shape.
         descriptions = getattr(statement, "column_descriptions", ())
