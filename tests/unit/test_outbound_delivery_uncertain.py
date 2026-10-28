@@ -542,10 +542,10 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
     resume_dispatch = asyncio.Event()
     original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent_for_contact
 
-    async def pause_at_final_veto(service, contact_id):
+    async def pause_at_final_veto(service, locked_contact_id):
         at_final_veto.set()
         await resume_dispatch.wait()
-        return await original_pending_check(service, contact_id)
+        return await original_pending_check(service, locked_contact_id)
 
     monkeypatch.setattr(
         ContactMessagingConsentService,
@@ -568,33 +568,70 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         },
     }
     event_key = "test:222@c.us:STOP-RACE-1"
-    async with factory() as receipt_session:
-        claimed = await InboundIdempotencyService(receipt_session).claim(
-            InboundReceipt(
-                event_key=event_key,
-                session_name="test",
-                chat_id="222@c.us",
-                message_id="STOP-RACE-1",
-                opt_out_intent=True,
-            )
-        )
-    assert claimed is True
 
-    # The STOP receipt is committed while routing has not yet acquired the mapping
-    # lock. Resume at the final fence: no mock transport call may be made.
+    # Model the real ingress sequence in one task: claim commits the STOP receipt
+    # before waiting for the worker's mapping/Contact lock, then routing applies the
+    # opt-out and completes the same lease after the worker releases that boundary.
+    async def route_stop():
+        async with factory() as route_session:
+            idempotency = InboundIdempotencyService(route_session)
+            claimed = await idempotency.claim(
+                InboundReceipt(
+                    event_key=event_key,
+                    session_name="test",
+                    chat_id="222@c.us",
+                    message_id="STOP-RACE-1",
+                    sender_identity_ids=("222@c.us",),
+                    sender_contact_ids=(str(contact_id),),
+                    opt_out_intent=True,
+                )
+            )
+            assert claimed is True
+            result = await InboundRouter(route_session).process_event(event)
+            await idempotency.mark_completed(event_key)
+            return result
+
+    route_task = asyncio.create_task(route_stop())
+
+    # Do not await claim() directly: after committing the receipt, production claim()
+    # intentionally waits for the dispatch boundary. Observe the committed veto from
+    # a third session while routing is blocked, then let the worker reach its final check.
+    async def wait_for_committed_stop_receipt():
+        for _ in range(100):
+            if route_task.done():
+                await route_task
+                raise AssertionError("STOP routing finished before the worker released its boundary")
+            async with factory() as observer_session:
+                receipt = (
+                    await observer_session.execute(
+                        text(
+                            "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                            "WHERE event_key = :event_key"
+                        ),
+                        {"event_key": event_key},
+                    )
+                ).one_or_none()
+                if receipt is not None and receipt.opt_out_intent is True and receipt.status == "processing":
+                    assert await ContactMessagingConsentService(
+                        observer_session
+                    ).has_pending_opt_out_intent("222@c.us") is True
+                    return
+            await asyncio.sleep(0.01)
+        raise AssertionError("committed pending STOP receipt was not visible within 1 second")
+
+    await asyncio.wait_for(wait_for_committed_stop_receipt(), timeout=5)
+    assert not route_task.done(), "routing must still be waiting on the worker's dispatch boundary"
+
     resume_dispatch.set()
     processed = await asyncio.wait_for(worker_task, timeout=5)
+    route_result = await asyncio.wait_for(route_task, timeout=5)
+
     assert processed == 1
     assert client.calls == []
+    assert route_result["action"] == "ignored"
     await db_session.refresh(queue)
     assert queue.status == "deferred"
     assert "pending inbound opt-out intent" in (queue.error_message or "")
-
-    # Now let the accepted STOP finish routing after the worker releases its locks.
-    async with factory() as route_session:
-        result = await InboundRouter(route_session).process_event(event)
-        assert result["action"] == "ignored"
-        await InboundIdempotencyService(route_session).mark_completed(event_key)
 
     async with factory() as verify_session:
         consent = (
@@ -637,7 +674,6 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         ).one()
         assert receipt.opt_out_intent is True
         assert receipt.status == "completed"
-
 
 
 @pytest.mark.asyncio
