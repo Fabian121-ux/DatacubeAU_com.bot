@@ -56,8 +56,12 @@ python "$MIGRATION_VALIDATOR" "$MIGRATIONS_DIR"
 # the URI hostname is validated; PGPORT can override the default when the URI omits it.
 # PGOPTIONS can alter search_path, and service variables inject unvalidated defaults.
 psql_cmd() {
+  # The migration/audit contract is explicitly public-schema based. URI and
+  # inherited libpq overrides are fenced above/below, but role/database-level
+  # defaults can still set a custom search_path; pin it for every session too.
   env -u PGHOSTADDR -u PGPORT -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
-    psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
+    psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X \
+      -c 'SET search_path TO public' "$@"
 }
 
 sql_scalar() {

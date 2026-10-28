@@ -22,6 +22,13 @@ def test_psql_calls_ignore_inherited_libpq_target_overrides(tmp_path: Path) -> N
   printf 'PGOPTIONS=%s|' "${PGOPTIONS-<unset>}"
   printf 'PGSERVICE=%s|' "${PGSERVICE-<unset>}"
   printf 'PGSERVICEFILE=%s|' "${PGSERVICEFILE-<unset>}"
+  search_path_public=0
+  for arg in "$@"; do
+    if [ "$arg" = "SET search_path TO public" ]; then
+      search_path_public=1
+    fi
+  done
+  printf 'search_path_public=%s|' "$search_path_public"
   printf '%s' '---|'
 } >> "$PSQL_ENV_MARKER"
 calls=$(grep -o -- '---|' "$PSQL_ENV_MARKER" | wc -l)
@@ -67,4 +74,7 @@ exit 0
     assert captured.count("---|") == 2
     for variable in ("PGHOSTADDR", "PGPORT", "PGOPTIONS", "PGSERVICE", "PGSERVICEFILE"):
         assert captured.count(f"{variable}=<unset>|") == 2
+    assert captured.count("search_path_public=1|") == 2, (
+        "every psql session must pin the audited public schema despite server-side defaults"
+    )
     assert "secret" not in (result.stdout + result.stderr)
