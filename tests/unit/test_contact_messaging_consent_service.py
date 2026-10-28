@@ -902,7 +902,7 @@ async def test_pending_opt_out_intent_on_unmapped_alias_matches_sender_identity(
             )
             VALUES (
                 'unmapped-alias-stop-pending-test', 'test', :chat_id,
-                'unmapped-alias-stop-pending-test', jsonb_build_array(:sender_id),
+                'unmapped-alias-stop-pending-test', jsonb_build_array(CAST(:sender_id AS text)),
                 TRUE, 'processing', 'test-claim-token', NOW()
             )
             """
@@ -934,7 +934,7 @@ async def test_pending_stop_receipt_prevents_contact_chat_alias_remap(db_session
             )
             VALUES (
                 'pending-stop-before-alias-remap', 'test', :chat_id,
-                'pending-stop-before-alias-remap', jsonb_build_array(:sender_id),
+                'pending-stop-before-alias-remap', jsonb_build_array(CAST(:sender_id AS text)),
                 '[]'::jsonb, TRUE, 'processing', 'test-claim-token', NOW()
             )
             """

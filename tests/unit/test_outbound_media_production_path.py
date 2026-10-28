@@ -570,7 +570,7 @@ async def test_pending_stop_on_unmapped_alias_blocks_approved_queue_before_waha(
             )
             VALUES (
                 'unmapped-alias-stop-worker-test', 'test', :chat_id,
-                'unmapped-alias-stop-worker-test', jsonb_build_array(:sender_id),
+                'unmapped-alias-stop-worker-test', jsonb_build_array(CAST(:sender_id AS text)),
                 TRUE, 'processing', 'test-claim-token', NOW()
             )
             """

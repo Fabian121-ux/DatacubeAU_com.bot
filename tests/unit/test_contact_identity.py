@@ -27,6 +27,8 @@ class FakeScalar:
 class FakeContactSession:
     def __init__(self, row=None):
         self.row = row
+        if row is not None and row.id is None:
+            row.id = 1  # Existing rows returned by a database already have a primary key.
         self.added = None
         self.flushed = False
 
