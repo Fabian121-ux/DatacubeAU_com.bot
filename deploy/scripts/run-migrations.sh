@@ -51,11 +51,12 @@ fi
 python "$MIGRATION_VALIDATOR" "$MIGRATIONS_DIR"
 
 
-# Do not inherit libpq session options or service-file configuration into
-# schema-changing commands. PGOPTIONS can override search_path, while PGSERVICE
-# and PGSERVICEFILE can inject connection/session defaults outside the validated URI.
+# Do not inherit libpq connection-target overrides or session options into
+# schema-changing commands. PGHOSTADDR can redirect the network target even when
+# the URI hostname is validated; PGPORT can override the default when the URI omits it.
+# PGOPTIONS can alter search_path, and service variables inject unvalidated defaults.
 psql_cmd() {
-  env -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
+  env -u PGHOSTADDR -u PGPORT -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
     psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
 }
 
