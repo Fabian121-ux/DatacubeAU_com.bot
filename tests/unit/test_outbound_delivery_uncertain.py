@@ -759,23 +759,63 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
     await asyncio.wait_for(at_final_veto.wait(), timeout=5)
 
     event_key = "test:333@c.us:STOP-ALIAS-RACE-1"
-    async with factory() as receipt_session:
-        claimed = await InboundIdempotencyService(receipt_session).claim(
-            InboundReceipt(
-                event_key=event_key,
-                session_name="test",
-                chat_id=opt_out_alias,
-                message_id="STOP-ALIAS-RACE-1",
-                opt_out_intent=True,
-            )
-        )
-    assert claimed is True
 
-    # The receipt is committed before routing blocks on the Contact mapping lock.
-    # The final fence must discover it through the Contact's alias set and send nothing.
-    resume_dispatch.set()
-    processed = await asyncio.wait_for(worker_task, timeout=5)
-    assert processed == 1
+    async def claim_stop():
+        async with factory() as receipt_session:
+            return await InboundIdempotencyService(receipt_session).claim(
+                InboundReceipt(
+                    event_key=event_key,
+                    session_name="test",
+                    chat_id=opt_out_alias,
+                    message_id="STOP-ALIAS-RACE-1",
+                    opt_out_intent=True,
+                )
+            )
+
+    # claim() commits the STOP receipt before it waits for the Contact/mapping
+    # lock held by the paused dispatch worker. Awaiting claim() here would invert
+    # the test's own release order and deadlock: the worker cannot inspect the
+    # committed receipt until resume_dispatch is set.
+    claim_task = asyncio.create_task(claim_stop())
+    worker_result = claim_result = None
+    try:
+        async with factory() as observer_session:
+            for _ in range(100):
+                receipt = (
+                    await observer_session.execute(
+                        text(
+                            "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                            "WHERE event_key = :event_key"
+                        ),
+                        {"event_key": event_key},
+                    )
+                ).one_or_none()
+                if receipt is not None and receipt.opt_out_intent is True:
+                    assert receipt.status == "processing"
+                    assert await ContactMessagingConsentService(
+                        observer_session
+                    ).has_pending_opt_out_intent_for_contact(contact_id) is True
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("STOP receipt was not committed before the dispatch fence timeout")
+
+        assert not claim_task.done(), (
+            "STOP claim should wait on the Contact lock only after its receipt is visible"
+        )
+    finally:
+        # Always release the paused worker and drain both tasks, even if an
+        # assertion fails, so this regression cannot strand the PostgreSQL test suite.
+        resume_dispatch.set()
+        worker_result, claim_result = await asyncio.wait_for(
+            asyncio.gather(worker_task, claim_task, return_exceptions=True),
+            timeout=10,
+        )
+
+    assert not isinstance(worker_result, BaseException), repr(worker_result)
+    assert not isinstance(claim_result, BaseException), repr(claim_result)
+    assert claim_result is True
+    assert worker_result == 1
     assert client.calls == []
     await db_session.refresh(queue)
     assert queue.status == "deferred"
