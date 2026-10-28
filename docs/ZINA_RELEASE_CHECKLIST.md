@@ -12,15 +12,15 @@ See the [roadmap live-verification delta](ZINA_IMPLEMENTATION_ROADMAP.md) for th
 
 ## Engineering gates (mechanical — re-verify every run)
 
-- [x] Full migration chain (001 → latest) applies cleanly from an empty database
-- [x] Full pytest suite green
-- [x] Coverage at or above the repository gate (57%; currently 75.12%)
-- [x] DB leakage = 0 across all `CLEANUP_MODELS`/`CLEANUP_RAW_TABLES` tables
+- [ ] Full contiguous migration chain (001 → 040) applies cleanly from an empty database — not yet verified on the combined candidate.
+- [x] Full pytest suite green on PR #60 exact head — 900 passed; integrated-candidate suite remains unverified.
+- [x] Coverage at or above the repository gate (57%) — 76.41% on PR #60 exact head; not an integrated-candidate result.
+- [ ] DB leakage = 0 across all `CLEANUP_MODELS`/`CLEANUP_RAW_TABLES` tables — current combined-candidate audit outstanding.
 - [ ] **No unresolved P0 outbound-authority gaps.** Issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) remains open: exact-contact consent/opt-out must be authoritative and checked at final dispatch, with revocation serialized against the transport attempt.
 - [x] No duplicate outbound delivery paths (single fail-closed fence, confirmed)
 - [x] No unsafe blind retries on uncertain delivery
 - [x] Exactly one router, one scheduler, one tool dispatcher (confirmed, no duplicates found)
-- [x] Exact-head CI green on `main`
+- [ ] Exact-head CI green on current `main` — last main run #405 was 2026-09-08.
 
 ## Product/architecture gates (real work remaining)
 
