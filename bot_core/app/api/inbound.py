@@ -174,6 +174,24 @@ async def waha_webhook(
         # can block on the mapping lock. Fingerprint the stable payload so retries can
         # reclaim the same receipt and message/message.any variants share the claim.
         idempotency_key = _build_opt_out_intent_key(event, payload)
+    if not idempotency_key:
+        # Every ordinary message and OWNER command must have a stable transport ID
+        # before any routing or command side effect. The explicit opt-out fallback
+        # above is the sole exception because its durable receipt is a send veto.
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook_ignored",
+            request_id=request_id,
+            event_name=event_name or "message",
+            message_id=message_id,
+            reason="missing_source_message_id",
+        )
+        return {
+            "status": "ignored",
+            "reason": "missing_source_message_id",
+            "event_name": event_name or "message",
+        }
     if idempotency_key:
         async with SessionLocal() as db:
             if opt_out_intent and sender_identity_ids:
