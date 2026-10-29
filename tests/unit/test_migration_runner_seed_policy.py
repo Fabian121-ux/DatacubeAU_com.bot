@@ -493,3 +493,63 @@ exit 0
     assert captured.count("PGSERVICE=<unset>|") == 2
     assert captured.count("PGSERVICEFILE=<unset>|") == 2
     assert "secret" not in (result.stdout + result.stderr)
+
+
+@pytest.mark.parametrize(
+    ("sync_url", "audit_url"),
+    [
+        (
+            "postgresql://postgres:sync-secret@db1.example,db2.example:5432/zina",
+            "postgresql+asyncpg://postgres:audit-secret@db1.example,db2.example:5432/zina",
+        ),
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina",
+            "postgresql+asyncpg://postgres:audit-secret@db1.example,db2.example:5432/zina",
+        ),
+    ],
+)
+def test_multi_host_postgres_urls_are_rejected_before_any_psql_call(
+    tmp_path: Path,
+    sync_url: str,
+    audit_url: str,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql_marker = tmp_path / "psql-was-called"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        "#!/bin/sh\\n"
+        ': "${PSQL_MARKER:?}"\\n'
+        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL_SYNC": sync_url,
+            "DATABASE_URL": audit_url,
+            "RUN_LOCAL_SEEDS": "false",
+            "ZINA_DEPLOYMENT_ENV": "production",
+            "APP_ROOT": str(ROOT),
+            "PSQL_MARKER": str(psql_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+        }
+    )
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert "must use a single PostgreSQL host" in output
+    assert not psql_marker.exists(), "multi-host target reached psql before rejection"
+    assert "sync-secret" not in output
+    assert "audit-secret" not in output
