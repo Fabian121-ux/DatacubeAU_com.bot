@@ -49,7 +49,7 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
         raise SystemExit(
             f"Refusing migration run: {label} must include a hostname."
         )
-    if "," in host:
+    if "," in unquote(host):
         # libpq treats comma-separated hostspecs as a failover list. Each psql
         # invocation opens a fresh connection, so separate migration/audit
         # operations could land on different servers despite matching URL text.

@@ -506,6 +506,10 @@ exit 0
             "postgresql://postgres:sync-secret@localhost:5432/zina",
             "postgresql+asyncpg://postgres:audit-secret@db1.example,db2.example:5432/zina",
         ),
+        (
+            "postgresql://postgres:sync-secret@db1.example%2Cdb2.example:5432/zina",
+            "postgresql+asyncpg://postgres:audit-secret@db1.example%2Cdb2.example:5432/zina",
+        ),
     ],
 )
 def test_multi_host_postgres_urls_are_rejected_before_any_psql_call(
