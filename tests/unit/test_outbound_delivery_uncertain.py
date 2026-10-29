@@ -618,7 +618,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
                     if stop_alias == "222@c.us":
                         assert await observer_consent.has_pending_opt_out_intent("222@c.us") is True
                     else:
-                        assert await observer_consent.has_pending_opt_out_intent_for_contact(contact_id) is True
+                        assert await original_pending_check(observer_consent, contact_id) is True
                     return
             await asyncio.sleep(0.01)
         raise AssertionError("committed pending STOP receipt was not visible within 1 second")
