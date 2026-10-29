@@ -56,10 +56,10 @@ class ContactMessagingConsentService:
         "do not message me", "don't message me", "dont message me",
     })
     _OPT_OUT_PATTERNS = (
-        re.compile(r"\b(?:do not|don't|dont)\s+(?:send|message|text|contact)\s+(?:me|us)\b"),
-        re.compile(r"\b(?:stop|unsubscribe)\s+(?:messaging|texting|contacting|sending)\s+(?:me|us)\b"),
-        re.compile(r"\b(?:no more|enough)\s+(?:messages|texts|calls)\b"),
-        re.compile(r"\b(?:i do not|i don't|i dont)\s+want\s+(?:any\s+)?(?:more\s+)?(?:messages|texts|contact)\b"),
+        re.compile(r"\b(?:do not|don't|dont)\s+(?:send|message|text|contact)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
+        re.compile(r"\b(?:stop|unsubscribe)\s+(?:messaging|texting|contacting|sending)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
+        re.compile(r"\b(?:no more|enough)\s+(?:messages|texts|calls)(?:\s+(?:to|for)\s+(?:me|us))?$"),
+        re.compile(r"\b(?:i do not|i don't|i dont)\s+want\s+(?:any\s+)?(?:more\s+)?(?:messages|texts|contact)(?:\s+(?:again|anymore|any more))?$"),
     )
 
     def __init__(self, session: AsyncSession):
