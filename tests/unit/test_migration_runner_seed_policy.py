@@ -322,6 +322,14 @@ def test_schema_audit_target_must_match_migration_target_when_local_seeds_are_di
             "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
             "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable?port=5433",
         ),
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable?user=other_role",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable",
+        ),
+        (
+            "postgresql://postgres:sync-secret@localhost:5432/zina_disposable",
+            "postgresql+asyncpg://postgres:audit-secret@localhost:5432/zina_disposable?user=other_role",
+        ),
     ],
 )
 def test_database_url_query_cannot_override_target_even_when_local_seeds_are_disabled(
@@ -557,3 +565,48 @@ def test_multi_host_postgres_urls_are_rejected_before_any_psql_call(
     assert not psql_marker.exists(), "multi-host target reached psql before rejection"
     assert "sync-secret" not in output
     assert "audit-secret" not in output
+
+
+def test_sync_target_requires_explicit_username_before_psql_when_pguser_is_set(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql_marker = tmp_path / "psql-was-called"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        "#!/bin/sh\\n"
+        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL_SYNC": "postgresql://localhost:5432/zina_disposable",
+            "RUN_LOCAL_SEEDS": "false",
+            "ZINA_DEPLOYMENT_ENV": "production",
+            "APP_ROOT": str(ROOT),
+            "PSQL_MARKER": str(psql_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            "PGUSER": "untrusted-role",
+        }
+    )
+    env.pop("DATABASE_URL", None)
+
+    result = subprocess.run(
+        ["sh", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert "DATABASE_URL_SYNC must include an explicit username" in output
+    assert not psql_marker.exists(), "implicit PGUSER reached psql before rejection"
+    assert "untrusted-role" not in output

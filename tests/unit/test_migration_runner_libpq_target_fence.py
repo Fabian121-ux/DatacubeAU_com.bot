@@ -17,6 +17,7 @@ def test_psql_calls_ignore_inherited_libpq_target_overrides(tmp_path: Path) -> N
     fake_psql.write_text(
         """#!/bin/sh
 {
+  printf 'PGUSER=%s|' "${PGUSER-<unset>}"
   printf 'PGHOSTADDR=%s|' "${PGHOSTADDR-<unset>}"
   printf 'PGPORT=%s|' "${PGPORT-<unset>}"
   printf 'PGOPTIONS=%s|' "${PGOPTIONS-<unset>}"
@@ -50,6 +51,7 @@ exit 0
             "APP_ROOT": str(ROOT),
             "PSQL_ENV_MARKER": str(env_marker),
             "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            "PGUSER": "untrusted-role",
             "PGHOSTADDR": "203.0.113.77",
             "PGPORT": "6543",
             "PGOPTIONS": "-csearch_path=untrusted_schema",
@@ -72,7 +74,7 @@ exit 0
     assert result.returncode != 0
     captured = env_marker.read_text(encoding="utf-8")
     assert captured.count("---|") == 2
-    for variable in ("PGHOSTADDR", "PGPORT", "PGOPTIONS", "PGSERVICE", "PGSERVICEFILE"):
+    for variable in ("PGUSER", "PGHOSTADDR", "PGPORT", "PGOPTIONS", "PGSERVICE", "PGSERVICEFILE"):
         assert captured.count(f"{variable}=<unset>|") == 2
     assert captured.count("search_path_public=1|") == 2, (
         "every psql session must pin the audited public schema despite server-side defaults"

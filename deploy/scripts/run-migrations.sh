@@ -59,7 +59,7 @@ psql_cmd() {
   # The migration/audit contract is explicitly public-schema based. URI and
   # inherited libpq overrides are fenced above/below, but role/database-level
   # defaults can still set a custom search_path; pin it for every session too.
-  env -u PGHOSTADDR -u PGPORT -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
+  env -u PGUSER -u PGHOSTADDR -u PGPORT -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
     psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -q \
       -c 'SET search_path TO public' "$@"
 }

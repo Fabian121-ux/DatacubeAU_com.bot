@@ -30,7 +30,7 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
         )
     if parsed.query and not local_seed_mode:
         target_override_keys = {
-            "host", "hostaddr", "port", "database", "dbname", "service",
+            "host", "hostaddr", "port", "database", "dbname", "user", "service",
             "servicefile", "unix_sock", "options",
         }
         query_keys = {
@@ -48,6 +48,12 @@ def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
     if not host:
         raise SystemExit(
             f"Refusing migration run: {label} must include a hostname."
+        )
+    if label == "DATABASE_URL_SYNC" and not parsed.username:
+        # psql otherwise falls back to PGUSER or the operating-system account,
+        # which is outside the endpoint checked above and can change effective DDL authority.
+        raise SystemExit(
+            f"Refusing migration run: {label} must include an explicit username."
         )
     if "," in unquote(host):
         # libpq treats comma-separated hostspecs as a failover list. Each psql
