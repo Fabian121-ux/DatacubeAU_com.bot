@@ -478,8 +478,9 @@ async def test_contact_remap_after_queue_creation_blocks_external_dispatch(
     assert "current contact/chat mapping does not match recipient" in (queue.error_message or "")
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stop_alias", ["222@c.us", "unmapped-lid-987@lid"])
 async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
-    db_session, test_contact, monkeypatch
+    db_session, test_contact, monkeypatch, stop_alias
 ):
     now = utcnow()
     test_contact.whatsapp_id = "222@c.us"
@@ -561,13 +562,14 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         "session": "test",
         "payload": {
             "id": "STOP-RACE-1",
-            "chatId": "222@c.us",
-            "from": "222@c.us",
+            "chatId": stop_alias,
+            "from": stop_alias,
+            "senderId": "222@c.us",
             "fromMe": False,
             "body": "STOP",
         },
     }
-    event_key = "test:222@c.us:STOP-RACE-1"
+    event_key = f"test:{stop_alias}:STOP-RACE-1"
 
     # Model the real ingress sequence in one task: claim commits the STOP receipt
     # before waiting for the worker's mapping/Contact lock, then routing applies the
@@ -579,9 +581,9 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
                 InboundReceipt(
                     event_key=event_key,
                     session_name="test",
-                    chat_id="222@c.us",
+                    chat_id=stop_alias,
                     message_id="STOP-RACE-1",
-                    sender_identity_ids=("222@c.us",),
+                    sender_identity_ids=("222@c.us", stop_alias),
                     sender_contact_ids=(str(contact_id),),
                     opt_out_intent=True,
                 )
@@ -612,9 +614,11 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
                     )
                 ).one_or_none()
                 if receipt is not None and receipt.opt_out_intent is True and receipt.status == "processing":
-                    assert await ContactMessagingConsentService(
-                        observer_session
-                    ).has_pending_opt_out_intent("222@c.us") is True
+                    observer_consent = ContactMessagingConsentService(observer_session)
+                    if stop_alias == "222@c.us":
+                        assert await observer_consent.has_pending_opt_out_intent("222@c.us") is True
+                    else:
+                        assert await observer_consent.has_pending_opt_out_intent_for_contact(contact_id) is True
                     return
             await asyncio.sleep(0.01)
         raise AssertionError("committed pending STOP receipt was not visible within 1 second")
@@ -638,7 +642,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
             await verify_session.execute(
                 select(ContactMessagingConsent)
                 .where(ContactMessagingConsent.contact_id == contact_id)
-                .where(ContactMessagingConsent.exact_chat_id == "222@c.us")
+                .where(ContactMessagingConsent.exact_chat_id == stop_alias)
             )
         ).scalar_one()
         assert consent.status == "opted_out"
@@ -647,7 +651,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
             await verify_session.execute(
                 select(ContactMessagingConsentEvent)
                 .where(ContactMessagingConsentEvent.contact_id == contact_id)
-                .where(ContactMessagingConsentEvent.exact_chat_id == "222@c.us")
+                .where(ContactMessagingConsentEvent.exact_chat_id == stop_alias)
             )
         ).scalars().all()
         assert any(row.event_type == "opted_out" for row in events)
@@ -658,7 +662,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
             )
         ).scalars().all()
         assert any(
-            row.details_json.get("exact_chat_id") == "222@c.us"
+            row.details_json.get("exact_chat_id") == stop_alias
             and row.details_json.get("status") == "opted_out"
             for row in audits
         )

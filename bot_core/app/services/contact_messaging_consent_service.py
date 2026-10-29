@@ -484,25 +484,105 @@ class ContactMessagingConsentService:
             raise ValueError("contact ID and inbound evidence reference are required")
 
         # Keep the lock order inside this authority service, not only in InboundRouter.
-        # Serialize destination mapping first, then lock the Contact row, then consent.
-        # This prevents a concurrent different Contact row from claiming this chat while
-        # an opt-out is being recorded. The source chat must belong to this contact.
+        # Serialize destination mapping first, then lock any current claimant, then the
+        # resolved Contact row, then consent. A STOP may arrive on a new WAHA/LID alias
+        # while the router deliberately preserves the Contact's old mapping so the
+        # pending receipt remains discoverable. In that case, accept the alias only when
+        # the exact inbound Message and a committed pending receipt independently bind it
+        # to this Contact; never weaken the normal mapping check for arbitrary callers.
         await self.lock_exact_chat_mapping(self.session, exact_chat_id)
-        locked_contact_id = (
+        matching_contact_ids = (
             await self.session.execute(
                 select(Contact.id)
-                .where(Contact.id == contact_id)
                 .where(
                     or_(
                         Contact.whatsapp_id == exact_chat_id,
                         Contact.chat_id == exact_chat_id,
                     )
                 )
+                .order_by(Contact.id)
+                .limit(2)
                 .with_for_update()
             )
-        ).scalar_one_or_none()
-        if locked_contact_id is None:
+        ).scalars().all()
+        if matching_contact_ids and (
+            len(matching_contact_ids) != 1 or int(matching_contact_ids[0]) != contact_id
+        ):
             raise ValueError("exact chat ID does not match durable contact")
+
+        contact = (
+            await self.session.execute(
+                select(Contact).where(Contact.id == contact_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if contact is None:
+            raise ValueError("exact chat ID does not match durable contact")
+
+        current_aliases = {
+            str(value).strip()
+            for value in (
+                contact.whatsapp_id,
+                contact.chat_id,
+            )
+            if isinstance(value, str) and value.strip()
+        }
+        if exact_chat_id not in current_aliases:
+            try:
+                inbound_message_id = int(evidence_ref)
+            except (TypeError, ValueError):
+                inbound_message_id = 0
+            source_matches = False
+            if inbound_message_id > 0:
+                source_matches = (
+                    await self.session.execute(
+                        select(Message.id)
+                        .where(Message.id == inbound_message_id)
+                        .where(Message.contact_id == contact_id)
+                        .where(Message.chat_id == exact_chat_id)
+                        .where(Message.direction == "inbound")
+                        .limit(1)
+                    )
+                ).scalar_one_or_none() is not None
+
+            identity_ids = sorted({
+                str(value).strip()
+                for value in (
+                    contact.whatsapp_id,
+                    contact.chat_id,
+                    contact.waha_contact_id,
+                    contact.waha_participant_id,
+                )
+                if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+            })
+            pending_statement = text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM inbound_webhook_receipts
+                    WHERE chat_id = :exact_chat_id
+                      AND opt_out_intent IS TRUE
+                      AND status = 'processing'
+                      AND (
+                          sender_contact_ids ? :contact_id
+                          OR sender_identity_ids ?| :identity_ids
+                      )
+                )
+                """
+            ).bindparams(bindparam("identity_ids", type_=ARRAY(Text())))
+            pending_binds_contact = bool(
+                (
+                    await self.session.execute(
+                        pending_statement,
+                        {
+                            "exact_chat_id": exact_chat_id,
+                            "contact_id": str(contact_id),
+                            "identity_ids": identity_ids,
+                        },
+                    )
+                ).scalar_one()
+            )
+            if not source_matches or not pending_binds_contact:
+                raise ValueError("exact chat ID does not match durable contact")
 
         instant = utcnow()
         row = await self._lock_or_create(contact_id, exact_chat_id, instant)
