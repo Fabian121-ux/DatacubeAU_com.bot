@@ -263,9 +263,9 @@ def test_schema_audit_target_must_match_migration_target_when_local_seeds_are_di
     psql_marker = tmp_path / "psql-was-called"
     fake_psql = fake_bin / "psql"
     fake_psql.write_text(
-        "#!/bin/sh\\n"
-        ': "${PSQL_MARKER:?}"\\n'
-        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        "#!/bin/sh\n"
+        ': "${PSQL_MARKER:?}"\n'
+        'printf "called\n" >> "$PSQL_MARKER"\n',
         encoding="utf-8",
     )
     fake_psql.chmod(0o755)
@@ -377,7 +377,7 @@ def test_sync_target_query_override_is_rejected_before_psql_when_audit_url_is_ab
     fake_psql = fake_bin / "psql"
     fake_psql.write_text(
         "#!/bin/sh\n"
-        "printf 'called\\n' >> \"$PSQL_MARKER\"\n",
+        "printf 'called\n' >> \"$PSQL_MARKER\"\n",
         encoding="utf-8",
     )
     fake_psql.chmod(0o755)
@@ -518,9 +518,9 @@ def test_multi_host_postgres_urls_are_rejected_before_any_psql_call(
     psql_marker = tmp_path / "psql-was-called"
     fake_psql = fake_bin / "psql"
     fake_psql.write_text(
-        "#!/bin/sh\\n"
-        ': "${PSQL_MARKER:?}"\\n'
-        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        "#!/bin/sh\n"
+        ': "${PSQL_MARKER:?}"\n'
+        'printf "called\n" >> "$PSQL_MARKER"\n',
         encoding="utf-8",
     )
     fake_psql.chmod(0o755)
