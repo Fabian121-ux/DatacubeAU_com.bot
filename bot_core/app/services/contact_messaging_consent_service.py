@@ -171,7 +171,14 @@ class ContactMessagingConsentService:
             return ()
         result = await self.session.execute(
             select(Contact.id)
-            .where(or_(Contact.whatsapp_id.in_(identities), Contact.chat_id.in_(identities)))
+            .where(
+                or_(
+                    Contact.whatsapp_id.in_(identities),
+                    Contact.chat_id.in_(identities),
+                    Contact.waha_contact_id.in_(identities),
+                    Contact.waha_participant_id.in_(identities),
+                )
+            )
             .order_by(Contact.id)
         )
         return tuple(str(contact_id) for contact_id in result.scalars().all())
@@ -188,6 +195,25 @@ class ContactMessagingConsentService:
             str(value).strip()
             for value in row
             if self._is_direct_chat(value)
+        }
+
+    async def _contact_identity_ids(self, contact_id: int) -> set[str]:
+        """Return sender identities for veto correlation, never as routable chat IDs."""
+        result = await self.session.execute(
+            select(
+                Contact.whatsapp_id,
+                Contact.chat_id,
+                Contact.waha_contact_id,
+                Contact.waha_participant_id,
+            ).where(Contact.id == contact_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return set()
+        return {
+            str(value).strip()
+            for value in row
+            if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
         }
 
     async def _has_terminal_opt_out_for_contact(
@@ -217,6 +243,10 @@ class ContactMessagingConsentService:
         aliases = await self._mapped_direct_chat_ids(contact_id)
         if not aliases:
             return True
+        # Correlate stable WAHA contact/participant identities as well as routable
+        # aliases. These values are used only in the receipt JSON predicate below;
+        # they must never be treated as WAHA destination chat IDs.
+        identity_ids = await self._contact_identity_ids(contact_id)
         statement = text(
             """
             SELECT EXISTS (
@@ -239,7 +269,7 @@ class ContactMessagingConsentService:
             statement,
             {
                 "chat_ids": sorted(aliases),
-                "identity_ids": sorted(aliases),
+                "identity_ids": sorted(identity_ids),
                 "contact_id": str(contact_id),
             },
         )

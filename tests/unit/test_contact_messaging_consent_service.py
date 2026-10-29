@@ -916,6 +916,46 @@ async def test_pending_opt_out_intent_on_unmapped_alias_matches_sender_identity(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("identity_field", ["waha_contact_id", "waha_participant_id"])
+async def test_pending_opt_out_veto_matches_stable_waha_identity_ids(
+    db_session, test_contact, identity_field
+):
+    """An unmapped STOP alias still vetoes sends when only a WAHA identity matches."""
+    from app.services.inbound_idempotency_service import InboundIdempotencyService
+
+    identity = f"stable-{identity_field}@lid"
+    setattr(test_contact, identity_field, identity)
+    test_contact.chat_id = None
+    await db_session.flush()
+
+    resolved = await ContactMessagingConsentService(
+        db_session
+    ).resolve_contact_ids_for_sender_identity_ids((identity,))
+    assert resolved == (str(test_contact.id),)
+
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, sender_identity_ids,
+                sender_contact_ids, opt_out_intent, status, claim_token, updated_at
+            )
+            VALUES (
+                :event_key, 'test', 'unmapped-stop-alias@lid', :event_key,
+                jsonb_build_array(CAST(:sender_identity AS text)), '[]'::jsonb,
+                TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"event_key": f"stable-waha-stop-{identity_field}", "sender_identity": identity},
+    )
+
+    assert await ContactMessagingConsentService(
+        db_session
+    ).has_pending_opt_out_intent_for_contact(int(test_contact.id)) is True
+
+
+@pytest.mark.asyncio
 async def test_pending_stop_receipt_prevents_contact_chat_alias_remap(db_session, test_contact):
     """A pending STOP remains discoverable when its Contact receives another alias."""
     original_chat_id = test_contact.chat_id or test_contact.whatsapp_id
