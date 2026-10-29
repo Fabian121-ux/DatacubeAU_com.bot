@@ -45,12 +45,23 @@ class FakeContactSession:
         if str(statement).lstrip().upper().startswith("SELECT EXISTS"):
             return FakeScalar(False)
 
-        # _mapped_direct_chat_ids selects two scalar columns, while the router's
-        # contact lookups select the ORM entity. Preserve each result shape.
+        # SQLAlchemy exposes one column description per selected scalar expression.
+        # Preserve tuple/scalar result shapes for consent-service projections while
+        # keeping select(Contact) entity lookups as ORM objects in this fake session.
         descriptions = getattr(statement, "column_descriptions", ())
-        if len(descriptions) == 2:
-            row = None if self.row is None else (self.row.whatsapp_id, self.row.chat_id)
-            return FakeScalar(row)
+        names = [description.get("name") for description in descriptions]
+        scalar_columns = {
+            "id",
+            "whatsapp_id",
+            "chat_id",
+            "waha_contact_id",
+            "waha_participant_id",
+        }
+        if names and all(name in scalar_columns for name in names):
+            if self.row is None:
+                return FakeScalar(None)
+            values = tuple(getattr(self.row, name) for name in names)
+            return FakeScalar(values[0] if len(values) == 1 else values)
         return FakeScalar(self.row)
 
     def add(self, row):
