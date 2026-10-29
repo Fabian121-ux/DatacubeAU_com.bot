@@ -575,8 +575,8 @@ def test_sync_target_requires_explicit_username_before_psql_when_pguser_is_set(
     psql_marker = tmp_path / "psql-was-called"
     fake_psql = fake_bin / "psql"
     fake_psql.write_text(
-        "#!/bin/sh\\n"
-        'printf "called\\n" >> "$PSQL_MARKER"\\n',
+        "#!/bin/sh\n"
+        'printf "called\n" >> "$PSQL_MARKER"\n',
         encoding="utf-8",
     )
     fake_psql.chmod(0o755)
