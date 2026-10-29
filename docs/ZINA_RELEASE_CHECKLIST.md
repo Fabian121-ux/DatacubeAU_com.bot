@@ -1,15 +1,17 @@
 # Zina Release Checklist
 
-## Live release-verification delta — 2026-10-28 13:25 UTC (partial; NOT TEST READY)
+## Live release-verification delta — 2026-10-29 12:17 WAT (partial; NOT TEST READY)
 
-This is the latest inspected status overlay. The detailed checklist below is older and must be revalidated against current source before release.
+This snapshot supersedes the 2026-10-28 13:25 UTC overlay. The older checklist below is historical; do not use it as evidence of current readiness. The exact heads/runs were checked before this documentation update, and the resulting PR #59 docs commit needs its own exact-head CI check.
 
-- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last known main Tests run [#405](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08. October feature-branch tests do not establish current main-green.
-- **Current deployment preflight:** PR #62 head `023f6968303417e0f5905dce4c3bb37e47c61b55`; [Tests #628](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40695780640) passed 838 tests, 1 warning, 76.01% coverage. The new libpq `options` rejection is covered, including proof the unsafe URL is rejected before `psql`. This run validates migrations 001–033 only.
-- **Migration plan:** #48=034, #50=035, #49=036–037, #60=038–040. The integrated candidate has not passed fresh 001–040, installed 033→040 upgrade/re-run, or DB-leakage validation. PR #61's sequence gate and PR #62's runner preflight are unmerged.
-- **P0 consent:** PR #60 head `dd944fdff88afe6de64a82b3dff40786f99f8f26`; [Tests #622](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40643929083) passed 900 tests, 76.41% coverage, but the branch still has 3 unresolved review threads and is draft. Issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) still requires independent review and a human decision on the dispatch-reservation boundary.
-- **Other unresolved architecture:** PR #49 has 1 unresolved retired-key thread; PR #50 has 2 unresolved identity-introduction/legacy-provenance threads. The original migration-number collision is renumbered on the candidate heads but is not integrated/validated end to end.
-- **Safety:** no real WhatsApp sends, production database mutations, production WAHA reconnection, or private-media retention activation occurred. **NOT TEST READY.**
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main Tests run [#34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. This is historical, not current October release-candidate proof.
+- **Latest integrated deployment-preflight candidate:** PR #62 head `97f30242198cd78097983c74ff0062c96c016605`; [Tests #40857332668](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40857332668) succeeded on 2026-10-29: **843 passed, 1 warning, 76.01% coverage**. The sequence preflight passed and migrations 001–033 applied on isolated CI PostgreSQL. This does not cover feature migrations 034–040 as a single chain.
+- **Current P0 candidate:** PR #60 head `1644e2a338b53c7ec709d91163187d9d0b4af940`; [Tests #40849618517](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40849618517) succeeded. It remains draft with 3 unresolved inline review threads and is not merged. Unknown/revoked consent and terminal opt-out must remain denied at the final worker fence; the contact-wide STOP policy and current-mapping lock/fence are not yet release-proven.
+- **Migration plan:** #48=034, #50=035, #49=036–037, #60=038–040. The old duplicate migration number is reconciled on the current feature branches, but the combined chain remains unverified. PR #61's contiguous-numbering gate and PR #62's deployment preflight are open. PR #57's seed-policy changes overlap with #62 and should not merge separately while the integrated candidate is under review.
+- **Review state:** unresolved inline threads remain on #49 (1), #50 (2), #57 (1), #59 (1 stale-snapshot thread), #60 (3), and #62 (5). #48, #55, #61, and #63 have no unresolved inline threads; this is not equivalent to independent approval.
+- **Identity decisions:** PR #50 still needs an explicit decision for tombstone-aware behavior across all introduction callers and a reliable legacy provenance policy. Do not use timestamp equality as proof a default row was never touched.
+- **Mechanical gates still open:** fresh PostgreSQL migrations 001–040; installed 033→040 upgrade and second-run no-op; exact-candidate DB-leakage audit; full P0 adversarial matrix; independent review of blocking consent/identity/deployment findings; controlled-test plan and readiness sign-off. Main's workflow still only applies 001–033 and the DB-leakage CI PR #55 is not merged.
+- **Safety:** no real WhatsApp sends, production DB mutations, production WAHA reconnection, private-media retention activation, or PR merges occurred. **NOT TEST READY.**
 
 ## Live release-verification delta — 2026-10-28 06:30 UTC (partial; NOT TEST READY)
 
