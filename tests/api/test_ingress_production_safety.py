@@ -308,6 +308,43 @@ async def test_event_without_source_message_id_is_never_routed(ingress):
     assert routed == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("from_me", "body_text"),
+    [(False, "hello"), (True, ".status")],
+    ids=["ordinary-contact-message", "owner-command"],
+)
+async def test_direct_webhook_without_message_id_fails_closed_before_side_effects(
+    ingress, db_session, from_me, body_text
+):
+    """The direct WAHA route must not bypass the gateway's stable-ID guard."""
+    _gateway_app, routed = ingress
+    app = FastAPI()
+    app.include_router(inbound.router)
+    event = _message_event(message_id=None, from_me=from_me, body=body_text)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://ingress",
+    ) as client:
+        response = await client.post("/webhooks/waha", json=event)
+    body = response.json()
+
+    assert body["status"] == "ignored"
+    assert body["reason"] == "missing_source_message_id"
+    assert routed == []
+    receipt_count = (
+        await db_session.execute(
+            text(
+                "SELECT count(*) FROM inbound_webhook_receipts "
+                "WHERE chat_id = :chat_id AND message_id IS NULL"
+            ),
+            {"chat_id": CONTACT_ID},
+        )
+    ).scalar_one()
+    assert receipt_count == 0
+
+
 # --------------------------------------------------------------------------------------
 # One canonical source -> at most one reply candidate
 # --------------------------------------------------------------------------------------
