@@ -1,5 +1,35 @@
 # Zina Release Checklist
 
+
+## Live release-verification delta — 2026-10-30 12:16 WAT (partial; NOT TEST READY)
+
+This supersedes the 2026-10-29 22:18 UTC snapshot above. The full PR-head and review-thread table is in [ZINA_IMPLEMENTATION_ROADMAP.md](ZINA_IMPLEMENTATION_ROADMAP.md); this checklist records the current release gate.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033, last commit and latest main Tests run on 2026-09-08. The branch endpoint reports `protected=false`.
+- Exact-head CI is green on all ten open PRs, but every result is branch-local. PR #60 (915 passed, 76.43%) applies 001–033 plus 038–040, not the integrated chain. PR #55's schema/leakage audit is green on 001–033 only. PR #62's migration preflight and 001–033 test are green, but it still has seven unresolved review threads.
+- Current unresolved/total review threads: #48 0/15; #49 1/80; #50 2/10; #55 0/0; #57 1/1; #59 1/1; #60 5/5; #61 0/0; #62 7/7; #63 0/0. The #57/#62 deployment-runner overlap must remain coordinated.
+- Ordered feature migrations are #48=034, #50=035, #49=036–037, #60=038–040. The original 034 collision is resolved in branch trees; the integrated 001–040 proof is not.
+
+### Mechanical gates — current candidate
+
+- [ ] Fresh contiguous PostgreSQL migrations 001–040.
+- [ ] Installed database upgrade 033→040, second-run no-op, and checksum verification.
+- [ ] Exact integrated-candidate full pytest/coverage and P0 adversarial matrix.
+- [ ] Integrated schema audit and zero DB leakage, including Contact and raw cleanup tables.
+- [ ] Restricted runtime DB role proven unable to alter/disable consent-history triggers or truncate the audit table.
+- [ ] Independent review of the five P0 consent threads and seven deployment threads; independent review of the two Identity Registry policy decisions.
+- [ ] Main-branch governance/protection configured and independently verified.
+
+### Product/architecture gates
+
+- [ ] Contact consent/terminal opt-out independently reviewed and integrated. Unknown, expired, revoked, ambiguous, or opted-out external recipients must fail closed at the final worker fence. The dispatch-reservation boundary must be explicitly accepted; a STOP after final reservation cannot retract a request already entering WAHA, but must veto later sends and replay.
+- [ ] Runtime database role is separate from the migration/table-owner role. Current Compose still gives API and migrate the same `.env.production`; current example URLs both use `postgres`. A table owner can disable the trigger, so the append-only SQL trigger alone is not a security boundary.
+- [ ] Identity Registry lifecycle is consistent across all introduction paths; legacy default provenance uses a trustworthy policy, not `updated_at = created_at`. Main already has delete/search/single-fetch and source/entity-type metadata from migration 033; dashboard management remains incomplete.
+- [ ] Command Center governs all custom commands; FAQ per-entry CRUD; Knowledge Base edit/delete/disable; Scheduled Actions and Private Media dashboard management; Internet goes through the single Tool Registry/Authority path; conversation observability remains complete and explainable.
+- [ ] Outbound Message Library remains foundation-only until P0 and migration integration pass. Private-media retention remains OFF.
+
+The controlled WhatsApp test plan is not authorized. Do not perform owner self-DM or external-contact testing until every blocking gate above is satisfied and Fabian explicitly authorizes the staged plan. No real WAHA sends, production DB mutation, or production WAHA reconnection during unattended engineering. **NOT TEST READY.**
+
 ## Live release-verification delta — 2026-10-29 22:18 UTC (partial; NOT TEST READY)
 
 The detailed checklist below contains historical domain assertions and must not override this fresh gate state. Current `main`, open PR heads, Actions, workflow YAML, migrations, deployment runner, and GitHub review-thread resolution flags were re-queried.
