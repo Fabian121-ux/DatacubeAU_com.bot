@@ -60,3 +60,30 @@ def test_legacy_audit_rows_can_derive_internet_used_from_diagnostics():
 
     assert internet_used_from_audit_details(legacy) is True
     assert internet_used_from_audit_details({"internet_used": False, **legacy}) is False
+
+
+def test_malformed_or_non_finite_internet_hit_counts_fail_closed():
+    for value in ("unknown", "1", True, float("nan"), float("inf"), float("-inf")):
+        diagnostics = {
+            "source": "Internet",
+            "internet": {"success": True},
+            "router_analytics": {"hits": {"internet": value}},
+        }
+        assert internet_used_from_diagnostics(diagnostics) is False
+
+
+def test_malformed_explicit_internet_used_flag_fails_closed_without_legacy_fallback():
+    legacy = {
+        "source_diagnostics": {
+            "source": "Internet",
+            "internet": {"success": True},
+        }
+    }
+
+    for value in ("false", "true", 1, None, []):
+        assert internet_used_from_audit_details(
+            {"internet_used": value, **legacy}
+        ) is False
+
+    assert internet_used_from_audit_details({"internet_used": True, **legacy}) is True
+    assert internet_used_from_audit_details({"internet_used": False, **legacy}) is False

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
 def _positive_hit_count(value: Any) -> bool:
-    try:
-        return float(value or 0) > 0
-    except (TypeError, ValueError):
-        return bool(value)
+    # Diagnostics are persisted JSON. Only JSON numeric values are evidence;
+    # booleans, numeric strings, NaN, and infinities fail closed.
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value > 0
+    if isinstance(value, float):
+        return math.isfinite(value) and value > 0
+    return False
 
 
 def internet_used_from_diagnostics(source_diagnostics: dict[str, Any] | None) -> bool:
@@ -30,7 +36,8 @@ def internet_used_from_audit_details(details: dict[str, Any] | None) -> bool:
     """Read the explicit flag when present, with a safe legacy-row fallback."""
     audit_details = details if isinstance(details, dict) else {}
     if "internet_used" in audit_details:
-        return bool(audit_details["internet_used"])
+        explicit_value = audit_details["internet_used"]
+        return explicit_value if isinstance(explicit_value, bool) else False
 
     diagnostics = audit_details.get("source_diagnostics")
     if isinstance(diagnostics, dict):
