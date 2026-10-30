@@ -88,6 +88,30 @@ def validated_database_url() -> str:
     return value
 
 
+def audit_model_inventory(cleanup_models):
+    """Count Contact independently of fixture teardown membership.
+
+    Contact is deliberately removed from CLEANUP_MODELS by the consent branch so
+    teardown can clear append-only consent history before deleting Contact rows.
+    The leakage audit must still inspect it after the suite finishes.
+    """
+    from app.models.schema import Contact
+
+    return tuple(dict.fromkeys((*cleanup_models, Contact)))
+
+
+async def collect_model_leaks(connection, models) -> list[tuple[str, int]]:
+    """Return non-empty ORM tables from the explicit audit inventory."""
+    leaks: list[tuple[str, int]] = []
+    for model in models:
+        count = int(
+            (await connection.execute(select(func.count()).select_from(model))).scalar_one()
+        )
+        if count:
+            leaks.append((model.__tablename__, count))
+    return leaks
+
+
 async def main() -> int:
     # Validate before importing conftest: it imports application modules, so the
     # guard must run before any of that import-time configuration can touch a URL.
@@ -98,10 +122,12 @@ async def main() -> int:
     leaks: list[tuple[str, int]] = []
     try:
         async with engine.connect() as connection:
-            for model in CLEANUP_MODELS:
-                count = int((await connection.execute(select(func.count()).select_from(model))).scalar_one())
-                if count:
-                    leaks.append((model.__tablename__, count))
+            leaks.extend(
+                await collect_model_leaks(
+                    connection,
+                    audit_model_inventory(CLEANUP_MODELS),
+                )
+            )
 
             raw_tables = tuple(CLEANUP_RAW_TABLES) + ("outbound_message_set_keys",)
             for table in raw_tables:
@@ -131,7 +157,7 @@ async def main() -> int:
             print(f"- {table}: {count} row(s)")
         return 1
 
-    print("Database leakage audit passed: all CLEANUP_MODELS and existing CLEANUP_RAW_TABLES are empty.")
+    print("Database leakage audit passed: all audited ORM models (including contacts) and existing CLEANUP_RAW_TABLES are empty.")
     return 0
 
 
