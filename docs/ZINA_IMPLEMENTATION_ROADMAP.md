@@ -1,5 +1,56 @@
 # Zina Implementation Roadmap
 
+## Live verification delta — 2026-10-30 14:21 WAT (partial; NOT TEST READY)
+
+This snapshot supersedes the 12:16 WAT snapshot below. It was re-queried from GitHub at this timestamp: main ref/commit history, all open PR heads, exact-head Tests runs, GraphQL inline review-thread resolution flags, main workflow YAML, migration directories, deployment runner and Compose environment.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last commit 2026-09-08. Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that exact SHA on 2026-09-08. Main contains migrations 001–033 only. The branch endpoint reports `protected=false`; repository rulesets returned `[]`; the classic branch-protection endpoint returned 403 to this integration, so no stronger protection is claimed.
+- **Main workflow:** `.github/workflows/tests.yml` at blob `445b1fd6` uses PostgreSQL 16, applies `bot_core/migrations/*.sql` lexically, then runs pytest with a 57% coverage floor. Main's workflow does not yet include the sequence preflight, deployment schema audit, post-test DB-leakage audit, 20-minute timeout, or faulthandler diagnostics now present on feature branches. Main's deployment runner also has no contiguous-sequence preflight.
+- **Latest overall observed Tests run:** [41047370340](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41047370340), exact PR #59 pre-refresh head `a2a9e9295cd04c98cbd397667a4e9fd5fb4d1f5b`: **797 passed, 1 warning, 76.01% coverage**. It applied migrations 001–033 only. This new documentation commit has not yet run; do not transfer the prior result to the new head.
+
+| Open PR | Current exact head | Exact-head Tests run | Result | Unresolved / total threads |
+|---|---|---:|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | success | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `f78bc9bb` | [40368630895](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40368630895) | success | 2 / 10 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) | success | 0 / 0 |
+| [#57 Deployment seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | success | 1 / 1 |
+| [#59 Release docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `a2a9e929` (pre-refresh) | [41047370340](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41047370340) | success | 1 / 1 |
+| [#60 Contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9071c09d` | [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) | success | 5 / 5 |
+| [#61 Migration sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | success | 0 / 0 |
+| [#62 Deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `854439af` | [40957674923](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40957674923) | success | 7 / 7 |
+| [#63 Conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `c6c493d2` | [40461018945](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40461018945) | success | 0 / 0 |
+
+These are branch-local successes, not one integrated release-candidate run. A green exact-head workflow does not resolve review threads or prove the combined migration chain.
+
+### P0 and deployment findings
+
+- **#60** adds contact-specific consent and terminal opt-out checks at the final outbound worker fence. Exact-head run #41019860297 passed **915 tests, 1 warning, 76.43% coverage**; its workflow applied 001–033 and 038–040, deliberately skipping 034–037. The current code/test follow-ups cover contact remapping, contact-wide alias opt-out, missing stable message IDs, and UPDATE/DELETE/TRUNCATE rejection, but all five inline threads remain unresolved for independent verification.
+- **#60 append-only boundary is not yet tamper-resistant:** migration 038's triggers can be disabled by the table owner. The current `.env.example` assigns the same `postgres` role to `DATABASE_URL` and `DATABASE_URL_SYNC`; current Compose supplies the same `.env.production` to both `api` and `migrate`. PR #62's current Compose still does the same. A restricted runtime role and migration-owner separation have not been provisioned or tested. This is a cross-PR P1 blocker, not fixed by the successful #60 CI run.
+- **STOP reservation semantics:** a STOP receipt committed before the worker's final pending-intent read blocks the send. Once that final read returns false, the one transport attempt is treated as reserved/in-flight and cannot be reliably cancelled after network entry; later queue attempts/replays must be blocked, and uncertain delivery is never blindly retried. Keep the PR draft until an independent reviewer verifies the two sides of this boundary and the product owner explicitly accepts the stated semantics.
+- **#62** has seven unresolved deployment/migration review threads. Its latest exact-head run #40957674923 passed **846 tests, 1 warning, 76.01% coverage** on migrations 001–033 with migration-sequence and seed-policy checks. It does not prove feature migrations 034–040. Remaining review concerns include database URL/audit-target agreement, libpq target/session overrides, multi-host/role validation, and the shared API/migration environment.
+- **#55** exact-head run #41026581000 passed **815 tests, 1 warning, 76.01% coverage**; migrations 001–033, schema audit, and the post-test leakage audit passed. The audit includes Contact rows. This is not a leakage result for the combined 001–040 candidate.
+- **#50** retains two architectural decisions: propagate the unavailable-identity policy consistently through all introduction paths (including project/Datacube claims), and choose trustworthy provenance for legacy default rows. Do not infer legacy defaults from `updated_at = created_at`; pre-upgrade reads may already have changed timestamps.
+- **#49** remains a foundation only: no live producer/selector/dashboard integration is evidenced; one retired-set-key review thread remains unresolved. **#48** remains metadata/observation only; private-byte retention stays OFF.
+
+### Migration order and proof boundary
+
+The branch migration directories currently establish the proposed order:
+1. #48 — 034 `private_media_artifact_source_identity`
+2. #50 — 035 `identity_registry_default_backfill`
+3. #49 — 036 `outbound_message_library`, 037 `outbound_message_set_key_registry`
+4. #60 — 038 `contact_messaging_consent`, 039 `contact_messaging_consent_sender_identity`, 040 `contact_messaging_consent_sender_contact_ids`
+
+The original duplicate 034 allocation is reconciled in these feature branches. Main still has only 001–033. No exact-head run proves a single contiguous fresh 001–040 chain, an installed 033→040 upgrade, second-run no-op/checksum behavior, or schema/leakage audit on the combined candidate.
+
+### Decisions and next safe work
+
+- Human decisions: choose a restricted runtime-role credential/provisioning contract distinct from the migration/table-owner role; explicitly accept or revise the STOP dispatch-reservation boundary; decide whether introduction text must gate `projects` and `datacube_au` facts; approve a trustworthy legacy-provenance policy; and configure main branch protection/required independent review.
+- Next engineering step: keep the existing PRs open; reconcile the runtime-role design with the #60 consent migration and #62 deployment runner before adding another migration or wiring outbound-library selection. Then build one integration candidate and run fresh 001–040, installed 033→040 upgrade, no-op/checksum, full tests, P0 matrix, and combined leakage audit on that exact head.
+- This docs PR still has one stale-snapshot review thread. This refresh leaves it unresolved for independent review; it is not a self-approval or merge request.
+
+**Release status: NOT TEST READY.** No production DB operation, production WAHA reconnection, or real WhatsApp send occurred.
+
 
 ## Live verification delta — 2026-10-30 12:16 WAT (partial; not release approval)
 
