@@ -1,3 +1,54 @@
+## Latest live release-verification delta — 2026-10-30 15:40 WAT (partial; NOT TEST READY)
+
+This supersedes the 15:21 WAT snapshot below. All ten open PR heads, exact-head Tests runs, review-thread counts, main workflow YAML, migration allocation, and deployment configuration were re-queried after PR #62 gained the schema/leakage audit steps.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033 only; main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA. Main branch endpoint reports `protected=false`.
+- Latest overall Tests run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) passed on PR #62 exact head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`: **864 passed, 1 warning, 76.01% coverage**. Migration-sequence preflight, 001–033 migrations, ORM schema audit, full pytest, and post-test DB-leakage audit all passed.
+- PR #59 exact head `05e4bfb` passed [41072066479](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41072066479): 797 passed, 76.01%, migrations 001–033 only.
+- Main `.github/workflows/tests.yml` remains unchanged: lexical migrations + 57% pytest gate, without sequence preflight, schema audit, leakage audit, or job timeout. Main deployment runner still lacks sequence preflight and applies seeds unconditionally.
+
+| PR | Exact head | Exact-head Tests run | Result | Unresolved / total threads |
+|---|---|---:|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | success | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `f78bc9bb` | [40368630895](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40368630895) | success | 2 / 10 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) | success | 0 / 0 |
+| [#57 Deployment seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | success | 1 / 1 |
+| [#59 Release docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `05e4bfb` | [41072066479](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41072066479) | success | 1 / 1 |
+| [#60 Contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9071c09d` | [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) | success | 5 / 5 |
+| [#61 Migration sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | success | 0 / 0 |
+| [#62 Deployment integration + CI audits](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) | success | 7 / 7 |
+| [#63 Conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `c6c493d2` | [40461018945](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40461018945) | success | 0 / 0 |
+
+All listed run records match current PR head SHAs. These remain branch-local checks; no single run proves the integrated feature migration chain.
+
+### Mechanical release gates
+
+- [ ] One exact integrated candidate applies contiguous migrations 001–040 from an empty PostgreSQL database.
+- [ ] Installed database upgrade 033→040, second-run no-op, and checksum verification.
+- [ ] Exact integrated-candidate full pytest/coverage and P0 adversarial matrix.
+- [ ] Combined-candidate schema audit and zero DB leakage, including Contact and raw cleanup tables.
+- [ ] API runtime DB role is distinct from migration/table owner and cannot UPDATE/DELETE/TRUNCATE or ALTER/disable consent-history triggers; prove with disposable PostgreSQL.
+- [ ] Independent review of #60's five P0 threads, #62's seven deployment threads, #50's two Identity Registry decisions, and remaining #49/#57/#59 findings.
+- [ ] Main-branch protection and required independent review configured and verified.
+
+### Current P0/product blockers
+
+- **#60** remains unmerged; exact-head run [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) passed 915 tests at 76.43% but applied 001–033 plus 038–040, skipping 034–037. Current mapping/alias-opt-out/missing-ID/trigger regressions are present; all five review threads remain unresolved. The trigger owner can still disable it.
+- **#62** now combines deployment seed safety, contiguous migration preflight, ORM schema audit, and Contact-inclusive post-test leakage audit; exact-head run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) passed 864 tests at 76.01% on 001–033. Seven review threads remain unresolved and API/migrate still share .env.production, so the restricted runtime-role boundary is absent.
+- **STOP reservation semantics** need explicit product-owner acceptance: a STOP before final reservation vetoes the send; after reservation, the in-flight attempt may not be retractable, but later sends/replays must be blocked.
+- Migration allocations are reconciled as #48=034, #50=035, #49=036–037, #60=038–040. The combined 001–040 fresh/upgrade/no-op proof remains unchecked.
+- **#50** still needs decisions on project/Datacube introduction claims and legacy provenance. **#49** remains foundation-only. **#48** remains metadata-only; retention OFF.
+- **#55**'s audit is now included in #62, but #55 remains open for history and must not be merged independently while #62 is reviewed. Its earlier exact-head audit run covered 001–033 only. **#63** remains unmerged without independent review.
+
+### Human decision required
+
+Choose the runtime-role provisioning/rotation contract for existing deployments; accept or revise STOP reservation semantics; decide whether introduction text must gate `projects` and `datacube_au`; approve a legacy provenance policy; and configure required independent review on main.
+
+**NOT TEST READY.** Controlled WhatsApp testing remains unauthorized. No production database mutation, production WAHA reconnection, or real WAHA send occurred.
+
+---
+
 ## Latest live release-verification delta — 2026-10-30 15:21 WAT (partial; NOT TEST READY)
 
 This supersedes the 14:21 WAT snapshot below. The current main ref, all ten open PR heads, their exact-head workflow runs, review-thread counts, main workflow YAML, migrations, and deployment configuration were re-queried. No merge or live WhatsApp test is authorized by this snapshot.
