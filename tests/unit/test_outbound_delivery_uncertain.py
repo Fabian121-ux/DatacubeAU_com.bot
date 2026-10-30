@@ -840,3 +840,241 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
         ).one()
         assert receipt.opt_out_intent is True
         assert receipt.status == "processing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_followups(
+    db_session, test_contact, monkeypatch, uncertain
+):
+    """A STOP after the final veto read cannot cancel the reserved attempt, but vetoes later rows."""
+    now = utcnow()
+    chat_id = "222@c.us"
+    test_contact.whatsapp_id = chat_id
+    test_contact.chat_id = chat_id
+    await db_session.flush()
+
+    source = Message(
+        contact_id=test_contact.id,
+        chat_id=chat_id,
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(source)
+    await db_session.flush()
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-reserved-send",
+        owner_identity="OWNER",
+    )
+
+    reply_text = "one attempt already reserved"
+    queue = OutboundMessage(
+        chat_id=chat_id,
+        message_text=reply_text,
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": source.id,
+            "contact_id": test_contact.id,
+            "content_sha256": OutboundAuthorizationService.content_hash(reply_text),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.commit()
+
+    contact_id = int(test_contact.id)
+    queue_id = int(queue.id)
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    monkeypatch.setattr(background_workers, "SessionLocal", factory)
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+
+    async def _authorized(self, message):
+        context = self.context_from_queue_message(message)
+        assert context is not None
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
+
+    async def _safe(self, message, *, now=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+
+    reservation_reached = asyncio.Event()
+    release_reserved_attempt = asyncio.Event()
+    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent_for_contact
+
+    async def pause_after_final_veto_read(service, locked_contact_id):
+        pending = await original_pending_check(service, locked_contact_id)
+        assert pending is False, "the reservation boundary must be reached with no prior STOP"
+        reservation_reached.set()
+        await release_reserved_attempt.wait()
+        return pending
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "has_pending_opt_out_intent_for_contact",
+        pause_after_final_veto_read,
+    )
+    client = _UncertainClient() if uncertain else _RecordingClient()
+    worker_task = asyncio.create_task(background_workers._deliver_due_outbound_messages(client))
+    route_task = None
+
+    event = {
+        "event": "message",
+        "session": "test",
+        "payload": {
+            "id": f"STOP-RESERVED-{contact_id}",
+            "chatId": chat_id,
+            "from": chat_id,
+            "senderId": chat_id,
+            "fromMe": False,
+            "body": "STOP",
+        },
+    }
+    event_key = f"test:{chat_id}:STOP-RESERVED-{contact_id}"
+
+    async def route_stop():
+        async with factory() as route_session:
+            idempotency = InboundIdempotencyService(route_session)
+            claimed = await idempotency.claim(
+                InboundReceipt(
+                    event_key=event_key,
+                    session_name="test",
+                    chat_id=chat_id,
+                    message_id=f"STOP-RESERVED-{contact_id}",
+                    sender_identity_ids=(chat_id,),
+                    sender_contact_ids=(str(contact_id),),
+                    opt_out_intent=True,
+                )
+            )
+            assert claimed is True
+            result = await InboundRouter(route_session).process_event(event)
+            await idempotency.mark_completed(event_key)
+            return result
+
+    try:
+        await asyncio.wait_for(reservation_reached.wait(), timeout=5)
+        route_task = asyncio.create_task(route_stop())
+
+        # The receipt must commit while STOP waits behind the worker's already-won
+        # transaction-scoped reservation lock. This proves the ordering, not delivery.
+        async def wait_for_committed_receipt():
+            for _ in range(100):
+                if route_task.done():
+                    await route_task
+                    raise AssertionError("STOP routing completed before the reserved attempt released its lock")
+                async with factory() as observer:
+                    receipt = (
+                        await observer.execute(
+                            text(
+                                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                                "WHERE event_key = :event_key"
+                            ),
+                            {"event_key": event_key},
+                        )
+                    ).one_or_none()
+                    if receipt is not None:
+                        assert receipt.opt_out_intent is True
+                        assert receipt.status == "processing"
+                        return
+                await asyncio.sleep(0.01)
+            raise AssertionError("STOP receipt did not commit while waiting on the reservation lock")
+
+        await asyncio.wait_for(wait_for_committed_receipt(), timeout=5)
+        assert not route_task.done(), "STOP must wait for the already-reserved attempt outcome"
+    finally:
+        release_reserved_attempt.set()
+        tasks = [worker_task]
+        if route_task is not None:
+            tasks.append(route_task)
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=15,
+        )
+
+    assert not isinstance(results[0], BaseException), repr(results[0])
+    assert results[0] == 1
+    if route_task is not None:
+        assert len(results) == 2
+        assert not isinstance(results[1], BaseException), repr(results[1])
+        assert results[1]["action"] == "ignored"
+
+    await db_session.refresh(queue)
+    if uncertain:
+        assert isinstance(client, _UncertainClient)
+        assert client.calls == 1
+        assert queue.status == "deferred"
+        assert queue.retry_count == 0
+        assert "automatic replay blocked" in (queue.error_message or "")
+    else:
+        assert isinstance(client, _RecordingClient)
+        assert client.calls == [(chat_id, reply_text)]
+        assert queue.status == "sent"
+
+    async with factory() as verify_session:
+        consent = (
+            await verify_session.execute(
+                select(ContactMessagingConsent)
+                .where(ContactMessagingConsent.contact_id == contact_id)
+                .where(ContactMessagingConsent.exact_chat_id == chat_id)
+            )
+        ).scalar_one()
+        assert consent.status == "opted_out"
+        receipt = (
+            await verify_session.execute(
+                text(
+                    "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                    "WHERE event_key = :event_key"
+                ),
+                {"event_key": event_key},
+            )
+        ).one()
+        assert receipt.opt_out_intent is True
+        assert receipt.status == "completed"
+
+    # A later worker pass must not replay an uncertain first attempt.
+    assert await background_workers._deliver_due_outbound_messages(client) == 0
+    assert client.calls == (1 if uncertain else [(chat_id, reply_text)])
+
+    # A distinct later queue row is still denied by the now-terminal contact opt-out.
+    later_text = "must be blocked after STOP completes"
+    async with factory() as insert_session:
+        later_queue = OutboundMessage(
+            chat_id=chat_id,
+            message_text=later_text,
+            formatting_json={
+                "delivery_policy": "approval_required",
+                "inbound_message_id": source.id,
+                "contact_id": contact_id,
+                "content_sha256": OutboundAuthorizationService.content_hash(later_text),
+                "response_category": "normal_reply",
+            },
+            status="pending",
+            retry_count=0,
+            max_retries=3,
+            next_attempt_at=utcnow() - timedelta(seconds=1),
+            updated_at=utcnow() - timedelta(seconds=1),
+        )
+        insert_session.add(later_queue)
+        await insert_session.commit()
+        later_queue_id = int(later_queue.id)
+
+    assert await background_workers._deliver_due_outbound_messages(client) == 1
+    assert client.calls == (1 if uncertain else [(chat_id, reply_text)])
+    async with factory() as verify_session:
+        later_queue = (
+            await verify_session.execute(
+                select(OutboundMessage).where(OutboundMessage.id == later_queue_id)
+            )
+        ).scalar_one()
+        assert later_queue.status == "deferred"
+        assert "contact consent denied" in (later_queue.error_message or "")
