@@ -1,3 +1,26 @@
+## Latest live release-verification delta — 2026-10-30 (after Tests run 41080836429; partial; NOT TEST READY)
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08, with migrations 001–033. Main reports `protected=false`; no repository rulesets were returned.
+- Latest observed exact-head Tests run [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) passed on PR #63 head `13fad868affe01d6069f4288481f8cd8dd341c62`: 803 passed, 1 warning, 76.08% coverage; it applied 001–033 only. The PR #55 DB-leakage audit is not part of main's workflow.
+- PR #63's malformed internet audit-value finding is fixed and exact-head CI is green; one review thread remains unresolved for independent review.
+- Open PR review-thread counts (unresolved / total): #48 0/15; #49 1/80; #50 2/10; #55 0/0; #57 1/1; #59 1/1; #60 5/5; #61 0/0; #62 7/7; #63 1/1. No self-approval or thread resolution is implied.
+- Migration order is now allocated as #48=034, #50=035, #49=036–037, #60=038–040. **No exact candidate has proved the integrated fresh 001–040 chain, installed 033→040 upgrade, second-run no-op/checksums, or combined leakage gate.**
+- PR #60's exact-head CI passed 915 tests at 76.43%, but its branch applies 001–033 plus 038–040 and skips 034–037. Contact consent is not yet a main-branch guarantee; five review threads remain unresolved.
+- PR #62's exact-head CI passed 864 tests at 76.01% with migration preflight, 001–033, schema audit, and leakage audit. Seven deployment threads remain unresolved; API and migrate still share `.env.production`.
+- **Restricted runtime database role remains a release blocker.** The API currently uses the table-owner credentials shown in `.env.example`; trigger guards can be disabled by the owner. A distinct restricted runtime role and disposable-PostgreSQL privilege proof are not implemented.
+- **P0/architecture decisions:** accept or revise the STOP dispatch-reservation boundary; approve the migration-owner/runtime-role split and credential bootstrap; resolve Identity Registry introduction behavior and legacy provenance policy. PR #50 still has two unresolved Identity Registry threads.
+- [ ] Fresh contiguous migrations 001–040 on one exact integration candidate.
+- [ ] Installed 033→040 upgrade, second-run no-op, and checksum verification.
+- [ ] Exact-candidate full pytest/coverage, P0 adversarial matrix, schema audit, and zero DB leakage.
+- [ ] Restricted runtime role cannot UPDATE/DELETE/TRUNCATE or ALTER/disable consent-history triggers.
+- [ ] Independent review of the five #60, seven #62, two #50, and remaining #49/#57/#59/#63 review threads.
+- [ ] Main-branch required-review governance configured and verified.
+- [ ] Controlled test plan written and explicitly authorized by Fabian.
+
+**NOT TEST READY.** No production database operation, production WAHA reconnection, private-media retention activation, or real WhatsApp action occurred.
+
+---
+
 ## Latest live release-verification delta — 2026-10-30 15:40 WAT (partial; NOT TEST READY)
 
 This supersedes the 15:21 WAT snapshot below. All ten open PR heads, exact-head Tests runs, review-thread counts, main workflow YAML, migration allocation, and deployment configuration were re-queried after PR #62 gained the schema/leakage audit steps.
