@@ -1,5 +1,45 @@
 # Zina Release Checklist
 
+## Live release-verification delta — 2026-10-30 14:21 WAT (partial; NOT TEST READY)
+
+This supersedes the 12:16 WAT snapshot below. Current main, all open PR heads, exact-head Actions runs, inline review-thread resolution state, workflow YAML, migration directories, and deployment/Compose configuration were re-queried.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033, last commit and latest main Tests run on 2026-09-08. Main run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA. Branch endpoint: `protected=false`; rulesets: `[]`; classic protection endpoint is not accessible through this integration.
+- Latest overall Tests run is [41047370340](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41047370340) on the pre-refresh PR #59 head `a2a9e9295cd04c98cbd397667a4e9fd5fb4d1f5b`: **797 passed, 1 warning, 76.01% coverage**, migrations 001–033 only. The new docs commit requires its own exact-head run.
+- Current unresolved / total review threads: #48 0/15; #49 1/80; #50 2/10; #55 0/0; #57 1/1; #59 1/1; #60 5/5; #61 0/0; #62 7/7; #63 0/0. Replies do not resolve threads unless GitHub marks `is_resolved=true`.
+
+### Mechanical release gates
+
+- [ ] One exact integrated candidate applies contiguous migrations 001–040 from an empty PostgreSQL database.
+- [ ] Installed database upgrade 033→040, second-run no-op, and checksum verification.
+- [ ] Exact-candidate full pytest/coverage and P0 adversarial matrix.
+- [ ] Combined-candidate schema audit and zero DB leakage, including Contact and raw cleanup tables.
+- [ ] Restricted runtime DB role is distinct from migration/table owner and cannot UPDATE/DELETE/TRUNCATE or ALTER/disable consent-history triggers; verify with disposable PostgreSQL.
+- [ ] Independent review of #60's five P0 threads, #62's seven deployment threads, #50's two Identity Registry decisions, and the remaining #49/#57/#59 threads.
+- [ ] Main-branch governance/required independent review configured and verified.
+
+### Current product/architecture blockers
+
+- **Contact consent is only on unmerged PR #60.** Exact-head Tests run [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) passed 915 tests at 76.43%, but applied 001–033 plus 038–040 and skipped 034–037. The five review threads include current mapping, contact-wide opt-out, missing source message ID, append-only event protection, and the still-unimplemented restricted runtime-role boundary.
+- **Consent history is not tamper-resistant yet.** Current `.env.example` uses the same `postgres` role for `DATABASE_URL` and `DATABASE_URL_SYNC`; Compose gives API and migrate the same `.env.production`. A table owner can disable the trigger. The role split needs an explicit credential/provisioning decision and disposable-PostgreSQL permission tests.
+- **Deployment/migration runner:** PR #62's exact head passed 846 tests at 76.01% on 001–033 and its sequence/seed-policy checks, but has seven unresolved review threads. It does not include the feature migrations or prove the 001–040 chain.
+- **Identity Registry:** PR #50 has two unresolved decisions: introduction paths must consistently honor unavailable registry facts, and legacy default provenance must not use the unreliable `updated_at = created_at` heuristic.
+- **Outbound Library:** #49 is still foundation-only; no live producer, selection, or dashboard integration. Private-media retention remains OFF.
+
+### Migration order and evidence boundary
+
+Current branch allocations are #48=034, #50=035, #49=036–037, #60=038–040. The old 034 collision is resolved across those branches, but no single run proves contiguous 001–040, installed 033→040 upgrade, second-run no-op/checksum behavior, or combined-candidate leakage.
+
+PR #55's exact-head run [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) passed 815 tests at 76.01%; migrations 001–033, schema audit, and the Contact-inclusive post-test leakage audit passed. This does not prove zero leakage on the combined feature candidate.
+
+The main Tests workflow still applies migration files lexically and runs pytest with a 57% coverage floor; the main workflow has no sequence preflight or post-test leakage audit. The deployment PRs add guards on their own branches, not on main.
+
+### Human decision required
+
+Choose the restricted runtime-role credential/provisioning contract; explicitly accept or revise the STOP reservation boundary; decide whether introduction text must gate project/Datacube registry facts; approve a reliable legacy provenance policy; and configure branch protection/required independent review. Do not merge any branch or authorize WhatsApp testing from branch-local CI alone.
+
+**NOT TEST READY.** The controlled WhatsApp test plan is not authorized. No production database mutation, production WAHA reconnection, or real WAHA send occurred.
+
 
 ## Live release-verification delta — 2026-10-30 12:16 WAT (partial; NOT TEST READY)
 
