@@ -8,7 +8,7 @@
 - PR #60's exact-head CI passed 915 tests at 76.43%, but its branch applies 001–033 plus 038–040 and skips 034–037. Contact consent is not yet a main-branch guarantee; five review threads remain unresolved.
 - PR #62's exact-head CI passed 864 tests at 76.01% with migration preflight, 001–033, schema audit, and leakage audit. Seven deployment threads remain unresolved; API and migrate still share `.env.production`.
 - **Restricted runtime database role remains a release blocker.** The API currently uses the table-owner credentials shown in `.env.example`; trigger guards can be disabled by the owner. A distinct restricted runtime role and disposable-PostgreSQL privilege proof are not implemented.
-- **P0/architecture decisions:** accept or revise the STOP dispatch-reservation boundary; approve the migration-owner/runtime-role split and credential bootstrap; resolve Identity Registry introduction behavior and legacy provenance policy. PR #50 still has two unresolved Identity Registry threads.
+- **P0/architecture decisions:** accept or revise the STOP dispatch-reservation boundary; approve the migration-owner/runtime-role split and credential bootstrap; decide whether the shared introduction removes project/Datacube claims or gates them on `projects`/`datacube_au`; choose a trustworthy legacy-default provenance policy. PR #50 still has two unresolved Identity Registry threads.
 - [ ] Fresh contiguous migrations 001–040 on one exact integration candidate.
 - [ ] Installed 033→040 upgrade, second-run no-op, and checksum verification.
 - [ ] Exact-candidate full pytest/coverage, P0 adversarial matrix, schema audit, and zero DB leakage.
