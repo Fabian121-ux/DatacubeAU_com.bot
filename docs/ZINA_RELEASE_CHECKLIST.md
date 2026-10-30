@@ -60,3 +60,30 @@ Not yet written. `docs/ZINA_CONTROLLED_TEST_PLAN.md` should be produced once the
 ## Live safety reminder
 
 The main branch has foundational outbound payload binding and uncertain-send quarantine, but issue [#56](https://github.com/Fabian121-ux/DatacubeAU_com.bot/issues/56) is a real WhatsApp-facing P0 gap: unknown/revoked contact consent and opt-out are not yet enforced by an authoritative, race-safe final dispatch check. PR #48 adds important WAHA-origin and view-once source-binding/deletion-fence hardening, but remains unmerged; its green exact-head CI is not independent review or proof of the latest combined migration chain. Do not infer live-test readiness from the older Phase 0 checkbox. Until issue #56 is resolved, do not run a controlled external-contact test or wire the message library into live producers. Keep private-media retention OFF and perform no real WhatsApp sends during unattended engineering.
+
+## Live release-verification delta — 2026-10-30 (partial; NOT TEST READY)
+
+The previous 2026-10-29 snapshot is superseded by the following exact current state:
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed 2026-09-08. The main workflow still lacks the open PRs' migration-sequence preflight, schema audit, and leakage audit.
+- Current P0 consent branch [#60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) head `9071c09d` passed exact-head run [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297): **915 passed, 1 warning, 76.43% coverage**. It applies 001–033 plus 038–040, not 034–037. It remains draft with four unresolved inline threads.
+- DB leakage gate [#55](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) head `3d35793e` passed exact-head run [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000): **815 passed, 1 warning, 76.01% coverage**; 001–033 fresh migrations, schema audit, and post-test leakage audit passed. The audit now counts `Contact` independently of fixture cleanup membership and has a PostgreSQL regression proving a leaked Contact is reported.
+- Migration numbering is ordered as #48=034, #50=035, #49=036–037, #60=038–040. The historical 001–037 integration/033→037 upgrade run does not cover the new 038–040 consent migrations. **001–040 fresh install, 033→040 installed upgrade, second-run no-op/checksums, and combined-candidate leakage are still unchecked.**
+- Exact current review counts (unresolved / total): #48 0/15; #49 1/80; #50 2/10; #55 0/0; #57 1/1; #59 1/1; #60 4/4; #61 0/0; #62 6/6; #63 0/0. Review replies do not resolve threads unless GitHub marks them resolved.
+
+### Product gate corrections
+
+- **Identity Registry:** the old statement that delete/search/provenance do not exist is stale. Main now has tombstone delete, search, single-fetch, `source`, `entity_type`, and direct service tests from PR #47 / migration 033. Remaining release work is dashboard CRUD, dedicated create semantics, reliable legacy provenance, and introduction consistency. PR #50 still has two unresolved decisions: backfill provenance for historically read defaults, and whether introductions that mention projects/Datacube AU must honor those registry entries.
+- **Contact consent:** PR #60 implements explicit contact/chat consent and terminal opt-out at the final worker fence, including the documented reservation boundary. It is not merged or independently reviewed; it is not yet a main-branch guarantee.
+- **Deployment/migration:** PR #61 adds contiguous-number preflight; #62 integrates database-target, libpq, seed-policy, and migration safeguards. #62 still has six unresolved review threads. Neither branch proves the combined 001–040 feature chain.
+
+### Remaining mechanical gates
+
+- [ ] Integrated contiguous migrations 001–040 on one exact candidate from an empty PostgreSQL database.
+- [ ] Installed-database upgrade 033→040, second-run no-op, and checksum verification.
+- [ ] Exact-candidate full pytest/coverage run plus P0 adversarial matrix.
+- [ ] Combined-candidate schema audit and zero-leakage audit, including Contact rows and raw tables.
+- [ ] Independent resolution of blocking review threads and explicit acceptance of the STOP dispatch-reservation policy.
+- [ ] Main-branch governance review; branch endpoint currently reports `protected=false`, rulesets are empty, and classic protection details are not accessible through this integration.
+
+Controlled test readiness remains **NOT TEST READY**. Do not perform owner self-DM or external-contact tests until the integrated release gates and independent reviews are complete. Private-media retention remains OFF. No real WAHA sends, production database mutations, or production WAHA reconnection during unattended engineering.
