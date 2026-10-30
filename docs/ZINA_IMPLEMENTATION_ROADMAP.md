@@ -353,3 +353,46 @@ Create/Read/Disable/Schedule/Target/Owner/Authority-policy/Failures/Next-run/Aud
 **Not TEST READY yet.** Dashboard CRUD completeness and the Command Center/`ReplyRule` duplication remain product blockers. In addition, the explicit contact-consent/opt-out gate is still unmerged on main; do not run controlled external-contact tests until PR #60 is independently reviewed and the combined migration/P0/leakage gates pass.
 
 **Next implementation step:** Work Phases 1, 5, then 3/4/6/13 dashboard gaps, in that order, before attempting `docs/ZINA_CONTROLLED_TEST_PLAN.md`.
+
+## Live verification delta — 2026-10-30 (partial; not release approval)
+
+Fresh verification against current main, all ten open PR heads, exact-head Actions runs, migration files on each feature branch, workflow YAML, and review-thread resolution flags:
+
+- **Main remains** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; migrations 001–033 only. Latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08. Main `.github/workflows/tests.yml` still runs PostgreSQL 16, migrations, pytest and the 57% coverage gate, but does not yet include the migration-sequence preflight, schema audit, or post-test leakage audit now present on open feature branches.
+- **Main governance:** `GET /branches/main` reports `protected=false`; repository rulesets are empty. The classic branch-protection endpoint returns 403 to this integration, so no stronger protection is evidenced. Keep independent review mandatory.
+
+| Open PR | Exact head | Latest exact-head Tests run | Result | Unresolved / total threads |
+|---|---|---:|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | success | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `f78bc9bb` | [40368630895](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40368630895) | success | 2 / 10 |
+| [#55 DB leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) | success | 0 / 0 |
+| [#57 Seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | success | 1 / 1 |
+| [#59 Release documentation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `c58a3370` | [40965554240](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40965554240) | success | 1 / 1 |
+| [#60 Contact consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9071c09d` | [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) | success | 4 / 4 |
+| [#61 Migration sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | success | 0 / 0 |
+| [#62 Deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `854439af` | [40957674923](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40957674923) | success | 6 / 6 |
+| [#63 Conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `c6c493d2` | [40461018945](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40461018945) | success | 0 / 0 |
+
+All listed successes are branch-local exact-head evidence, not a single integrated release-candidate run.
+
+### Migration order and proof boundary
+
+The original duplicate 034 numbering is resolved in the current feature branches:
+
+1. #48 — 034 `private_media_artifact_source_identity`
+2. #50 — 035 `identity_registry_default_backfill`
+3. #49 — 036 `outbound_message_library`, 037 `outbound_message_set_key_registry`
+4. #60 — 038–040 `contact_messaging_consent` and sender-identity/contact evidence
+
+No branch currently proves the combined 001–040 chain. #60's workflow applies 001–033 plus 038–040; #55/#61/#62 apply 001–033. Historical separate integration evidence covers 001–037 and an installed 033→037 upgrade only; it does not cover 038–040. Fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum verification, and combined-candidate leakage remain release blockers.
+
+### Current P0 and architecture decisions
+
+- #60 exact head `9071c09d` passed **915 tests, 1 warning, 76.43% coverage**. Its new two-session regression documents the dispatch-reservation policy: once the worker's final pending-STOP read returns false, one attempt is in-flight; a later STOP may not cancel that attempt, but it must commit terminal opt-out before later queue rows can send. An uncertain result is not replayed. This is not a guarantee that STOP can cancel a reserved network attempt. Four inline review threads remain unresolved; the PR is still draft and unmerged.
+- #55 exact head `3d35793e` passed **815 tests, 1 warning, 76.01% coverage**. Migrations 001–033 and schema audit passed; the post-test leakage audit passed. The audit now counts `Contact` independently of `CLEANUP_MODELS`, so PR #60's consent-history-before-contact teardown ordering cannot silently remove contacts from the leakage inventory.
+- #50's introduction method now suppresses disabled/deleted `zina` and `fabian`, but its introduction text still names projects and Datacube AU. Human scope decision remains: remove those claims or also gate the `projects`/`datacube_au` registry facts. Migration 035's `updated_at = created_at` legacy backfill signal remains unreliable for rows touched by pre-upgrade reads; choose a trustworthy provenance policy before merge.
+- #49 remains a foundation only; no live producer, selector, or dashboard integration is evidenced. #48's metadata observation work does not activate private-byte retention; retention remains OFF.
+- #62 has six unresolved deployment/migration review threads; #57 and #59 each have one. A green CI result does not resolve a review thread or substitute for an independent reviewer.
+
+No merge, self-approval, production database mutation, production WAHA reconnection, or real WhatsApp action occurred. Release remains **NOT TEST READY**.
