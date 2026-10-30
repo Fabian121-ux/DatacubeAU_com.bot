@@ -1,3 +1,53 @@
+## Latest live release-verification delta — 2026-10-30 15:21 WAT (partial; NOT TEST READY)
+
+This supersedes the 14:21 WAT snapshot below. The current main ref, all ten open PR heads, their exact-head workflow runs, review-thread counts, main workflow YAML, migrations, and deployment configuration were re-queried. No merge or live WhatsApp test is authorized by this snapshot.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only. Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA on 2026-09-08. Main branch endpoint reports `protected=false`.
+- Latest overall Tests run [41063661288](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41063661288) succeeded on PR #59's exact current head `805f3fdd8e92a5bd1fa4724913986a9ce4a93ec1`: **797 passed, 1 warning, 76.01% coverage**. The job log confirms it applied 001–033 only.
+- Main `.github/workflows/tests.yml` applies migrations lexically and runs pytest with a 57% floor; it has no sequence preflight, schema audit, post-test leakage audit, or timeout. Main deployment runner still lacks sequence preflight and unconditionally applies seed files.
+
+| PR | Exact head | Exact-head Tests run | Result | Unresolved / total threads |
+|---|---|---:|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | success | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `f78bc9bb` | [40368630895](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40368630895) | success | 2 / 10 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) | success | 0 / 0 |
+| [#57 Deployment seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | success | 1 / 1 |
+| [#59 Release docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `805f3fdd` | [41063661288](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41063661288) | success | 1 / 1 |
+| [#60 Contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9071c09d` | [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) | success | 5 / 5 |
+| [#61 Migration sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | success | 0 / 0 |
+| [#62 Deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `854439af` | [40957674923](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40957674923) | success | 7 / 7 |
+| [#63 Conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `c6c493d2` | [40461018945](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40461018945) | success | 0 / 0 |
+
+All listed run records were checked against their current PR head SHA. Branch-local green checks do not prove an integrated candidate, resolve review threads, or constitute independent approval.
+
+### Mechanical release gates
+
+- [ ] One exact integrated candidate applies contiguous migrations 001–040 from an empty PostgreSQL database.
+- [ ] Installed database upgrade 033→040, second-run no-op, and checksum verification.
+- [ ] Exact integrated-candidate full pytest/coverage and P0 adversarial matrix.
+- [ ] Combined-candidate schema audit and zero DB leakage, including Contact and raw cleanup tables.
+- [ ] API runtime DB role is distinct from migration/table owner and cannot UPDATE/DELETE/TRUNCATE or ALTER/disable consent-history triggers; prove with disposable PostgreSQL.
+- [ ] Independent review of #60's five P0 threads, #62's seven deployment threads, #50's two Identity Registry decisions, and remaining #49/#57/#59 findings.
+- [ ] Main-branch protection and required independent review configured and verified.
+
+### Current P0/product blockers
+
+- **#60** exact-head run [41019860297](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41019860297) passed 915 tests at 76.43%, but applied 001–033 plus 038–040 and skipped 034–037. Current code covers exact mapping, alias-wide terminal opt-out, missing stable source IDs, and UPDATE/DELETE/TRUNCATE guards; all five review threads remain unresolved. The trigger can still be disabled by the table owner.
+- **#62** exact-head run [40957674923](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40957674923) passed 846 tests at 76.01% on 001–033 with sequence/seed checks. Seven review threads remain unresolved; the API and migrate services still share `.env.production`, so the restricted runtime-role boundary is absent.
+- **STOP reservation semantics** need explicit product-owner acceptance: STOP committed before final reservation vetoes the send; after reservation, the one in-flight attempt may not be retractable, but subsequent sends/replays must be blocked.
+- Migration allocations are reconciled as #48=034, #50=035, #49=036–037, #60=038–040. The combined 001–040 fresh/upgrade/no-op proof remains unchecked.
+- **#50** still needs decisions on project/Datacube introduction claims and reliable legacy-default provenance. **#49** remains library foundation only. **#48** remains metadata-only; retention OFF.
+- **#55** passed its Contact-inclusive leakage audit on 001–033 only; no combined-candidate leakage result exists. **#63**'s observability fix remains unmerged.
+
+### Human decision required
+
+Choose the runtime-role provisioning/rotation contract for existing deployments; accept or revise the STOP reservation boundary; decide whether introduction text must gate `projects` and `datacube_au`; approve a legacy provenance policy; and configure required independent review on main.
+
+**NOT TEST READY.** Controlled WhatsApp testing remains unauthorized. No production database mutation, production WAHA reconnection, or real WAHA send occurred.
+
+---
+
 # Zina Release Checklist
 
 ## Live release-verification delta — 2026-10-30 14:21 WAT (partial; NOT TEST READY)
