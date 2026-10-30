@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -10,6 +11,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "audit_zina_test_db_leakage.py"
+
+
+_AUDIT_SPEC = importlib.util.spec_from_file_location("zina_db_leakage_audit", SCRIPT)
+assert _AUDIT_SPEC is not None and _AUDIT_SPEC.loader is not None
+_AUDIT_MODULE = importlib.util.module_from_spec(_AUDIT_SPEC)
+_AUDIT_SPEC.loader.exec_module(_AUDIT_MODULE)
+audit_model_inventory = _AUDIT_MODULE.audit_model_inventory
+collect_model_leaks = _AUDIT_MODULE.collect_model_leaks
 
 
 @pytest.mark.parametrize(
@@ -163,3 +172,31 @@ def test_leakage_audit_requires_sync_database_url() -> None:
 
     assert completed.returncode != 0
     assert "DATABASE_URL_SYNC is required" in (completed.stdout + completed.stderr)
+
+
+@pytest.mark.asyncio
+async def test_audit_reports_contact_row_even_when_fixture_cleanup_excludes_contact(db_session):
+    from app.models.schema import Contact
+    from conftest import CLEANUP_MODELS
+
+    # PR #60 intentionally excludes Contact from CLEANUP_MODELS so consent-event
+    # history can be cleared before Contact deletion. Simulate that combined tree.
+    cleanup_models_without_contact = tuple(
+        model for model in CLEANUP_MODELS if model is not Contact
+    )
+    assert Contact not in cleanup_models_without_contact
+
+    db_session.add(
+        Contact(
+            whatsapp_id="audit-leak-regression-155500000099@c.us",
+            display_name="Audit leak regression",
+        )
+    )
+    await db_session.flush()
+
+    connection = await db_session.connection()
+    leaks = await collect_model_leaks(
+        connection,
+        audit_model_inventory(cleanup_models_without_contact),
+    )
+    assert ("contacts", 1) in leaks
