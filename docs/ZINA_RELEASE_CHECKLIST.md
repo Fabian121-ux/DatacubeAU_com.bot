@@ -1,3 +1,23 @@
+## Live release-verification delta — 2026-10-31 (fresh re-query; partial; NOT TEST READY)
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08, with migrations 001–033 only. Branch protection is false and repository rulesets are empty. Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA; the main workflow still lacks sequence preflight, schema audit, and post-test leakage audit.
+- Latest exact-head Tests run [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) passed on PR #50 head `0a2b38c0ce72b3c4a8fdd49490be504facb34bac`: **828 passed, 1 warning, 76.52%**. It applied 001–033 and 035 only; it does not prove integrated migrations 001–040.
+- Current open PR review threads (unresolved / total): #48 0/15; #49 1/80; #50 3/11; #55 0/0; #57 1/1; #59 1/1; #60 5/5; #61 0/0; #62 7/7; #63 1/1. Replies and green CI do not equal independent approval.
+- Feature migration numbering is ordered across branches: #48=034, #50=035, #49=036–037, #60=038–040. No exact candidate proves fresh 001–040, installed 033→040 upgrade, second-run no-op/checksums, or combined leakage.
+- #60 is still draft/unmerged. Its exact head `552a7ca0` passed [41192776180](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41192776180): 927 passed, 1 warning, 76.41%; its workflow applied 001–033 and 038–040 only. Five review threads remain open.
+- **P0 database security blocker:** migration 038's append-only consent-event triggers can be disabled by the table owner. Compose still gives API and migrate the same `.env.production`, and the sample uses the same `postgres` role for async/sync URLs. Separate the runtime login from the migration/table-owner login; prove the runtime role cannot ALTER/DISABLE TRIGGER/UPDATE/DELETE/TRUNCATE using disposable PostgreSQL before treating consent history as tamper-resistant.
+- **Human STOP policy decision:** a STOP committed before the final reservation blocks dispatch; once one WAHA attempt has crossed the final reservation it cannot reliably be recalled, but it must never be retried/replayed and later sends must be denied. Fabian must explicitly accept or revise this linearization policy.
+- #62 remains the draft deployment integration candidate with seven unresolved review threads. It includes seed safety, migration sequence preflight, schema audit, and leakage audit, but still lacks API/migration role separation. #57 and #61 should not be merged independently of this integration.
+- #50's P1 registry-read failure now returns the non-assertive fallback on exceptions in both reply methods, with three regressions and green exact-head CI. Two decisions remain: whether introduction text may name projects/Datacube AU when only Zina/Fabian are gated, and how to identify historical default rows without timestamp equality.
+- #49 remains a foundation only; #48 remains metadata-only with retention OFF. #63's observability correction is green but still has one independent-review thread.
+- [ ] Fresh contiguous migrations 001–040 on one exact integration candidate.
+- [ ] Installed 033→040 upgrade, second-run no-op, and checksum verification.
+- [ ] Exact-candidate full pytest/coverage, P0 adversarial matrix, schema audit, and zero DB leakage.
+- [ ] Independent resolution of blocking reviews and owner decisions; separate DB roles and prove runtime privilege restrictions.
+- [ ] Staged controlled-test plan and explicit authorization.
+
+**NOT TEST READY.** No production DB operation, production WAHA reconnection, real WhatsApp send, or private-media retention activation occurred. The documentation head before this refresh passed run [41192933035](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41192933035) (797 passed, 76.01%, migrations 001–033); this new documentation commit has no exact-head CI result yet.
+
 ## Live release-verification delta — 2026-10-31 (partial; NOT TEST READY)
 
 - Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08; migrations 001–033 only. Branch protection is false and no repository rulesets were returned. Latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA; the main workflow still lacks sequence preflight, schema audit, and post-test leakage audit.
