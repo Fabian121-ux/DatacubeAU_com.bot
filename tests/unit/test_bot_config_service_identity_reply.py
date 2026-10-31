@@ -244,3 +244,51 @@ async def test_introduction_reply_ignores_unrelated_disabled_default(db_session)
         "Hi. I'm Zina, Fabian's AI assistant. "
         "I help answer questions about Fabian, his projects, and Datacube AU."
     )
+
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_fails_closed_when_registry_answer_raises(db_session, monkeypatch):
+    await IdentityRegistryService(db_session).ensure_defaults_from_profile(PROFILE)
+
+    async def raise_registry_unavailable(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(IdentityRegistryService, "answer", raise_registry_unavailable)
+
+    result = await BotConfigService(db_session).identity_reply("who are you?")
+    assert result == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_fails_closed_when_unavailable_keys_read_raises(db_session, monkeypatch):
+    await IdentityRegistryService(db_session).ensure_defaults_from_profile(PROFILE)
+
+    async def no_registry_answer(*_args, **_kwargs):
+        return None
+
+    async def raise_registry_unavailable(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(IdentityRegistryService, "answer", no_registry_answer)
+    monkeypatch.setattr(
+        IdentityRegistryService, "unavailable_default_keys", raise_registry_unavailable
+    )
+
+    result = await BotConfigService(db_session).identity_reply("who are you?")
+    assert result == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_introduction_reply_fails_closed_when_registry_read_raises(db_session, monkeypatch):
+    await IdentityRegistryService(db_session).ensure_defaults_from_profile(PROFILE)
+
+    async def raise_registry_unavailable(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(
+        IdentityRegistryService, "unavailable_default_keys", raise_registry_unavailable
+    )
+
+    result = await BotConfigService(db_session).introduction_reply()
+    assert result == BotConfigService._DELETED_FALLBACK_MESSAGE

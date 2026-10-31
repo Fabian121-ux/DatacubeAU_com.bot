@@ -1,6 +1,7 @@
 """Dynamic bot configuration from the bot_config DB table."""
 from __future__ import annotations
 
+import logging
 import re
 
 from sqlalchemy import select
@@ -8,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import BotConfig
 from app.utils.time import utcnow
+
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULTS: dict[str, str] = {
@@ -206,10 +210,12 @@ class BotConfigService:
                 self.session
             ).unavailable_default_keys()
         except Exception:
-            # Preserve the existing bot_config fallback during migration/bootstrap,
-            # matching identity_reply(); lifecycle suppression applies when the registry
-            # is readable and explicitly records the OWNER's disabled/deleted choice.
-            pass
+            # Migration 033 is a startup prerequisite. If the authoritative registry
+            # cannot be read, do not re-assert identity from legacy bot_config defaults.
+            logger.exception(
+                "Identity Registry unavailable; suppressing introduction identity claims"
+            )
+            return self._DELETED_FALLBACK_MESSAGE
 
         # This introduction makes claims about both Zina and Fabian. Do not bypass
         # Identity Registry lifecycle state through a second hardcoded fallback path.
@@ -240,8 +246,10 @@ class BotConfigService:
                 return registry_answer
             unavailable_keys = await registry_service.unavailable_default_keys()
         except Exception:
-            # Registry reads are best-effort during migration/bootstrap; bot_config remains the fallback.
-            pass
+            # Migration 033 is a startup prerequisite. If the authoritative registry
+            # cannot be read, do not re-assert identity from legacy bot_config defaults.
+            logger.exception("Identity Registry unavailable; suppressing identity reply")
+            return self._DELETED_FALLBACK_MESSAGE
         normalized = re.sub(r"\s+", " ", message_text.strip().lower())
         assistant_name = profile["assistant_name"] or "Zina"
         owner_name = profile["owner_name"] or "Fabian"
