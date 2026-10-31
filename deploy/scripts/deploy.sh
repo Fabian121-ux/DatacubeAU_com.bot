@@ -16,7 +16,7 @@ echo "========================================="
 # Check environment file
 if [ ! -f "$ENV_FILE" ]; then
     echo "Error: $ENV_FILE not found!"
-    echo "Copy from .env.example or your managed production template and configure it"
+    echo "Copy from .env.production.example and configure every required secret"
     exit 1
 fi
 

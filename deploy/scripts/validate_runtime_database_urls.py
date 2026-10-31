@@ -113,6 +113,12 @@ async def verify_runtime_role(role: str) -> None:
                 SELECT 1 FROM pg_class relation
                 WHERE relation.relowner = r.oid
             )
+            AND NOT has_schema_privilege(current_user, 'public', 'CREATE')
+            AND NOT has_database_privilege(current_user, current_database(), 'CREATE')
+            AND NOT EXISTS (
+                SELECT 1 FROM pg_database database
+                WHERE database.datname = current_database() AND database.datdba = r.oid
+            )
             AND NOT EXISTS (
                 SELECT 1 FROM pg_namespace namespace
                 WHERE namespace.nspowner = r.oid

@@ -110,6 +110,31 @@ SELECT NOT EXISTS (
 \endif
 
 SELECT NOT EXISTS (
+    SELECT 1 FROM pg_database
+    WHERE datname = current_database()
+      AND datdba = (SELECT oid FROM pg_roles WHERE rolname = :'runtime_role')
+) AS no_owned_database \gset
+\if :no_owned_database
+\else
+\echo Runtime role must not own the application database.
+\quit 3
+\endif
+
+SELECT NOT has_database_privilege(:'runtime_role', current_database(), 'CREATE') AS no_database_create \gset
+\if :no_database_create
+\else
+\echo Runtime role must not have CREATE privilege on the application database.
+\quit 3
+\endif
+
+SELECT NOT has_schema_privilege(:'runtime_role', 'public', 'CREATE') AS no_public_schema_create \gset
+\if :no_public_schema_create
+\else
+\echo Runtime role must not have CREATE privilege on the public schema.
+\quit 3
+\endif
+
+SELECT NOT EXISTS (
     SELECT 1 FROM pg_namespace
     WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = :'runtime_role')
 ) AS no_owned_schemas \gset

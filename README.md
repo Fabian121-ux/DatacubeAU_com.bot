@@ -246,8 +246,6 @@ DATABASE_URL_RUNTIME=postgresql+asyncpg://zina_runtime:<url-encoded-runtime-pass
 ZINA_RUNTIME_DB_PASSWORD=<same-raw-runtime-password>
 ZINA_RUNTIME_DB_ROLE=zina_runtime
 
-The migration service provisions zina_runtime as a separate LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT role. The API receives only DATABASE_URL_RUNTIME; the migration service alone receives the migration-owner URLs and runtime-role bootstrap password; WAHA receives only its transport allowlist. The runtime role receives normal application DML/sequence access but no ownership or role membership. On contact_messaging_consent_events, it receives SELECT/INSERT only—no UPDATE, DELETE, TRUNCATE, REFERENCES, or TRIGGER privilege—so it cannot disable the append-only guards. The migration runner validates that all three URLs target the same database endpoint and that the runtime username/password match the bootstrap settings. Rotate the runtime password by changing both DATABASE_URL_RUNTIME (URL-encoded password) and ZINA_RUNTIME_DB_PASSWORD together before the next deployment.
-
 WAHA_SERVICE_URL=http://waha:3000
 WAHA_API_KEY=<reuse-the-value-from-your-current-waha-.env>
 WAHA_SESSION_NAME=default
@@ -265,6 +263,8 @@ ADMIN_COOKIE_SECURE=false
 ADMIN_API_TOKEN=<strong-admin-token-for-scripts>
 LOCAL_TEST_DM_WHATSAPP_ID=<your-test-number>@c.us
 ```
+
+The migration service provisions the zina_runtime login as a separate NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOINHERIT role. The API receives only DATABASE_URL_RUNTIME; the migration service alone receives migration-owner URLs and the runtime-role bootstrap password; WAHA receives only its transport allowlist. The runtime role receives normal application DML/sequence access but no ownership or role membership. On contact_messaging_consent_events, it receives SELECT/INSERT only—no UPDATE, DELETE, TRUNCATE, REFERENCES, or TRIGGER privilege—so it cannot disable append-only guards. The migration runner validates that all three URLs target the same database endpoint and that the runtime username/password match the bootstrap settings. Rotate the runtime password by changing DATABASE_URL_RUNTIME (URL-encoded password) and ZINA_RUNTIME_DB_PASSWORD together before the next deployment.
 
 `deploy/scripts/deploy.sh` validates these webhook values and fails closed if the production env still points at the legacy `/webhooks/waha` route or omits `message.revoked`.
 
