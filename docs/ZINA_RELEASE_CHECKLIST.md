@@ -1,3 +1,22 @@
+## Live release-verification delta — 2026-10-31 (partial; NOT TEST READY)
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08; migrations 001–033 only. Branch protection is false and no repository rulesets were returned. Latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA; the main workflow still lacks sequence preflight, schema audit, and post-test leakage audit.
+- Latest overall Tests run [41192776180](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41192776180) is **in progress** on PR #60 head `552a7ca0ce4104beeb3f38fa749c1e332118d8cb`; no test count or coverage is claimed. Latest completed run [41168835614](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41168835614) succeeded on PR #59 head `7df2055d5e1f28d32fa7c4b1c16b012289a639d9` (797 passed, 76.01%, migrations 001–033).
+- Open PR review threads (unresolved / total): #48 0/15; #49 1/80; #50 3/11; #55 0/0; #57 1/1; #59 1/1; #60 5/5; #61 0/0; #62 7/7; #63 1/1. Replies and green CI do not equal independent approval.
+- Feature migration numbering is now ordered across branches: #48=034, #50=035, #49=036–037, #60=038–040. The former duplicate 034 allocation is resolved, but no exact candidate proves fresh 001–040, installed 033→040 upgrade, second-run no-op/checksums, or combined leakage.
+- PR #60 remains draft/unmerged and is the current P0 consent work. The new head adds anchored, conservative opt-out parsing and quoted/reported-phrase regressions; its exact-head Tests run is still in progress. Its predecessor's green run does not validate the new head. Five review threads remain unresolved.
+- **Human policy decision:** accept or revise the STOP reservation boundary. A STOP visible before final reservation vetoes dispatch; an already-in-flight WAHA attempt cannot reliably be recalled, but must never be retried/replayed; all later sends must be denied.
+- **Database security decision/blocker:** API and migrate still receive the same `.env.production`; `.env.example` uses the same `postgres` role for async and sync URLs. The API can own the consent audit table and disable its triggers. Provision a distinct migration/table-owner role and a restricted runtime role, then prove runtime cannot ALTER/DISABLE TRIGGER/UPDATE/DELETE/TRUNCATE in disposable PostgreSQL before calling consent history tamper-resistant.
+- PR #62 remains the deployment integration candidate with seven unresolved review threads; it includes seed safety, migration-sequence preflight, schema audit, and leakage audit, but still lacks the API/migration role split.
+- PR #50 has three unresolved identity decisions: introduction claim scope, reliable legacy-default provenance (do not use `updated_at = created_at`), and fail-closed behavior when Identity Registry reads fail.
+- PR #49 is foundation-only, not integrated into a live producer/selector/dashboard. PR #48 is metadata-only; private byte storage is not implemented and retention stays OFF. PR #63's observability correction has green exact-head CI but one unresolved independent-review thread.
+- [ ] Fresh contiguous migrations 001–040 on one exact integration candidate.
+- [ ] Installed 033→040 upgrade, second-run no-op, and checksum verification.
+- [ ] Exact-candidate full pytest/coverage, P0 adversarial matrix, schema audit, and zero DB leakage.
+- [ ] Independent review of P0, identity, and deployment blockers; explicit owner decisions; staged controlled-test plan and authorization.
+
+**NOT TEST READY.** No production database operation, production WAHA reconnection, real WhatsApp send, or private-media retention activation occurred.
+
 ## Latest live release-verification delta — 2026-10-30 (after Tests run 41080836429; partial; NOT TEST READY)
 
 - Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08, with migrations 001–033. Main reports `protected=false`; no repository rulesets were returned.
