@@ -1,5 +1,13 @@
 # Zina Release Checklist
 
+## Follow-up verification — 2026-10-31 21:26 WAT
+
+- Previous documentation head `1263981056c73b73b9b4105537f16a04d623a81a` passed exact-head Tests run [41238486600](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238486600): 797 passed, 1 warning, 76.01% coverage; migrations 001–033 only. This does not validate feature migrations 034–040 or release readiness. The addendum commit itself needs its own exact-head run; no result is claimed yet.
+- [ ] **Service-secret isolation:** main and PR #62 `docker-compose.yml` mount the full `.env.production` into WAHA. Remove broad environment-file inheritance; pass WAHA only its explicit transport/session/webhook settings. API must not receive migration-owner credentials; migrate must not receive runtime credentials unnecessarily; WAHA must receive neither database URL, admin token, nor AI/provider secrets. Test the rendered Compose service environments.
+- [ ] **Consent audit privilege proof:** separate a non-owner API runtime role from the migration/table owner and prove the API role cannot ALTER/disable triggers/UPDATE/DELETE/TRUNCATE the consent event table on disposable PostgreSQL.
+- PR #62 remains draft with seven unresolved threads; its successful 001–033 runner CI is not integrated 001–040 or production deployment proof.
+
+
 ## Live release-verification delta — 2026-10-31 21:18 WAT (fresh re-query; NOT TEST READY)
 
 This section supersedes older status snapshots below. Main and the open PRs were re-read from GitHub; branch-local CI is not treated as integrated release proof.

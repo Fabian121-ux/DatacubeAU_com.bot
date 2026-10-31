@@ -1,5 +1,14 @@
 # Zina Implementation Roadmap
 
+## Follow-up verification — 2026-10-31 21:26 WAT
+
+- Previous documentation head `1263981056c73b73b9b4105537f16a04d623a81a` passed exact-head Tests run [41238486600](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238486600): **797 passed, 1 warning, 76.01% coverage**. The workflow applied migrations **001–033 only**; it did not run migration-sequence preflight, schema audit, DB-leakage audit, or feature migrations 034–040.
+- This addendum is documentation-only. The commit containing it requires its own exact-head run; no result is claimed until that run completes.
+- **New deployment security finding, source-verified on main and PR #62:** `docker-compose.yml` mounts the entire `.env.production` into the `waha` service via `env_file`. That gives the transport container every variable in that file, not just WAHA settings; the documented deployment variables include DB URLs/credentials, and the sample environment includes admin/API and AI-provider secrets. The same broad env-file pattern also gives API and migrate both database URLs. This is an unresolved review finding on PR #62, not an implemented fix.
+- Required deployment boundary: API receives only a non-owner runtime DB URL and its own application secrets; migrate receives migration-owner credentials only; WAHA receives an explicit WAHA-only allowlist and **no** DB URL, admin token, or AI/provider credentials. Add a rendered-Compose/config regression proving the three service environments are correctly isolated, plus PostgreSQL privilege tests proving the runtime role cannot ALTER/disable triggers/UPDATE/DELETE/TRUNCATE the consent audit table.
+- PR #62 remains draft with seven unresolved review threads. Its green branch-local CI covers the runner guard against 001–033, not the feature migration chain or this service-secret boundary. Do not treat it as deployment-ready.
+
+
 ## Live verification delta — 2026-10-31 21:18 WAT (fresh GitHub re-query)
 
 This section supersedes the older live-verification snapshots below. The detailed phase audit still begins with a **2026-09-08** code review and must not be treated as a current inventory. This update re-queried main, all open PR heads, review-thread resolution state, Actions runs, the main workflow YAML, deployment runner, and migration directory.
