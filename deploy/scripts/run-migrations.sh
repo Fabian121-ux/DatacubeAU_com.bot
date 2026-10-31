@@ -123,5 +123,10 @@ for seed in "$SEEDS_DIR"/*.sql; do
   psql_cmd -f "$seed"
 done
 
+# Provision/refresh a separate non-owner API login after the schema exists.
+# The migration owner stays inside this one-shot service; the API receives only
+# DATABASE_URL_RUNTIME and cannot disable consent-history triggers.
+sh "$APP_ROOT/deploy/scripts/provision-runtime-role.sh"
+
 cd "$APP_ROOT/bot_core"
 python scripts/schema_audit.py
