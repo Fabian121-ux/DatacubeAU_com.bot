@@ -3,6 +3,16 @@
 \getenv runtime_role ZINA_RUNTIME_DB_ROLE
 \getenv runtime_password ZINA_RUNTIME_DB_PASSWORD
 
+SELECT (rolsuper OR rolcreaterole) AS migration_owner_can_manage_roles
+FROM pg_roles
+WHERE rolname = current_user
+\gset
+\if :migration_owner_can_manage_roles
+\else
+\echo Migration owner must be superuser or have CREATEROLE privilege.
+\quit 3
+\endif
+
 SELECT format(
     'CREATE ROLE %I WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L',
     :'runtime_role',
@@ -27,6 +37,9 @@ WHERE member.rolname = :'runtime_role'
 \gexec
 
 SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'runtime_role')
+\gexec
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+SELECT format('REVOKE CREATE ON SCHEMA public FROM %I', :'runtime_role')
 \gexec
 SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'runtime_role')
 \gexec

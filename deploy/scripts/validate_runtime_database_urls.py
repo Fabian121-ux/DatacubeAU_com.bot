@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 import re
@@ -52,7 +53,7 @@ def _parse_target(name: str, value: str) -> DatabaseTarget:
     return DatabaseTarget(host=host.lower(), port=port, database=database, username=username, password=password)
 
 
-def validate_environment(environ: dict[str, str] | os._Environ[str] = os.environ) -> str:
+def validate_environment(environ: Mapping[str, str] = os.environ) -> str:
     role = environ.get("ZINA_RUNTIME_DB_ROLE", "zina_runtime")
     if not _ROLE_RE.fullmatch(role):
         raise ValueError("ZINA_RUNTIME_DB_ROLE must be a simple PostgreSQL role identifier.")
@@ -76,6 +77,18 @@ def validate_environment(environ: dict[str, str] | os._Environ[str] = os.environ
         raise ValueError("DATABASE_URL_RUNTIME must use the distinct ZINA_RUNTIME_DB_ROLE login.")
     if runtime.password != raw_runtime_password:
         raise ValueError("DATABASE_URL_RUNTIME password must match ZINA_RUNTIME_DB_PASSWORD.")
+
+    postgres_user = environ.get("POSTGRES_USER", "")
+    postgres_password = environ.get("POSTGRES_PASSWORD", "")
+    postgres_database = environ.get("POSTGRES_DB", "")
+    if not postgres_user or not postgres_password or not postgres_database:
+        raise ValueError("POSTGRES_USER, POSTGRES_PASSWORD, and POSTGRES_DB are required.")
+    if (
+        migration_sync.username != postgres_user
+        or migration_sync.password != postgres_password
+        or migration_sync.database != postgres_database
+    ):
+        raise ValueError("Migration-owner URLs must match the PostgreSQL bootstrap user, password, and database.")
     return role
 
 

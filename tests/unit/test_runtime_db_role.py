@@ -40,6 +40,9 @@ def _valid_env() -> dict[str, str]:
         "DATABASE_URL_RUNTIME": runtime_url,
         "ZINA_RUNTIME_DB_ROLE": "zina_runtime",
         "ZINA_RUNTIME_DB_PASSWORD": runtime_password,
+        "POSTGRES_USER": "migrator",
+        "POSTGRES_PASSWORD": "mig@pass:word",
+        "POSTGRES_DB": "zina",
     })
     return env
 
@@ -85,14 +88,14 @@ def test_runtime_database_url_preflight_rejects_unsafe_configuration(change, mes
 
 def _compose_service_block(compose: str, name: str) -> str:
     markers = [
-        "  postgres:\\n",
-        "  api:\\n",
-        "  waha:\\n",
-        "  nginx:\\n",
-        "  migrate:\\n",
-        "\\nvolumes:\\n",
+        "  postgres:\n",
+        "  api:\n",
+        "  waha:\n",
+        "  nginx:\n",
+        "  migrate:\n",
+        "\nvolumes:\n",
     ]
-    start = compose.index(f"  {name}:\\n")
+    start = compose.index(f"  {name}:\n")
     ends = [compose.find(marker, start + 1) for marker in markers if compose.find(marker, start + 1) >= 0]
     return compose[start:min(ends) if ends else len(compose)]
 
@@ -129,12 +132,16 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
     password = "runtime-test@password:with/slashes"
     runtime_url = _runtime_url(owner_sync, role, password)
     env = os.environ.copy()
+    owner_parts = make_url(owner_sync)
     env.update({
         "DATABASE_URL": owner_async,
         "DATABASE_URL_SYNC": owner_sync,
         "DATABASE_URL_RUNTIME": runtime_url,
         "ZINA_RUNTIME_DB_ROLE": role,
         "ZINA_RUNTIME_DB_PASSWORD": password,
+        "POSTGRES_USER": owner_parts.username or "",
+        "POSTGRES_PASSWORD": owner_parts.password or "",
+        "POSTGRES_DB": owner_parts.database or "",
     })
 
     provision = subprocess.run(
@@ -206,6 +213,7 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
             "DELETE FROM contact_messaging_consent_events",
             "TRUNCATE TABLE contact_messaging_consent_events",
             "ALTER TABLE contact_messaging_consent_events DISABLE TRIGGER ALL",
+            "CREATE TABLE public.zina_runtime_forbidden (id integer)",
             f'SET ROLE "{owner.replace(chr(34), chr(34) + chr(34))}"',
         ]
         for statement in statements:
