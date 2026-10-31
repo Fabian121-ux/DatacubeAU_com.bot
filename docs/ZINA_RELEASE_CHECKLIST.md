@@ -1,3 +1,55 @@
+# Zina Release Checklist
+
+## Live release-verification delta — 2026-10-31 21:18 WAT (fresh re-query; NOT TEST READY)
+
+This section supersedes older status snapshots below. Main and the open PRs were re-read from GitHub; branch-local CI is not treated as integrated release proof.
+
+### Current baseline
+
+- Main SHA: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last commit 2026-09-08; migrations 001–033.
+- Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that exact SHA. The current main workflow applies migrations lexically and runs pytest/57% coverage; it lacks the migration-sequence preflight, schema audit, and post-test leakage audit.
+- Latest observed Tests run [41202363597](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202363597) succeeded on PR #59 exact head `611c9d5528df16f5831fa970032237d4988fa52e`: 797 passed, 1 warning, 76.01% coverage, migrations 001–033 only.
+
+### Exact open PR and review state
+
+| PR | Head (short) | Latest exact-head run | Unresolved / total threads |
+|---|---|---|---:|
+| #48 PrivateMediaArtifact observation | `3acacbfe` | #40158094566 success | 0 / 15 |
+| #50 Identity Registry lifecycle | `0a2b38c0` | #41202063757 success; 828 passed, 76.52% | 3 / 11 |
+| #49 Outbound Message Library foundation | `bcd0033e` | #39920982545 success; 896 passed, 76.67% | 1 / 80 |
+| #55 DB-leakage CI gate | `3d35793e` | #41026581000 success; 815 passed, 76.01% | 0 / 0 |
+| #57 deployment seed safety | `d831ce4e` | #40169146406 success | 1 / 1 |
+| #59 this documentation refresh | `611c9d55` | #41202363597 success; 797 passed, 76.01% | 1 / 1 |
+| #60 P0 contact consent | `552a7ca0` | #41192776180 success; 927 passed, 76.41% | 5 / 5 |
+| #61 migration sequence gate | `8a1c1dbf` | #40300425938 success | 0 / 0 |
+| #62 deployment integration | `a8d032de` | #41073226073 success; 864 passed, 76.01% | 7 / 7 |
+| #63 conversation observability | `13fad868` | #41080836429 success; 803 passed, 76.08% | 1 / 1 |
+
+Zero review threads is not equivalent to an independent approval. The PRs remain open; no merge is implied.
+
+### Blocking engineering and product gates
+
+- [ ] **P0 consent-history privilege boundary:** #60's migration 038 triggers reject ordinary UPDATE/DELETE/TRUNCATE, but the table owner can disable triggers or alter the table. The sample config uses `postgres` for both `DATABASE_URL` and `DATABASE_URL_SYNC`; Compose supplies the same `.env.production` to API and migrate. Provision a distinct non-owner/non-superuser API role, keep migration-owner credentials out of the API container, grant only required runtime privileges, and prove denied ALTER/trigger-disable/UPDATE/DELETE/TRUNCATE on disposable PostgreSQL under that runtime role.
+- [ ] **Explicit STOP policy acceptance:** #60 makes opt-out terminal with no owner override/re-consent command. A STOP committed before final reservation blocks dispatch; an already in-flight WAHA attempt cannot reliably be recalled, must never be retried/replayed, and subsequent sends remain denied. Obtain explicit owner acceptance or revise the policy before declaring P0 complete.
+- [ ] **Identity Registry introduction contract:** #50's shared greeting checks assistant/owner identity but still names projects and Datacube AU. Decide to remove project claims from generic introductions (recommended; project facts remain owned by Identity Registry) or gate every named fact and test all combinations.
+- [ ] **Truthful legacy provenance:** #50 must not infer seed origin from `updated_at = created_at`; earlier reads already changed timestamps. Leave unverifiable legacy rows unknown/NULL, stamp provenance for new default inserts, and require explicit owner attestation for any historical classification.
+- [ ] **Integrated migration proof:** run one exact candidate with fresh contiguous migrations **001–040**, then an installed **033→040** upgrade and second-run no-op/checksum verification. Current allocation is #48=034, #50=035, #49=036–037, #60=038–040.
+- [ ] **Exact-candidate verification:** on that same candidate run full pytest/coverage, P0 adversarial matrix, schema audit, and post-test DB-leakage audit. Existing branch-local runs skip feature prerequisites: #50 applies 035 without 034; #49 applies 036–037 without 034–035; #60 applies 038–040 without 034–037.
+- [ ] **Independent review:** resolve blocking review threads through independent review; do not self-resolve, self-approve, or merge. #60 has 5 unresolved threads; #62 has 7; #50 has 3; #49 has 1; #57, #59, and #63 each have 1.
+- [ ] **Deployment runner integration:** #62 is the draft integration candidate for #57 seed safety and #61 migration preflight. Its exact-head CI covered 001–033 plus schema/leakage checks, not 034–040. Keep #57/#61 coordinated with #62 rather than merging overlapping runner changes separately.
+- [ ] **Controlled-test plan and explicit authorization:** stage owner self-DM text → commands → media/view-once → one explicitly approved external contact. No autonomous live WhatsApp test.
+
+### Deferred / not required to clear the above gates
+
+- Private media bytes remain absent and retention must stay OFF.
+- Outbound Message Library #49 remains a content foundation only; it must not be wired to producers until P0 authority and migration integration are cleared.
+- True embedding-based FAQ/Knowledge retrieval, DerivedArtifact media intelligence, and Project Intelligence remain separate later roadmap work.
+
+**NOT TEST READY.** The latest successful branch CI is not a full release candidate. No production DB operation, production WAHA reconnection, real WhatsApp send, private-media retention activation, PR merge, or review-thread resolution occurred in this verification run.
+
+
+---
+
 ## Live release-verification delta — 2026-10-31 (fresh re-query; partial; NOT TEST READY)
 
 - Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08, with migrations 001–033 only. Branch protection is false and repository rulesets are empty. Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that SHA; the main workflow still lacks sequence preflight, schema audit, and post-test leakage audit.
