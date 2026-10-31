@@ -57,7 +57,7 @@ class ContactMessagingConsentService:
     })
     _OPT_OUT_PATTERNS = (
         re.compile(r"\b(?:do not|don't|dont)\s+(?:send|message|text|contact)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
-        re.compile(r"\b(?:stop|unsubscribe)\s+(?:messaging|texting|contacting|sending)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
+        re.compile(r"^(?:please\s+)?(?:stop|unsubscribe)\s+(?:messaging|texting|contacting|sending)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
         re.compile(r"\b(?:no more|enough)\s+(?:messages|texts|calls)(?:\s+(?:to|for)\s+(?:me|us))?$"),
         re.compile(r"\b(?:i do not|i don't|i dont)\s+want\s+(?:any\s+)?(?:more\s+)?(?:messages|texts|contact)(?:\s+(?:again|anymore|any more))?$"),
     )
