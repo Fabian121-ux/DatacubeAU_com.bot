@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zina — Fabian Action Queue</title>
+<style>
+:root{--bg:#0b0e14;--surface:#131720;--surface2:#1a1f2e;--border:#2a3040;--text:#e2e8f0;--muted:#8892a8;--accent:#6c5ce7;--green:#00cec9;--orange:#fdcb6e;--red:#ff6b6b;--blue:#74b9ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,system-ui,-apple-system,sans-serif}.wrap{max-width:1080px;margin:0 auto;padding:24px}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}.top h1{margin:0;font-size:1.45rem}.top p{margin:.35rem 0 0;color:var(--muted)}.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:16px}.controls{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px}.filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}input,button,a.btn{font:inherit;border-radius:7px;min-height:40px}input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px}button,a.btn{border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:8px 12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}button.active,button.primary{background:var(--accent);border-color:var(--accent);color:white}.meta{color:var(--muted);font-size:.82rem;margin-top:10px}.queue{display:grid;gap:10px;margin-top:14px}.item{background:var(--surface2);border:1px solid var(--border);border-left:4px solid var(--blue);border-radius:9px;padding:13px}.item.reply_now{border-left-color:var(--red)}.item.review_today{border-left-color:var(--orange)}.item.informational{border-left-color:var(--green)}.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap}.badge{display:inline-block;border-radius:999px;padding:3px 8px;font-weight:700;font-size:.72rem}.reply_now .badge{background:rgba(255,107,107,.15);color:var(--red)}.review_today .badge{background:rgba(253,203,110,.15);color:var(--orange)}.informational .badge{background:rgba(0,206,201,.15);color:var(--green)}.evidence{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}.details{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;color:var(--muted);font-size:.78rem}.details code{color:var(--text);overflow-wrap:anywhere}.reasons{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.reason{font-size:.7rem;padding:2px 6px;border-radius:5px;background:rgba(116,185,255,.12);color:var(--blue)}.empty,.error{padding:24px;text-align:center;color:var(--muted)}.error{color:var(--red)}.loading{opacity:.65}.back{color:var(--muted)}
+@media(max-width:640px){.wrap{padding:14px}.controls{grid-template-columns:1fr}.filters button{flex:1 1 45%}.top .btn{width:100%}.details{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><h1>Fabian Action Queue</h1><p>Private, evidence-backed actions from Zina's Conversation Engine handbacks.</p></div>
+    <a class="btn back" href="/admin/ui#inspector">Back to Inspector</a>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <input id="chatId" autocomplete="off" placeholder="WhatsApp chat ID, e.g. 15550001101@c.us" aria-label="WhatsApp chat ID">
+      <button class="primary" id="loadBtn" type="button">Load Queue</button>
+    </div>
+    <div class="filters" aria-label="Action filters">
+      <button data-action="" class="active" type="button">All</button>
+      <button data-action="reply_now" type="button">Reply now</button>
+      <button data-action="review_today" type="button">Review today</button>
+      <button data-action="informational" type="button">Informational</button>
+    </div>
+    <div class="meta" id="meta">Enter a chat ID to load Fabian's latest action queue.</div>
+  </div>
+
+  <div class="panel">
+    <div id="queue" class="queue"><div class="empty">No queue loaded.</div></div>
+  </div>
+</div>
+<script>
+const queueEl=document.getElementById('queue');
+const metaEl=document.getElementById('meta');
+const chatInput=document.getElementById('chatId');
+const filterButtons=[...document.querySelectorAll('[data-action]')];
+const allowedActions=new Set(['','reply_now','review_today','informational']);
+const pageParams=new URLSearchParams(window.location.search);
+let activeAction=allowedActions.has(pageParams.get('action')||'')?(pageParams.get('action')||''):'';
+
+function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function prettyAction(action){return ({reply_now:'Reply now',review_today:'Review today',informational:'Informational'})[action]||action||'Unknown';}
+function renderItem(item){
+  const action=item.recommended_action||'informational';
+  const reasons=[...(item.action_reason_codes||[]),...(item.reason_codes||[])];
+  const reasonHtml=[...new Set(reasons)].map(r=>`<span class="reason">${esc(r)}</span>`).join('');
+  const score=item.score??'—';
+  const sourceTime=item.source_timestamp?new Date(item.source_timestamp).toLocaleString():'—';
+  return `<article class="item ${esc(action)}">
+    <div class="row"><span class="badge">${esc(prettyAction(action))}</span><span>Priority: ${esc(item.priority||'—')} · Score: ${esc(score)}</span></div>
+    <div class="evidence">${esc(item.evidence||'No evidence text recorded.')}</div>
+    <div class="details">
+      <div>Source type<br><code>${esc(item.source_type||'—')}</code></div>
+      <div>Source ID<br><code>${esc(item.source_id??'—')}</code></div>
+      <div>Source time<br><code>${esc(sourceTime)}</code></div>
+      <div>Delivery status<br><code>${esc(item.delivery_status||'—')}</code></div>
+    </div>
+    ${reasonHtml?`<div class="reasons">${reasonHtml}</div>`:''}
+  </article>`;
+}
+
+function syncUrl(chatId){
+  const params=new URLSearchParams();
+  if(chatId)params.set('chat_id',chatId);
+  if(activeAction)params.set('action',activeAction);
+  const query=params.toString();
+  history.replaceState({chat_id:chatId,action:activeAction},'',query?`${location.pathname}?${query}`:location.pathname);
+}
+
+async function loadQueue(){
+  const chatId=chatInput.value.trim();
+  if(!chatId){metaEl.textContent='Enter a WhatsApp chat ID first.';chatInput.focus();return;}
+  syncUrl(chatId);
+  queueEl.classList.add('loading');
+  queueEl.innerHTML='<div class="empty">Loading action queue…</div>';
+  const params=activeAction?`?action=${encodeURIComponent(activeAction)}`:'';
+  try{
+    const res=await fetch(`/admin/conversation-takeovers/${encodeURIComponent(chatId)}/action-queue${params}`,{credentials:'same-origin'});
+    if(res.redirected&&res.url.includes('/admin/login')){location.href='/admin/login';return;}
+    if(!res.ok){const body=await res.json().catch(()=>({detail:res.statusText}));throw new Error(body.detail||res.statusText);}
+    const data=await res.json();
+    const when=data.generated_at?new Date(data.generated_at).toLocaleString():'not recorded';
+    metaEl.textContent=`${data.count} item${data.count===1?'':'s'} · generated ${when}${data.action_filter?` · filter: ${prettyAction(data.action_filter)}`:''}`;
+    queueEl.innerHTML=data.items?.length?data.items.map(renderItem).join(''):'<div class="empty">No action items match this view.</div>';
+  }catch(err){queueEl.innerHTML=`<div class="error">Could not load queue: ${esc(err.message)}</div>`;metaEl.textContent='Queue load failed.';}
+  finally{queueEl.classList.remove('loading');}
+}
+
+document.getElementById('loadBtn').addEventListener('click',loadQueue);
+chatInput.addEventListener('keydown',e=>{if(e.key==='Enter')loadQueue();});
+filterButtons.forEach(btn=>btn.addEventListener('click',()=>{activeAction=btn.dataset.action;filterButtons.forEach(b=>b.classList.toggle('active',b===btn));if(chatInput.value.trim())loadQueue();else syncUrl('');}));
+
+const initialChatId=(pageParams.get('chat_id')||'').trim();
+chatInput.value=initialChatId;
+filterButtons.forEach(btn=>btn.classList.toggle('active',btn.dataset.action===activeAction));
+if(initialChatId)loadQueue();
+</script>
+</body>
+</html>

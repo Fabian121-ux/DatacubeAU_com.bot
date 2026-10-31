@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin_session
+from app.db import get_db_session
+from app.services.conversation_handback_service import ConversationHandbackService
+from app.services.conversation_takeover_service import ConversationTakeoverService
+
+
+router = APIRouter(
+    prefix="/admin/conversation-takeovers",
+    tags=["admin"],
+    dependencies=[Depends(require_admin_session)],
+)
+
+
+class ConversationTakeoverControlIn(BaseModel):
+    auto_assist_enabled: bool
+    inactivity_seconds: int | None = Field(default=None, ge=5, le=86400)
+    wait_for_fabian_first: bool | None = None
+
+
+@router.get("/{chat_id}")
+async def get_conversation_takeover_control(
+    chat_id: str,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    return await ConversationTakeoverService(db).get_chat_control(chat_id=chat_id)
+
+
+@router.get("/{chat_id}/handback")
+async def get_conversation_handback(
+    chat_id: str,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    summary = await ConversationHandbackService(db).get_latest(chat_id=chat_id)
+    return {"chat_id": chat_id, "handback": summary}
+
+
+@router.get("/{chat_id}/action-queue")
+async def get_conversation_action_queue(
+    chat_id: str,
+    action: Literal["reply_now", "review_today", "informational"] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Expose Fabian's latest private evidence-backed action queue for one chat."""
+    summary = await ConversationHandbackService(db).get_latest(chat_id=chat_id)
+    queue = list((summary or {}).get("fabian_action_queue") or [])
+    if action is not None:
+        queue = [item for item in queue if item.get("recommended_action") == action]
+    return {
+        "chat_id": chat_id,
+        "action_filter": action,
+        "generated_at": (summary or {}).get("generated_at"),
+        "items": queue,
+        "count": len(queue),
+    }
+
+
+@router.put("/{chat_id}")
+async def set_conversation_takeover_control(
+    chat_id: str,
+    body: ConversationTakeoverControlIn,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    result = await ConversationTakeoverService(db).set_chat_control(
+        chat_id=chat_id,
+        auto_assist_enabled=body.auto_assist_enabled,
+        inactivity_seconds=body.inactivity_seconds,
+        wait_for_fabian_first=body.wait_for_fabian_first,
+    )
+    await db.commit()
+    return result

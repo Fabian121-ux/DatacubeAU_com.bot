@@ -1,0 +1,10 @@
+{
+  "chatId": "234000000000@c.us",
+  "from": "234000000000@c.us",
+  "notifyName": "Local DM Tester",
+  "type": "text",
+  "text": {
+    "body": "hello"
+  },
+  "isGroup": false
+}
