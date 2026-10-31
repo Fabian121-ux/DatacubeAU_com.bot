@@ -119,6 +119,10 @@ def test_compose_uses_service_specific_environment_allowlists():
     assert "OPENROUTER_API_KEY" not in waha
     assert "DATABASE_URL_SYNC" in migrate
     assert "ZINA_RUNTIME_DB_PASSWORD" in migrate
+    assert "POSTGRES_USER:" in migrate
+    assert "POSTGRES_PASSWORD:" in migrate
+    assert "POSTGRES_DB:" in migrate
+    assert migration_runner.index("validate_runtime_database_urls.py") < migration_runner.index("psql_cmd -c")
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,9 @@ APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
 
+# Validate owner/runtime URLs and PostgreSQL bootstrap credentials before the first DB call.
+python "$APP_ROOT/deploy/scripts/validate_runtime_database_urls.py"
+
 psql_cmd() {
   psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
 }
