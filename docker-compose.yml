@@ -135,6 +135,8 @@ services:
     # admin tokens, or AI/provider secrets.
     environment:
       WHATSAPP_API_KEY: ${WAHA_API_KEY:?Set WAHA_API_KEY in .env.production}
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-}
+      WHATSAPP_FILES_FOLDER: ${WHATSAPP_FILES_FOLDER:-/app/.media}
       WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://api:8080/webhooks/waha-events}
       WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message,message.any,message.revoked}
       WHATSAPP_HOOK_CUSTOM_HEADERS: X-Api-Key:${WAHA_API_KEY:?Set WAHA_API_KEY in .env.production}

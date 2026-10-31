@@ -16,7 +16,9 @@ python "$SCRIPT_DIR/validate_runtime_database_urls.py"
 
 # psql reads the runtime password from its environment; it is not interpolated
 # into a shell command or printed in deployment logs.
-psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$SCRIPT_DIR/provision-runtime-role.sql"
+env -u PGUSER -u PGHOSTADDR -u PGPORT -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
+  PGOPTIONS='-c search_path=public' \
+  psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -q -f "$SCRIPT_DIR/provision-runtime-role.sql"
 
 # Prove that the exact URL destined for the API connects as the restricted role.
 python "$SCRIPT_DIR/validate_runtime_database_urls.py" --verify-runtime
