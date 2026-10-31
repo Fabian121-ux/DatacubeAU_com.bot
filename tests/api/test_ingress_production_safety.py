@@ -11,6 +11,7 @@ No real WhatsApp transport is contacted.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import text
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -108,6 +109,116 @@ async def test_ordinary_contact_dm_is_still_routed(ingress):
     assert len(routed) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message_id", "body_text"),
+    [
+        ("STOP-CLAIM-1", "STOP"),
+        ("STOP-CLAIM-2", "STOP 🙏"),
+        ("STOP-CLAIM-3", "Unsubscribe me 📵"),
+        ("STOP-CLAIM-4", "STOP MESSAGING 🙏"),
+        ("STOP-CLAIM-5", "unsubscribe please 📵"),
+        ("STOP-CLAIM-6", "stop texting"),
+        ("STOP-CLAIM-7", "stop contacting"),
+        ("STOP-CLAIM-8", "stop sending"),
+        ("STOP-CLAIM-9", "please unsubscribe"),
+        ("STOP-CLAIM-10", "remove me from your list"),
+        ("STOP-CLAIM-11", "take me off your list"),
+    ],
+)
+async def test_explicit_contact_opt_out_is_claimed_before_routing(
+    ingress, db_session, message_id, body_text
+):
+    """The final worker fence must see explicit opt-outs with harmless emoji too."""
+    app, routed = ingress
+    body = await _post(app, _message_event(message_id=message_id, body=body_text))
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status, sender_identity_ids FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": f"test:{CONTACT_ID}:{message_id}"},
+        )
+    ).one()
+    assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
+    assert receipt.sender_identity_ids == [CONTACT_ID]
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_opt_out_without_transport_message_id_still_claims_pending_intent(
+    ingress, db_session
+):
+    """Missing WAHA IDs must not remove the pre-routing STOP veto."""
+    _gateway_app, routed = ingress
+    # The configured combined gateway rejects missing source IDs. Exercise the
+    # lower-level webhook route separately to keep its defensive opt-out fence
+    # safe if a legacy/direct caller reaches it.
+    app = FastAPI()
+    app.include_router(inbound.router)
+    event = _message_event(message_id=None, body="STOP")
+    event_key = inbound._build_opt_out_intent_key(event, event["payload"])
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://ingress",
+    ) as client:
+        response = await client.post("/webhooks/waha", json=event)
+    body = response.json()
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
+    assert await inbound.ContactMessagingConsentService(db_session).has_pending_opt_out_intent(
+        CONTACT_ID
+    )
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message_id", "body_text"),
+    [
+        ("CONTEXT-OPT-OUT-1", "stop messaging about the deployment"),
+        ("CONTEXT-OPT-OUT-2", "unsubscribe please send the report"),
+        ("CONTEXT-OPT-OUT-3", "don't stop"),
+    ],
+)
+async def test_contextual_mentions_do_not_claim_opt_out(
+    ingress, db_session, message_id, body_text
+):
+    """Contextual mentions must not become durable opt-out vetoes."""
+    app, routed = ingress
+    body = await _post(app, _message_event(message_id=message_id, body=body_text))
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                "WHERE event_key = :event_key"
+            ),
+            {"event_key": f"test:{CONTACT_ID}:{message_id}"},
+        )
+    ).one()
+    assert receipt.opt_out_intent is False
+    assert receipt.status == "processing"
+    assert len(routed) == 1
+
+
 # --------------------------------------------------------------------------------------
 # Transport events that are not new externally-authored messages
 # --------------------------------------------------------------------------------------
@@ -155,6 +266,37 @@ async def test_revocation_event_is_never_routed_for_reply(ingress):
 
 
 @pytest.mark.asyncio
+async def test_message_without_exact_chat_id_is_never_claimed_or_routed(ingress, db_session):
+    """Sender-ID fallback must not replace the exact transport reply target."""
+    app, routed = ingress
+    event = {
+        "event": "message",
+        "session": "test",
+        "payload": {
+            "id": "MISSING-CHAT-STOP",
+            "sender": {"id": CONTACT_ID},
+            "fromMe": False,
+            "body": "STOP",
+        },
+    }
+
+    body = await _post(app, event)
+
+    assert body["status"] == "ignored"
+    assert body["reason"] == "missing_exact_chat_id"
+    assert routed == []
+    receipt_count = (
+        await db_session.execute(
+            text(
+                "SELECT count(*) FROM inbound_webhook_receipts "
+                "WHERE event_key LIKE '%MISSING-CHAT-STOP'"
+            )
+        )
+    ).scalar_one()
+    assert receipt_count == 0
+
+
+@pytest.mark.asyncio
 async def test_event_without_source_message_id_is_never_routed(ingress):
     app, routed = ingress
     event = {"event": "message", "session": "test", "payload": {"chatId": CONTACT_ID, "body": "hi"}}
@@ -164,6 +306,43 @@ async def test_event_without_source_message_id_is_never_routed(ingress):
     assert body["status"] == "ignored"
     assert body["reason"] == "missing_source_message_id"
     assert routed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("from_me", "body_text"),
+    [(False, "hello"), (True, ".status")],
+    ids=["ordinary-contact-message", "owner-command"],
+)
+async def test_direct_webhook_without_message_id_fails_closed_before_side_effects(
+    ingress, db_session, from_me, body_text
+):
+    """The direct WAHA route must not bypass the gateway's stable-ID guard."""
+    _gateway_app, routed = ingress
+    app = FastAPI()
+    app.include_router(inbound.router)
+    event = _message_event(message_id=None, from_me=from_me, body=body_text)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://ingress",
+    ) as client:
+        response = await client.post("/webhooks/waha", json=event)
+    body = response.json()
+
+    assert body["status"] == "ignored"
+    assert body["reason"] == "missing_source_message_id"
+    assert routed == []
+    receipt_count = (
+        await db_session.execute(
+            text(
+                "SELECT count(*) FROM inbound_webhook_receipts "
+                "WHERE chat_id = :chat_id AND message_id IS NULL"
+            ),
+            {"chat_id": CONTACT_ID},
+        )
+    ).scalar_one()
+    assert receipt_count == 0
 
 
 # --------------------------------------------------------------------------------------
@@ -219,3 +398,114 @@ async def test_one_source_never_routes_to_multiple_recipients(ingress):
     assert len(routed) == 1
     payload = inbound._resolve_payload(routed[0])
     assert inbound._resolve_chat_id(payload) == CONTACT_ID
+
+
+@pytest.mark.asyncio
+async def test_opt_out_ingress_preserves_sender_identity_for_unmapped_chat_alias(
+    ingress, db_session
+):
+    """An unmapped LID chat must retain its canonical sender ID for the worker veto."""
+    from app.models.schema import Contact
+    from app.services.contact_messaging_consent_service import ContactMessagingConsentService
+
+    contact = Contact(
+        whatsapp_id=CONTACT_ID,
+        chat_id=CONTACT_ID,
+        display_name="Unmapped alias sender identity regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+    contact_id = int(contact.id)
+
+    unmapped_chat_id = "987654321@lid"
+    message_id = "UNMAPPED-ALIAS-INGRESS-STOP"
+    event = _message_event(
+        chat_id=unmapped_chat_id,
+        message_id=message_id,
+        body="STOP",
+    )
+    # WAHA's transport chat alias can differ from the sender's canonical identity.
+    event["payload"]["sender"] = {"id": CONTACT_ID}
+
+    app, routed = ingress
+    body = await _post(app, event)
+
+    assert body["status"] == "accepted"
+    receipt = (
+        await db_session.execute(
+            text(
+                "SELECT chat_id, sender_identity_ids, sender_contact_ids, opt_out_intent, status "
+                "FROM inbound_webhook_receipts WHERE event_key = :event_key"
+            ),
+            {"event_key": f"test:{unmapped_chat_id}:{message_id}"},
+        )
+    ).one()
+    assert receipt.chat_id == unmapped_chat_id
+    assert set(receipt.sender_identity_ids) == {CONTACT_ID, unmapped_chat_id}
+    assert set(receipt.sender_contact_ids) == {str(contact_id)}
+    assert receipt.opt_out_intent is True
+    assert receipt.status == "processing"
+    consent = ContactMessagingConsentService(db_session)
+    assert await consent.has_pending_opt_out_intent_for_contact(contact_id) is True
+
+    # The receipt must remain correlated after mutable transport aliases change. The
+    # worker must not need to rediscover this STOP through Contact.whatsapp_id/chat_id.
+    refreshed_contact = await db_session.get(Contact, contact_id)
+    assert refreshed_contact is not None
+    refreshed_contact.whatsapp_id = "2348000000003@c.us"
+    refreshed_contact.chat_id = "2348000000003@c.us"
+    await db_session.flush()
+    assert await consent.has_pending_opt_out_intent_for_contact(contact_id) is True
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pending_stop_enriches_stable_contact_correlation(ingress, db_session):
+    """A duplicate STOP may enrich its veto receipt without claiming routing twice."""
+    from app.models.schema import Contact
+    from app.services.contact_messaging_consent_service import ContactMessagingConsentService
+
+    app, routed = ingress
+    unmapped_chat_id = "987654322@lid"
+    message_id = "UNMAPPED-ALIAS-STOP-RETRY"
+    event = _message_event(chat_id=unmapped_chat_id, message_id=message_id, body="STOP")
+    event["payload"]["sender"] = {"id": CONTACT_ID}
+
+    first = await _post(app, event)
+    assert first["status"] == "accepted"
+    event_key = f"test:{unmapped_chat_id}:{message_id}"
+    initial = (
+        await db_session.execute(
+            text("SELECT sender_contact_ids, status FROM inbound_webhook_receipts WHERE event_key = :event_key"),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert initial.sender_contact_ids == []
+    assert initial.status == "processing"
+
+    contact = Contact(
+        whatsapp_id=CONTACT_ID,
+        chat_id=CONTACT_ID,
+        display_name="Late-mapped STOP sender identity regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    duplicate = await _post(app, event)
+    assert duplicate["status"] == "duplicate"
+    assert len(routed) == 1
+    enriched = (
+        await db_session.execute(
+            text("SELECT sender_contact_ids, status FROM inbound_webhook_receipts WHERE event_key = :event_key"),
+            {"event_key": event_key},
+        )
+    ).one()
+    assert set(enriched.sender_contact_ids) == {str(contact.id)}
+    assert enriched.status == "processing"
+
+    consent = ContactMessagingConsentService(db_session)
+    assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True
+    contact.whatsapp_id = "2348000000004@c.us"
+    contact.chat_id = "2348000000004@c.us"
+    await db_session.flush()
+    assert await consent.has_pending_opt_out_intent_for_contact(int(contact.id)) is True

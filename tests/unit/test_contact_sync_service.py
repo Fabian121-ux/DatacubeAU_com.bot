@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.schema import Contact
 from app.services.contact_intelligence_service import ContactIntelligenceService
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.contact_sync_service import ContactSyncService
+from app.utils.time import utcnow
 
 
 class _FakeWAHA:
@@ -118,3 +121,154 @@ async def test_sync_skips_non_person_contacts(db_session):
 
     assert result == {"fetched": 3, "created": 0, "updated": 0, "skipped": 3}
     assert (await db_session.execute(select(Contact))).scalars().all() == []
+
+@pytest.mark.asyncio
+async def test_sync_acquires_chat_mapping_lock_before_contact_row_lock(db_session, monkeypatch):
+    exact_chat_id = "2348044444444@c.us"
+    contact = Contact(
+        whatsapp_id=exact_chat_id,
+        chat_id=None,
+        normalized_phone="2348044444444",
+        identity_json={"is_saved_contact": True},
+    )
+    db_session.add(contact)
+    await db_session.commit()  # Release the seed INSERT's row lock before measuring _sync_one.
+
+    operations = []
+    original_lock = ContactMessagingConsentService.lock_exact_chat_mapping
+    original_find = ContactSyncService._find_existing
+
+    async def tracked_lock(session, chat_id):
+        operations.append(("mapping_lock", chat_id))
+        await original_lock(session, chat_id)
+
+    async def tracked_find(service, **kwargs):
+        operation = "contact_lookup_for_update" if kwargs.get("for_update", True) else "contact_lookup_unlocked"
+        operations.append((operation, None))
+        return await original_find(service, **kwargs)
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_exact_chat_mapping",
+        staticmethod(tracked_lock),
+    )
+    monkeypatch.setattr(ContactSyncService, "_find_existing", tracked_find)
+
+    service = ContactSyncService(
+        db_session,
+        waha=_FakeWAHA([]),
+    )
+    outcome, _ = await service._sync_one(
+        {
+            "id": "2348044444444@s.whatsapp.net",
+            "name": "Amanda Christabel",
+            "isMyContact": True,
+        },
+        sync_at=utcnow(),
+    )
+
+    assert outcome == "updated"
+    assert operations == [
+        ("contact_lookup_unlocked", None),
+        ("mapping_lock", exact_chat_id),
+        ("contact_lookup_for_update", None),
+    ]
+
+@pytest.mark.asyncio
+async def test_sync_does_not_take_chat_mapping_lock_for_already_mapped_contact(db_session, monkeypatch):
+    exact_chat_id = "2348055555555@c.us"
+    contact = Contact(
+        whatsapp_id=exact_chat_id,
+        chat_id=exact_chat_id,
+        normalized_phone="2348055555555",
+        identity_json={"is_saved_contact": True},
+    )
+    db_session.add(contact)
+    await db_session.commit()
+
+    operations = []
+    original_lock = ContactMessagingConsentService.lock_exact_chat_mapping
+    original_find = ContactSyncService._find_existing
+
+    async def tracked_lock(session, chat_id):
+        operations.append(("mapping_lock", chat_id))
+        await original_lock(session, chat_id)
+
+    async def tracked_find(service, **kwargs):
+        operation = "contact_lookup_for_update" if kwargs.get("for_update", True) else "contact_lookup_unlocked"
+        operations.append((operation, None))
+        return await original_find(service, **kwargs)
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_exact_chat_mapping",
+        staticmethod(tracked_lock),
+    )
+    monkeypatch.setattr(ContactSyncService, "_find_existing", tracked_find)
+
+    service = ContactSyncService(db_session, waha=_FakeWAHA([]))
+    outcome, _ = await service._sync_one(
+        {
+            "id": "2348055555555@s.whatsapp.net",
+            "name": "Already Mapped Contact",
+            "isMyContact": True,
+        },
+        sync_at=utcnow(),
+    )
+
+    assert outcome == "updated"
+    assert operations == [
+        ("contact_lookup_unlocked", None),
+        ("contact_lookup_for_update", None),
+    ]
+
+@pytest.mark.asyncio
+async def test_sync_refreshes_locked_contact_after_mapping_lock_wait(db_session, monkeypatch):
+    exact_chat_id = "2348066666666@c.us"
+    concurrent_chat_id = "2348999999999@c.us"
+    contact = Contact(
+        whatsapp_id=exact_chat_id,
+        chat_id=None,
+        normalized_phone="2348066666666",
+        identity_json={"is_saved_contact": True},
+    )
+    db_session.add(contact)
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_exact_chat_mapping
+
+    async def racing_lock(session, chat_id):
+        # Simulate a competing compliant writer winning the advisory lock after our
+        # unlocked probe but before our SELECT ... FOR UPDATE. The second read must
+        # refresh the already-loaded ORM instance rather than overwrite this mapping.
+        async with async_sessionmaker(bind=session.bind, expire_on_commit=False)() as other:
+            await original_lock(other, chat_id)
+            other_contact = (
+                await other.execute(
+                    select(Contact).where(Contact.id == contact.id).with_for_update()
+                )
+            ).scalar_one()
+            other_contact.chat_id = concurrent_chat_id
+            await other.commit()
+        await original_lock(session, chat_id)
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_exact_chat_mapping",
+        staticmethod(racing_lock),
+    )
+
+    service = ContactSyncService(db_session, waha=_FakeWAHA([]))
+    outcome, _ = await service._sync_one(
+        {
+            "id": "2348066666666@s.whatsapp.net",
+            "name": "Concurrent Mapping Contact",
+            "isMyContact": True,
+        },
+        sync_at=utcnow(),
+    )
+
+    await db_session.refresh(contact)
+    assert outcome == "updated"
+    assert contact.chat_id == concurrent_chat_id
+

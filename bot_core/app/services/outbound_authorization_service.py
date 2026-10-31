@@ -362,7 +362,7 @@ class OutboundAuthorizationService:
                   AND enabled = true
                   AND disabled_at IS NULL
                   AND (expires_at IS NULL OR expires_at > :instant)
-                LIMIT 1
+                FOR UPDATE
                 """
             ),
             {

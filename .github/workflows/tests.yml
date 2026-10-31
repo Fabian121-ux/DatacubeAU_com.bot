@@ -11,6 +11,8 @@ jobs:
   test:
     name: pytest with coverage
     runs-on: ubuntu-latest
+    # Keep a stuck async/concurrency test from consuming a runner for hours.
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -76,7 +78,8 @@ jobs:
         run: |
           # 57% is the measured repository baseline after the full migration chain.
           # Keep this as a non-regression floor and raise it as coverage expands toward 80%.
-          pytest tests \
+          # Verbose node IDs and periodic stack dumps make any lock/test hang diagnosable.
+          pytest -vv -o faulthandler_timeout=120 tests \
             --cov=bot_core/app \
             --cov-report=term-missing \
             --cov-report=xml \

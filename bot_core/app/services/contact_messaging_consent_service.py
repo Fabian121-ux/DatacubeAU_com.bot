@@ -1,0 +1,663 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import re
+import unicodedata
+
+from sqlalchemy import Text, bindparam, or_, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.scheduled_action import ScheduledAction
+from app.models.schema import (
+    AuditLog,
+    Contact,
+    ContactMessagingConsent,
+    ContactMessagingConsentEvent,
+    Message,
+)
+from app.utils.time import utcnow
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentDecision:
+    allowed: bool
+    reason: str
+    contact_id: int | None = None
+    consent_id: int | None = None
+
+
+class ContactMessagingConsentService:
+    """Single authority for exact-contact/chat consent and opt-out serialization.
+
+    Missing state is materialized as UNKNOWN and denied. The row lock is intentionally
+    held by the caller's transaction until the single outbound transport attempt ends.
+    OWNER automation policies, grants, and one-use approvals never override an opt-out.
+    Re-consent after an opt-out is deliberately unsupported until a separately reviewed
+    product policy is approved.
+    """
+
+    CONSENT_TTL = timedelta(days=90)
+    # Dedicated two-key advisory-lock namespace for exact WhatsApp chat mappings.
+    # hashtext collisions only serialize unrelated chats; they cannot authorize one.
+    _CHAT_MAPPING_LOCK_NAMESPACE = 0x5A494E41  # ASCII "ZINA"
+    _OWNER_EVIDENCE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
+    _OPT_OUT_EXACT = frozenset({
+        "stop", "please stop", "stop please", "unsubscribe", "unsubscribe please",
+        "please unsubscribe", "unsubscribe me", "please unsubscribe me", "unsubscribe me please",
+        "opt out", "opt-out", "optout",
+        "remove me", "remove me from your list", "take me off your list",
+        "stop messaging", "stop texting", "stop contacting", "stop sending",
+        "stop messaging me", "stop texting me", "stop contacting me",
+        "stop sending me messages", "stop sending messages", "please stop sending messages",
+        "stop all messages", "no more messages", "no more texts",
+        "do not contact me", "don't contact me", "dont contact me",
+        "do not message me", "don't message me", "dont message me",
+    })
+    _OPT_OUT_PATTERNS = (
+        re.compile(r"^(?:please\s+)?(?:do not|don't|dont)\s+(?:send|message|text|contact)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
+        re.compile(r"^(?:please\s+)?(?:stop|unsubscribe)\s+(?:messaging|texting|contacting|sending)\s+(?:me|us)(?:\s+(?:again|anymore|any more))?$"),
+        re.compile(r"^(?:please\s+)?(?:no more|enough)\s+(?:messages|texts|calls)(?:\s+(?:to|for)\s+(?:me|us))?$"),
+        re.compile(r"^(?:please\s+)?(?:i do not|i don't|i dont)\s+want\s+(?:any\s+)?(?:more\s+)?(?:messages|texts|contact)(?:\s+(?:again|anymore|any more))?$"),
+    )
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @staticmethod
+    async def lock_exact_chat_mapping(session: AsyncSession, exact_chat_id: str) -> None:
+        """Serialize exact-chat mapping writes with consent authorization.
+
+        Contact.chat_id is not unique, so locking only rows that currently match a
+        destination does not prevent another Contact row from becoming a conflicting
+        mapping after the lookup. Every DM mapping writer and the final consent fence
+        must acquire this transaction-scoped lock before locking Contact rows.
+        """
+        if not isinstance(exact_chat_id, str) or not exact_chat_id:
+            raise ValueError("exact chat ID is required for mapping lock")
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:exact_chat_id))"),
+            {
+                "namespace": ContactMessagingConsentService._CHAT_MAPPING_LOCK_NAMESPACE,
+                "exact_chat_id": exact_chat_id,
+            },
+        )
+
+    @staticmethod
+    async def lock_opt_out_dispatch_boundary(
+        session: AsyncSession,
+        exact_chat_id: str,
+    ) -> None:
+        """Serialize contact-wide STOP receipts with the final pre-send veto.
+
+        Lock the exact-chat mapping first, then every Contact row currently claiming
+        that chat in stable ID order. The Contact row is the shared identity lock:
+        a STOP received on alias B therefore serializes with a send to alias A for
+        the same Contact. If no Contact is mapped yet, the mapping lock prevents a
+        writer from assigning this chat until the STOP receipt commits.
+        """
+        if not ContactMessagingConsentService._is_direct_chat(exact_chat_id):
+            raise ValueError("opt-out dispatch boundary requires an exact direct chat ID")
+        await ContactMessagingConsentService.lock_exact_chat_mapping(session, exact_chat_id)
+        # Contact.chat_id is not unique, so lock every claimant in stable order. The
+        # worker separately fails closed unless exactly one current mapping is valid.
+        await session.execute(
+            select(Contact.id)
+            .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
+            .order_by(Contact.id)
+            .with_for_update()
+        )
+
+    @classmethod
+    def is_explicit_opt_out_message(cls, value: str | None) -> bool:
+        # NFKC plus separator normalization catches unambiguous STOP/UNSUBSCRIBE
+        # messages with trailing emoji or other symbols, without broad substring
+        # matching. Keep apostrophes and hyphens so the explicit phrase rules remain
+        # readable (e.g. "don't contact me" and "opt-out").
+        raw = unicodedata.normalize("NFKC", (value or "").replace("’", "'")).casefold()
+        raw = "".join(
+            char if char.isalnum() or char.isspace() or char in {"'", "-"} else " "
+            for char in raw
+        )
+        raw = re.sub(r"\s+", " ", raw).strip()
+        if raw in cls._OPT_OUT_EXACT:
+            return True
+        return any(pattern.search(raw) for pattern in cls._OPT_OUT_PATTERNS)
+
+    async def has_pending_opt_out_intent(self, exact_chat_id: str) -> bool:
+        """Return whether an authenticated inbound STOP is claimed but not applied.
+
+        The receipt is committed before routing can block on the mapping lock. This is
+        a veto-only signal, never consent authority; completed receipts are safe to ignore
+        because routing commits the terminal opt-out state before completing its receipt.
+        """
+        if not self._is_direct_chat(exact_chat_id):
+            return False
+        result = await self.session.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM inbound_webhook_receipts
+                    WHERE chat_id = :exact_chat_id
+                      AND opt_out_intent IS TRUE
+                      AND status = 'processing'
+                )
+                """
+            ),
+            {"exact_chat_id": exact_chat_id},
+        )
+        return bool(result.scalar_one())
+
+
+    async def resolve_contact_ids_for_sender_identity_ids(
+        self, sender_identity_ids: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Resolve sender aliases to stable Contact IDs without taking dispatch locks.
+
+        This read happens before the STOP receipt is committed. The receipt then carries
+        the resolved IDs across any later alias remapping, so the final worker veto does
+        not have to rediscover identity from mutable Contact.whatsapp_id/chat_id fields.
+        """
+        identities = sorted(
+            {
+                value.strip()
+                for value in sender_identity_ids
+                if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+            }
+        )
+        if not identities:
+            return ()
+        result = await self.session.execute(
+            select(Contact.id)
+            .where(
+                or_(
+                    Contact.whatsapp_id.in_(identities),
+                    Contact.chat_id.in_(identities),
+                    Contact.waha_contact_id.in_(identities),
+                    Contact.waha_participant_id.in_(identities),
+                )
+            )
+            .order_by(Contact.id)
+        )
+        return tuple(str(contact_id) for contact_id in result.scalars().all())
+
+    async def _mapped_direct_chat_ids(self, contact_id: int) -> set[str]:
+        """Return current direct-chat aliases for a Contact row locked by the caller."""
+        result = await self.session.execute(
+            select(Contact.whatsapp_id, Contact.chat_id).where(Contact.id == contact_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return set()
+        return {
+            str(value).strip()
+            for value in row
+            if self._is_direct_chat(value)
+        }
+
+    async def _contact_identity_ids(self, contact_id: int) -> set[str]:
+        """Return sender identities for veto correlation, never as routable chat IDs."""
+        result = await self.session.execute(
+            select(
+                Contact.whatsapp_id,
+                Contact.chat_id,
+                Contact.waha_contact_id,
+                Contact.waha_participant_id,
+            ).where(Contact.id == contact_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return set()
+        return {
+            str(value).strip()
+            for value in row
+            if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+        }
+
+    async def _has_terminal_opt_out_for_contact(
+        self,
+        contact_id: int,
+        aliases: set[str] | None = None,
+    ) -> bool:
+        """Treat any recorded STOP for this Contact or its current aliases as terminal."""
+        mapped_aliases = aliases if aliases is not None else await self._mapped_direct_chat_ids(contact_id)
+        predicates = [ContactMessagingConsentEvent.contact_id == contact_id]
+        if mapped_aliases:
+            predicates.append(
+                ContactMessagingConsentEvent.exact_chat_id.in_(sorted(mapped_aliases))
+            )
+        result = await self.session.execute(
+            select(ContactMessagingConsentEvent.id)
+            .where(ContactMessagingConsentEvent.event_type == "opted_out")
+            .where(or_(*predicates))
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def has_pending_opt_out_intent_for_contact(self, contact_id: int | None) -> bool:
+        """Veto dispatch for a pending STOP by transport alias or sender identity."""
+        if not isinstance(contact_id, int) or contact_id <= 0:
+            return True
+        aliases = await self._mapped_direct_chat_ids(contact_id)
+        if not aliases:
+            return True
+        # Correlate stable WAHA contact/participant identities as well as routable
+        # aliases. These values are used only in the receipt JSON predicate below;
+        # they must never be treated as WAHA destination chat IDs.
+        identity_ids = await self._contact_identity_ids(contact_id)
+        statement = text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM inbound_webhook_receipts
+                WHERE (
+                    chat_id IN :chat_ids
+                    OR sender_identity_ids ?| :identity_ids
+                    OR sender_contact_ids ? :contact_id
+                )
+                  AND opt_out_intent IS TRUE
+                  AND status = 'processing'
+            )
+            """
+        ).bindparams(
+            bindparam("chat_ids", expanding=True),
+            bindparam("identity_ids", type_=ARRAY(Text())),
+        )
+        result = await self.session.execute(
+            statement,
+            {
+                "chat_ids": sorted(aliases),
+                "identity_ids": sorted(identity_ids),
+                "contact_id": str(contact_id),
+            },
+        )
+        return bool(result.scalar_one())
+
+    @staticmethod
+    def _is_direct_chat(exact_chat_id: str | None) -> bool:
+        chat = (exact_chat_id or "").strip().lower()
+        if not chat or any(char.isspace() for char in chat):
+            return False
+        return not (
+            chat.endswith("@g.us")
+            or chat == "status@broadcast"
+            or chat.endswith("@broadcast")
+            or chat.endswith("@newsletter")
+        )
+
+    @classmethod
+    def _validate_owner_evidence(cls, exact_chat_id: str, evidence_ref: str, owner_identity: str) -> None:
+        if not cls._is_direct_chat(exact_chat_id):
+            raise ValueError("consent requires one exact direct-message chat ID")
+        if not cls._OWNER_EVIDENCE.fullmatch((evidence_ref or "").strip()):
+            raise ValueError("evidence-ref must be a short opaque token; do not store message text")
+        if not (owner_identity or "").strip():
+            raise ValueError("owner identity is required")
+
+    async def _lock_or_create(self, contact_id: int, exact_chat_id: str, instant: datetime) -> ContactMessagingConsent:
+        # INSERT .. ON CONFLICT first is essential: SELECT FOR UPDATE cannot lock a
+        # row that does not exist. Concurrent first dispatch and opt-out therefore
+        # serialize on the unique (contact_id, exact_chat_id) key.
+        await self.session.execute(
+            pg_insert(ContactMessagingConsent)
+            .values(
+                contact_id=contact_id,
+                exact_chat_id=exact_chat_id,
+                status="unknown",
+                created_at=instant,
+                updated_at=instant,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    ContactMessagingConsent.contact_id,
+                    ContactMessagingConsent.exact_chat_id,
+                ]
+            )
+        )
+        row = (
+            await self.session.execute(
+                select(ContactMessagingConsent)
+                .where(ContactMessagingConsent.contact_id == contact_id)
+                .where(ContactMessagingConsent.exact_chat_id == exact_chat_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise RuntimeError("contact consent row could not be locked")
+        return row
+
+    async def _resolve_contact_id(self, message) -> int | None:
+        metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+        scheduled_raw = metadata.get("scheduled_action_id")
+        if scheduled_raw is not None:
+            try:
+                scheduled_id = int(scheduled_raw)
+                queue_id = int(message.id)
+            except (TypeError, ValueError):
+                return None
+            if scheduled_id <= 0 or queue_id <= 0:
+                return None
+            return (
+                await self.session.execute(
+                    select(ScheduledAction.target_contact_id)
+                    .where(ScheduledAction.id == scheduled_id)
+                    .where(ScheduledAction.outbound_queue_id == queue_id)
+                    .where(ScheduledAction.target_chat_id == message.chat_id)
+                    .where(ScheduledAction.action_type == "whatsapp.send_message")
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        try:
+            inbound_id = int(metadata.get("inbound_message_id"))
+            declared_contact_id = int(metadata.get("contact_id"))
+        except (TypeError, ValueError):
+            return None
+        if inbound_id <= 0 or declared_contact_id <= 0:
+            return None
+        # Resolve from the durable inbound row, not only queue JSON. The queue must
+        # target the same exact chat and carry the same contact identity as its source.
+        contact_id = (
+            await self.session.execute(
+                select(Message.contact_id)
+                .where(Message.id == inbound_id)
+                .where(Message.chat_id == message.chat_id)
+                .where(Message.contact_id == declared_contact_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return int(contact_id) if contact_id is not None else None
+
+    async def authorize_outbound_queue_message(
+        self,
+        message,
+        *,
+        now: datetime | None = None,
+    ) -> ConsentDecision:
+        instant = now or utcnow()
+        exact_chat_id = str(getattr(message, "chat_id", "") or "")
+        if not self._is_direct_chat(exact_chat_id):
+            return ConsentDecision(False, "recipient is not an exact direct-message chat")
+        contact_id = await self._resolve_contact_id(message)
+        if contact_id is None:
+            return ConsentDecision(False, "exact durable contact/chat mapping is missing")
+
+        # InboundRouter locks the Contact row before recording an opt-out, then locks
+        # the consent row. Acquire the same locks in the same order here. Otherwise a
+        # dispatch can lock consent first while an already-arrived STOP is blocked on
+        # that consent row, allowing the send to overtake the opt-out transaction.
+        # Serialize against inbound writers that may assign this exact destination to
+        # a different Contact row. The lock must precede every Contact row lock below.
+        await self.lock_exact_chat_mapping(self.session, exact_chat_id)
+
+        # Lock all rows that currently claim this exact destination in stable order.
+        # whatsapp_id is unique, but legacy chat_id mappings can still collide with
+        # another contact's whatsapp_id or chat_id. Consent is contact-specific, so
+        # an ambiguous exact-chat mapping must never inherit one contact's grant.
+        matching_contact_ids = (
+            await self.session.execute(
+                select(Contact.id)
+                .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
+                .order_by(Contact.id)
+                .limit(2)
+                .with_for_update()
+            )
+        ).scalars().all()
+        if len(matching_contact_ids) != 1 or int(matching_contact_ids[0]) != contact_id:
+            return ConsentDecision(
+                False,
+                "current contact/chat mapping does not match recipient",
+                contact_id,
+            )
+
+        # Opt-out is contact-wide across currently mapped aliases. Check immutable
+        # history before trusting a grant for a different alias of the same Contact.
+        aliases = await self._mapped_direct_chat_ids(contact_id)
+        if await self._has_terminal_opt_out_for_contact(contact_id, aliases):
+            return ConsentDecision(False, "contact has opted out", contact_id)
+
+        row = await self._lock_or_create(contact_id, exact_chat_id, instant)
+        if row.status == "opted_out":
+            return ConsentDecision(False, "contact has opted out", contact_id, int(row.id))
+        if row.status == "revoked":
+            return ConsentDecision(False, "contact consent has been revoked", contact_id, int(row.id))
+        if row.status != "consented":
+            return ConsentDecision(False, "contact consent is unknown", contact_id, int(row.id))
+        if (
+            row.provenance not in {"owner_attested", "owner_reconsent"}
+            or not row.evidence_ref
+            or row.granted_at is None
+            or row.expires_at is None
+        ):
+            return ConsentDecision(False, "contact consent lacks required provenance or expiry", contact_id, int(row.id))
+        if row.expires_at <= instant:
+            return ConsentDecision(False, "contact consent has expired", contact_id, int(row.id))
+        return ConsentDecision(True, "exact contact/chat consent is current", contact_id, int(row.id))
+
+    async def _resolve_owner_chat(self, exact_chat_id: str) -> Contact:
+        if not self._is_direct_chat(exact_chat_id):
+            raise ValueError("consent requires one exact direct-message chat ID")
+        await self.lock_exact_chat_mapping(self.session, exact_chat_id)
+        rows = (
+            await self.session.execute(
+                select(Contact)
+                .where(or_(Contact.whatsapp_id == exact_chat_id, Contact.chat_id == exact_chat_id))
+                .order_by(Contact.id)
+                .limit(2)
+                .with_for_update()
+            )
+        ).scalars().all()
+        if len(rows) != 1:
+            raise ValueError("exact chat ID must resolve to exactly one known contact")
+        return rows[0]
+
+    async def grant_for_chat(self, *, exact_chat_id: str, evidence_ref: str, owner_identity: str) -> int:
+        self._validate_owner_evidence(exact_chat_id, evidence_ref, owner_identity)
+        contact = await self._resolve_owner_chat(exact_chat_id)
+
+        # Current consent rows cascade with Contact deletion, but the audit events
+        # deliberately do not. Preserve terminal opt-out across contact deletion/re-import
+        # and across every currently mapped alias of the same Contact.
+        aliases = await self._mapped_direct_chat_ids(int(contact.id))
+        if await self._has_terminal_opt_out_for_contact(int(contact.id), aliases):
+            raise ValueError(
+                "contact has a terminal opt-out; current policy does not permit a new grant"
+            )
+
+        instant = utcnow()
+        row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)
+        if row.status == "opted_out":
+            raise ValueError("contact has a terminal opt-out; current policy does not permit a new grant")
+        row.status = "consented"
+        row.provenance = "owner_attested"
+        row.evidence_ref = evidence_ref.strip()
+        row.granted_by = owner_identity.strip()
+        row.granted_at = instant
+        row.expires_at = instant + self.CONSENT_TTL
+        row.opted_out_at = None
+        row.revoked_at = None
+        row.updated_at = instant
+        await self._record_event(row, "granted", "owner", owner_identity.strip(), evidence_ref.strip(), instant)
+        await self.session.flush()
+        return int(contact.id)
+
+    async def revoke_for_chat(self, *, exact_chat_id: str, evidence_ref: str, owner_identity: str) -> int:
+        self._validate_owner_evidence(exact_chat_id, evidence_ref, owner_identity)
+        contact = await self._resolve_owner_chat(exact_chat_id)
+        instant = utcnow()
+        row = await self._lock_or_create(int(contact.id), exact_chat_id, instant)
+        if row.status == "opted_out":
+            raise ValueError("contact opted out; owner revocation cannot override terminal opt-out")
+        row.status = "revoked"
+        row.provenance = "owner_revocation"
+        row.evidence_ref = evidence_ref.strip()
+        row.granted_by = owner_identity.strip()
+        row.expires_at = None
+        row.revoked_at = instant
+        row.updated_at = instant
+        await self._record_event(row, "revoked", "owner", owner_identity.strip(), evidence_ref.strip(), instant)
+        await self.session.flush()
+        return int(contact.id)
+
+    async def record_inbound_opt_out(
+        self,
+        *,
+        contact_id: int,
+        exact_chat_id: str,
+        evidence_ref: str,
+    ) -> None:
+        if not self._is_direct_chat(exact_chat_id):
+            raise ValueError("contact opt-out must be tied to an exact direct-message chat")
+        if contact_id <= 0 or not str(evidence_ref or "").strip():
+            raise ValueError("contact ID and inbound evidence reference are required")
+
+        # Keep the lock order inside this authority service, not only in InboundRouter.
+        # Serialize destination mapping first, then lock any current claimant, then the
+        # resolved Contact row, then consent. A STOP may arrive on a new WAHA/LID alias
+        # while the router deliberately preserves the Contact's old mapping so the
+        # pending receipt remains discoverable. In that case, accept the alias only when
+        # the exact inbound Message and a committed pending receipt independently bind it
+        # to this Contact; never weaken the normal mapping check for arbitrary callers.
+        await self.lock_exact_chat_mapping(self.session, exact_chat_id)
+        matching_contact_ids = (
+            await self.session.execute(
+                select(Contact.id)
+                .where(
+                    or_(
+                        Contact.whatsapp_id == exact_chat_id,
+                        Contact.chat_id == exact_chat_id,
+                    )
+                )
+                .order_by(Contact.id)
+                .limit(2)
+                .with_for_update()
+            )
+        ).scalars().all()
+        if matching_contact_ids and (
+            len(matching_contact_ids) != 1 or int(matching_contact_ids[0]) != contact_id
+        ):
+            raise ValueError("exact chat ID does not match durable contact")
+
+        contact = (
+            await self.session.execute(
+                select(Contact).where(Contact.id == contact_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if contact is None:
+            raise ValueError("exact chat ID does not match durable contact")
+
+        current_aliases = {
+            str(value).strip()
+            for value in (
+                contact.whatsapp_id,
+                contact.chat_id,
+            )
+            if isinstance(value, str) and value.strip()
+        }
+        if exact_chat_id not in current_aliases:
+            try:
+                inbound_message_id = int(evidence_ref)
+            except (TypeError, ValueError):
+                inbound_message_id = 0
+            source_matches = False
+            if inbound_message_id > 0:
+                source_matches = (
+                    await self.session.execute(
+                        select(Message.id)
+                        .where(Message.id == inbound_message_id)
+                        .where(Message.contact_id == contact_id)
+                        .where(Message.chat_id == exact_chat_id)
+                        .where(Message.direction == "inbound")
+                        .limit(1)
+                    )
+                ).scalar_one_or_none() is not None
+
+            identity_ids = sorted({
+                str(value).strip()
+                for value in (
+                    contact.whatsapp_id,
+                    contact.chat_id,
+                    contact.waha_contact_id,
+                    contact.waha_participant_id,
+                )
+                if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+            })
+            pending_statement = text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM inbound_webhook_receipts
+                    WHERE chat_id = :exact_chat_id
+                      AND opt_out_intent IS TRUE
+                      AND status = 'processing'
+                      AND (
+                          sender_contact_ids ? :contact_id
+                          OR sender_identity_ids ?| :identity_ids
+                      )
+                )
+                """
+            ).bindparams(bindparam("identity_ids", type_=ARRAY(Text())))
+            pending_binds_contact = bool(
+                (
+                    await self.session.execute(
+                        pending_statement,
+                        {
+                            "exact_chat_id": exact_chat_id,
+                            "contact_id": str(contact_id),
+                            "identity_ids": identity_ids,
+                        },
+                    )
+                ).scalar_one()
+            )
+            if not source_matches or not pending_binds_contact:
+                raise ValueError("exact chat ID does not match durable contact")
+
+        instant = utcnow()
+        row = await self._lock_or_create(contact_id, exact_chat_id, instant)
+        row.status = "opted_out"
+        row.provenance = "inbound_opt_out"
+        row.evidence_ref = str(evidence_ref).strip()[:240]
+        row.expires_at = None
+        row.opted_out_at = instant
+        row.updated_at = instant
+        await self._record_event(row, "opted_out", "contact", None, row.evidence_ref, instant)
+        await self.session.flush()
+
+    async def _record_event(
+        self,
+        row: ContactMessagingConsent,
+        event_type: str,
+        actor_type: str,
+        actor_identity: str | None,
+        evidence_ref: str | None,
+        instant: datetime,
+    ) -> None:
+        self.session.add(
+            ContactMessagingConsentEvent(
+                consent_id=row.id,
+                contact_id=row.contact_id,
+                exact_chat_id=row.exact_chat_id,
+                event_type=event_type,
+                actor_type=actor_type,
+                actor_identity=actor_identity,
+                evidence_ref=evidence_ref,
+                created_at=instant,
+            )
+        )
+        self.session.add(
+            AuditLog(
+                action="contact_messaging_consent_changed",
+                entity_type="contact_messaging_consent",
+                entity_id=str(row.id),
+                details_json={
+                    "contact_id": row.contact_id,
+                    "exact_chat_id": row.exact_chat_id,
+                    "status": row.status,
+                    "provenance": row.provenance,
+                    "evidence_ref": evidence_ref,
+                },
+                created_at=instant,
+            )
+        )

@@ -20,16 +20,22 @@ production code. No real WhatsApp transport is contacted.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.reply_planner import PlannedReply
 from app.core.router import InboundRouter
 from app.models.enums import DecisionType
+from app.models.scheduled_action import ScheduledAction
 from app.models.schema import Contact, OutboundMessage
+from app.services.scheduled_action_service import ScheduledActionService
+from app.utils.time import utcnow
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.owner_outbound_approval_service import OwnerOutboundApprovalService
 from app.services.waha_client import WahaClientError
 from app.workers import background_workers
 
@@ -352,3 +358,231 @@ async def test_text_only_producer_path_is_unchanged(db_session, monkeypatch):
     assert client.calls == [("send_text", {"chatId": OWNER_CHAT, "text": text})]
     assert row.message_text == text
     assert row.status == "sent"
+
+
+@pytest.mark.asyncio
+async def test_terminal_opt_out_on_mapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
+    """A STOP on one current Contact alias vetoes an approved send to its other alias."""
+    target_chat_id = "2348000000002@c.us"
+    opt_out_alias = "2348000000003@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Alias opt-out regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="An already-consented reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-EXT-ALIAS-STOP",
+    )
+    assert row.status == "deferred"
+    assert row.formatting_json["delivery_policy"] == "approval_required"
+
+    # Keep both identifiers mapped to the same durable Contact after queue creation.
+    # Approval and consent for A must not override a later STOP received on B.
+    contact.chat_id = opt_out_alias
+    await db_session.flush()
+
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await db_session.refresh(row)
+
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-alias-stop",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    await consent.record_inbound_opt_out(
+        contact_id=int(contact.id),
+        exact_chat_id=opt_out_alias,
+        evidence_ref="inbound-stop-on-second-alias",
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "contact consent denied: contact has opted out" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_inbound_reply_after_contact_mapping_changes(db_session, monkeypatch):
+    """A queued, approved inbound reply must not follow a Contact remap to a stale chat."""
+    target_chat_id = "2348000000011@c.us"
+    replacement_chat_id = "2348000000012@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Stale inbound reply target",
+        contact_name="Stale inbound reply target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Do not deliver to a remapped destination"),
+        chat_id=target_chat_id,
+        message_id="PROD-INBOUND-REMAP-FENCE",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-inbound-remap",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    # Keep the inbound Message and queue's historical IDs intact, but move the
+    # Contact's current canonical and chat mappings away from the authorized target.
+    contact.whatsapp_id = replacement_chat_id
+    contact.chat_id = replacement_chat_id
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "current contact/chat mapping does not match recipient" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_scheduled_action_after_contact_mapping_changes(db_session, monkeypatch):
+    """A scheduled action cannot keep send authority after its target Contact is remapped."""
+    target_chat_id = "2348000000021@c.us"
+    replacement_chat_id = "2348000000022@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Stale scheduled target",
+        contact_name="Stale scheduled target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    scheduled = await ScheduledActionService(db_session).create_whatsapp_message(
+        target_reference="Stale scheduled target",
+        text="Do not deliver a stale scheduled action",
+        scheduled_for=utcnow() - timedelta(seconds=1),
+        timezone="Africa/Lagos",
+        idempotency_key="scheduled-contact-remap-fence",
+    )
+    action_id = int(scheduled["id"])
+    assert await ScheduledActionService(db_session).release_due() == 1
+    action = await db_session.get(ScheduledAction, action_id)
+    assert action is not None and action.outbound_queue_id is not None
+    row = await db_session.get(OutboundMessage, action.outbound_queue_id)
+    assert row is not None
+
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-scheduled-remap",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    contact.whatsapp_id = replacement_chat_id
+    contact.chat_id = replacement_chat_id
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "current contact/chat mapping does not match recipient" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_pending_stop_on_unmapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
+    """Sender identity must connect an unmapped STOP alias to the queued Contact."""
+    target_chat_id = "2348000000041@c.us"
+    unmapped_stop_chat_id = "987654321@lid"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Unmapped alias opt-out regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="An already-consented reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-EXT-UNMAPPED-ALIAS-STOP",
+    )
+    assert row.status == "deferred"
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-unmapped-stop",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    # The transport alias is intentionally absent from Contact.whatsapp_id/chat_id.
+    # The stable sender identity is the only link to this Contact.
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, sender_identity_ids,
+                opt_out_intent, status, claim_token, updated_at
+            )
+            VALUES (
+                'unmapped-alias-stop-worker-test', 'test', :chat_id,
+                'unmapped-alias-stop-worker-test', jsonb_build_array(CAST(:sender_id AS text)),
+                TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"chat_id": unmapped_stop_chat_id, "sender_id": target_chat_id},
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "pending inbound opt-out intent" in (row.error_message or "")

@@ -14,6 +14,7 @@ from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_dispatch_service import (
     MediaDispatchDecision,
@@ -186,6 +187,68 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
+            # The initial batch check prevents unauthorized rows from being claimed.
+            # Re-lock and refresh each row after that batch commit so a payload, approval,
+            # policy, or scheduled-action mutation between claim and dispatch cannot use
+            # the stale in-memory object to reach WAHA.
+            await session.refresh(message, with_for_update=True)
+            if message.status != "sending":
+                await session.rollback()
+                continue
+            final_allowed, final_reason, final_approval_id = await _delivery_authorized(
+                session,
+                OutboundAuthorizationService(session),
+                message,
+            )
+            if not final_allowed:
+                await _mark_delivery_blocked(
+                    session,
+                    message,
+                    reason=f"final outbound authority recheck failed: {final_reason}",
+                )
+                await session.commit()
+                continue
+            if final_approval_id is not None:
+                approval_ids[int(message.id)] = final_approval_id
+
+            # This is the final external-contact consent fence, after the queue batch has
+            # been committed as "sending". The consent service materializes an UNKNOWN
+            # row if absent, then SELECTs it FOR UPDATE. Keep this transaction open through
+            # the single WAHA attempt so grant/revoke/opt-out serialize on the same key.
+            # OWNER self-DM remains on its existing exact-recipient + payload binding.
+            if not _is_owner_chat_id(message.chat_id):
+                consent = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
+                    message,
+                    now=utcnow(),
+                )
+                if not consent.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"contact consent denied: {consent.reason}",
+                    )
+                    await session.commit()
+                    continue
+
+            # Revalidate after the final authority, policy, Contact, and consent locks.
+            # authorize() acquires the global transaction-scoped reservation lock, which
+            # remains held through the single transport attempt and durable outcome.
+            # This closes the gap where a row waits >1 minute at a final fence and its
+            # timestamp-based reservation would otherwise age out before dispatch.
+            if not _is_owner_chat_id(message.chat_id):
+                final_safety = await OutboundSafetyLimitService(session).authorize(
+                    message,
+                    now=utcnow(),
+                )
+                if not final_safety.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final outbound safety recheck failed: {final_safety.reason}",
+                    )
+                    await session.commit()
+                    continue
+
             dispatch: MediaDispatchDecision | None = None
             if message.media_url:
                 # Runs only after the final authorization fence and safety limits have
@@ -196,6 +259,26 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(session, message, reason=dispatch.reason)
                     await session.commit()
                     continue
+            # A STOP receipt is committed before ingress waits on the exact-chat lock.
+            # This is the final pre-transport veto: a claim committed before this read
+            # blocks the send. Once this read completes, the single transport attempt is
+            # considered in-flight and cannot be reliably cancelled after network entry.
+            if not _is_owner_chat_id(message.chat_id):
+                await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+                    session, message.chat_id
+                )
+                pending_opt_out = await ContactMessagingConsentService(
+                    session
+                ).has_pending_opt_out_intent_for_contact(consent.contact_id)
+                if pending_opt_out:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason="pending inbound opt-out intent; external delivery denied",
+                    )
+                    await session.commit()
+                    continue
+
             try:
                 if dispatch is not None:
                     response = await _send_authorized_media(client, message, dispatch.plan)

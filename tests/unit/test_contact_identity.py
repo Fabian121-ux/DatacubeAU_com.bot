@@ -11,17 +11,57 @@ class FakeScalar:
     def __init__(self, row):
         self.row = row
 
+    def scalar_one(self):
+        return self.row
+
     def scalar_one_or_none(self):
         return self.row
+
+    def one_or_none(self):
+        return self.row
+
+    def scalars(self):
+        # Match the SQLAlchemy Result.scalars() API used by the alias lookup.
+        return self
+
+    def all(self):
+        # The fake session models a single canonical row; when that lookup misses,
+        # the alternate-chat lookup must return no rows rather than raising.
+        return [] if self.row is None else [self.row]
 
 
 class FakeContactSession:
     def __init__(self, row=None):
         self.row = row
+        if row is not None and row.id is None:
+            row.id = 1  # Existing rows returned by a database already have a primary key.
         self.added = None
         self.flushed = False
 
-    async def execute(self, _statement):
+    async def execute(self, statement, _params=None):
+        # The consent service asks PostgreSQL whether a pending STOP/opt-out
+        # exists. Model SELECT EXISTS as a scalar boolean, not as the Contact row
+        # returned by the other ORM queries in this fake session.
+        if str(statement).lstrip().upper().startswith("SELECT EXISTS"):
+            return FakeScalar(False)
+
+        # SQLAlchemy exposes one column description per selected scalar expression.
+        # Preserve tuple/scalar result shapes for consent-service projections while
+        # keeping select(Contact) entity lookups as ORM objects in this fake session.
+        descriptions = getattr(statement, "column_descriptions", ())
+        names = [description.get("name") for description in descriptions]
+        scalar_columns = {
+            "id",
+            "whatsapp_id",
+            "chat_id",
+            "waha_contact_id",
+            "waha_participant_id",
+        }
+        if names and all(name in scalar_columns for name in names):
+            if self.row is None:
+                return FakeScalar(None)
+            values = tuple(getattr(self.row, name) for name in names)
+            return FakeScalar(values[0] if len(values) == 1 else values)
         return FakeScalar(self.row)
 
     def add(self, row):
