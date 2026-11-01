@@ -1,3 +1,51 @@
+## Current engineering verification — 2026-11-01 18:21 WAT
+
+This delta supersedes the 16:25 WAT snapshot below. It rechecks main, all ten open PR heads, exact-head Tests associations, all review-thread resolution counts, the main workflow, and the migration/deployment branches. It records one new inline security review on PR #60; it does not approve or merge any PR.
+
+### Main and workflow
+
+- Main is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (commit time 2026-09-08 11:09:59 UTC), with migrations 001–033 only. No newer Tests run is associated with this exact main SHA; the last known main run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08.
+- Main `.github/workflows/tests.yml` still triggers on pull requests and pushes to main/master, applies migration files lexically, and runs pytest with a 57% coverage floor. It has no migration-sequence preflight, schema audit, or post-test DB-leakage audit.
+- Main deployment still uses the older shared environment-file contract. PR #62 still mounts `.env.production` into API, WAHA, and migrate; PR #60 instead uses service-specific allowlists and a restricted runtime role. Those branches are not interchangeable.
+
+### All open PRs — exact heads, latest exact-head Tests result, review threads
+
+| PR | Exact head | Latest exact-head Tests | Unresolved / total |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 15 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success | 80 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 11 / 11 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
+| [#57 deployment seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 documentation refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `98ae809693dd5f5991c534c2dd8fd14597e4228d` before this docs-only update | No exact-head run; docs commits use `[skip ci]` | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `e0685c8bbeb380a684816b463ddd4f8eee4db10c` | [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) cancelled after runtime-role test failure at 86% and 120-second faulthandler timeout; no final count/coverage | 10 / 10 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
+
+All ten remain open. Green branch-local runs do not replace independent review or prove an integrated release candidate.
+
+### Migration and deployment status
+
+- Branch allocation is now contiguous: #48=034, #50=035, #49=036–037, #60=038–040. The former duplicate-034 collision is resolved by renumbering, but the branches are still independent.
+- The CI runs for #48/#50/#49/#60 apply main's 001–033 plus only that branch's own migration(s); none proves 001–040 together. There is no disposable fresh 001–040 run, installed 033→040 upgrade, second-run no-op/checksum proof, combined schema audit, or combined DB-leakage proof.
+- #60 and #62 cannot safely merge in either order: #60 has the restricted runtime role and service-specific API/WAHA environments but lacks #62's database-target, local-seed, and contiguous-sequence preflights; #62 has those preflights but still mounts broad `.env.production` into API/WAHA/migrate and lacks #60's restricted runtime-role provisioner. Consolidate #60/#62 with #61/#57/#55 into one candidate before any merge.
+
+### New PR #60 security review
+
+- On exact head `e0685c8bbeb380a684816b463ddd4f8eee4db10c`, the provisioner and verifier check only `pg_auth_members.member = runtime_role_oid`. They do not remove or detect rows where `pg_auth_members.roleid = runtime_role_oid`, so another role granted the runtime role can still `SET ROLE` into it. The integration test also checks only the first direction.
+- An inline review was posted at [PR #60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) (review id `5729336758`) with the symmetric REVOKE/verification SQL and a disposable-PostgreSQL regression requiring a second temporary role granted the runtime role.
+- The exact-head run's log shows the Compose regressions passed, then `test_runtime_role_cannot_mutate_or_disable_consent_history` failed at 86%; the 120-second faulthandler fired during pytest setup/fixture handling, and the job was cancelled. No assertion traceback or final suite/coverage result was captured. The test failure is not yet diagnosed.
+
+### Remaining decisions and readiness
+
+- OWNER decisions still required for #60: whether STOP is permanently terminal or an OWNER can re-consent, and what evidence-reference semantics are acceptable for an OWNER grant.
+- #50 still needs the introduction-copy decision (remove project claims from generic introduction vs. make it honor all named project entries) and a safe legacy-provenance policy. Do not infer historical provenance from timestamps; ambiguous pre-upgrade rows should remain unknown.
+- This run did not execute local pytest, disposable PostgreSQL, migrations, schema audit, or DB-leakage checks. No code was changed in this verification update; the only engineering action beyond inspection was the #60 review comment.
+- **NOT TEST READY. REAL WAHA ACTIONS: NONE.** No production DB mutation, WAHA reconnection, real send, private-media retention activation, approval, merge, or review-thread resolution occurred.
+
+---
+
 ## Release verification — 2026-11-01 16:25 WAT
 
 This source-grounded gate review supersedes the 10:27 WAT snapshot below. It is not release approval. Branch-local green runs do not prove the integrated 001–040 migration chain.
