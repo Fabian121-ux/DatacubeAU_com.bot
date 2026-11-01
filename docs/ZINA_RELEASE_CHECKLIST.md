@@ -1,42 +1,42 @@
-## Current release verification — 2026-11-01 03:21 WAT (NOT TEST READY)
+## Current release verification — 2026-11-01 05:18 WAT (NOT TEST READY)
 
 This overlay supersedes the historical snapshots below. Verification is against current GitHub state; a green branch-local run is not an integrated release result.
 
 ### Current baseline and CI
 
-- Main SHA: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last main commit 2026-09-08; main migrations 001–033.
-- Main workflow `.github/workflows/tests.yml` (blob `445b1fd628489b6a3b1c4f463880e4a1e709e978`) applies migrations lexically and runs pytest with a 57% coverage floor. It does not include migration-sequence preflight, schema audit, or DB-leakage audit.
-- Latest overall Tests run [41253380443](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41253380443) was **cancelled** on PR #60 current head `8f4ec99fe2b06dbe3705722e1e9305b185409377`.
-- Latest completed successful run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) ran on PR #59 parent head `d8edcae5a8f16da22def88093a2573ab9ca8278f`: **797 passed, 1 warning, 76.01% coverage**. The job log confirms **001–033 only**. It is not feature-chain or release proof.
-- This documentation-only update is committed with `[skip ci]` because Actions quota/billing visibility is unavailable. No exact-head CI result is claimed for the new documentation commit.
+- Main SHA: 5aadd725ed9da08a5eb84eb42b64f0f45f231c79; last main commit 2026-09-08; main migrations 001–033. Main is not branch-protected and has no required status checks.
+- Main workflow .github/workflows/tests.yml (blob 445b1fd628489b6a3b1c4f463880e4a1e709e978) applies migrations lexically and runs pytest with a 57% coverage floor. It does not include migration-sequence preflight, schema audit, or DB-leakage audit.
+- Latest overall Tests run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) is IN PROGRESS on PR #60 exact head 93f97fd192a3141869a419f5832df89b888ca9e2. No result is claimed.
+- Latest completed successful run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) ran on PR #59 parent head d8edcae5a8f16da22def88093a2573ab9ca8278f: 797 passed, 1 warning, 76.01% coverage; only migrations 001–033. It is not feature-chain or release proof.
+- PR #60 commits d14d6eb6a7c0c3e7e382b0552b9e16e65fffe630 and 93f97fd192a3141869a419f5832df89b888ca9e2 narrow sequence privileges, test setval() denial, guard the runtime-role integration test to a disposable target, use unique credentials, clean up the temporary role/grants, and fix an undefined migration_runner reference. Exact-head CI and independent review are pending.
+- This docs-only refresh is marked [skip ci]; no exact-head CI result is claimed for this docs commit.
 
 ### Open PRs — exact heads and unresolved / total review threads
 
 | PR | Exact head (short) | Latest exact-head Tests run | Unresolved / total |
 |---|---|---|---:|
-| #48 PrivateMediaArtifact | `3acacbfe` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
-| #50 Identity Registry | `0a2b38c0` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 3 / 11 |
-| #49 Outbound Message Library | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
-| #55 DB-leakage CI gate | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
-| #57 local seed safety | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
-| #59 documentation refresh | `1e868ba7` (parent of this docs-only refresh) | No CI for the current `[skip ci]` docs-only commits; prior code/test head `d8edcae5` run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 tests at 76.01% on 001–033 | 3 / 3 |
-| #60 P0 contact consent | `8f4ec99f` | [41253380443](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41253380443) cancelled | 8 / 8 |
-| #61 migration-sequence gate | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
-| #62 deployment integration | `a8d032de` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
-| #63 conversation observability | `13fad868` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
+| #48 PrivateMediaArtifact | 3acacbfe | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| #50 Identity Registry | 0a2b38c0 | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 3 / 11 |
+| #49 Outbound Message Library | bcd0033e | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
+| #55 DB-leakage CI gate | 3d35793e | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
+| #57 local seed safety | d831ce4e | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| #59 documentation refresh | 7472e234 | No CI for current [skip ci] docs-only commit; prior code/test head d8edcae5 run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 tests, 76.01%, migrations 001–033 | 3 / 3 |
+| #60 P0 contact consent | 93f97fd1 | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) IN PROGRESS | 8 / 8 |
+| #61 migration-sequence gate | 8a1c1dbf | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| #62 deployment integration | a8d032de | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
+| #63 conversation observability | 13fad868 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
 
 All PRs remain open. Zero review threads is not approval; unresolved threads require independent review.
 
 ### Blocking release gates
 
-- [ ] **One integrated migration candidate:** feature allocation is #48=034, #50=035, #49=036–037, #60=038–040. Main has only 001–033. No exact candidate has proven fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum behavior, schema audit, and zero DB leakage together.
-- [ ] **Consolidate #60 and #62 before either merge:** #60 has the runtime-role/API/WAHA environment split but lacks #62's pre-DDL target, local-seed, and sequence guards. #62 has those guards but still mounts `.env.production` into API, WAHA, and migrate and does not provision the restricted runtime role. Either merge order can undo the other's safety boundary.
-- [ ] **Make runtime-role tests non-destructive:** current #60 `test_runtime_db_role.py` provisions a fixed `zina_runtime_test` login with a hard-coded password against configured `DATABASE_URL_SYNC`, with no disposable-target allowlist and no role/grant cleanup. Use an explicit disposable target, unique credentials, and robust cleanup; prove no provisioner call occurs for unapproved targets.
-- [ ] **Narrow consent-audit sequence privileges:** #60 currently grants the runtime role `UPDATE` on all sequences, including `contact_messaging_consent_events_id_seq`; PostgreSQL UPDATE permits `setval()`. Retain only required USAGE/SELECT for that sequence, verify UPDATE is absent in the provisioner, and prove a runtime `setval()` attempt is denied.
-- [ ] **P0 STOP policy acceptance:** the current policy makes opt-out terminal across current aliases and has no owner re-consent/override. The OWNER must explicitly accept or revise it. A STOP committed before final reservation vetoes; an already in-flight WAHA attempt cannot reliably be recalled and must never be blindly retried/replayed.
-- [ ] **Identity Registry decisions (#50):** decide whether generic introductions remove project/Datacube claims (recommended) or gate every named registry fact; leave unverifiable legacy provenance NULL/unknown rather than infer it from timestamps, unless OWNER attestation is approved.
-- [ ] **Independent review:** #60 has 8 unresolved threads; #62 has 7; #50 has 3; #49 has 1; #59 has 3; #57 has 1; #63 has 1. No self-approval, self-resolution, or merge.
-- [ ] **Controlled-test plan and explicit authorization:** stage OWNER self-DM text → commands → media/view-once → one explicitly approved external contact. Do not exercise live WhatsApp autonomously.
+- [ ] One integrated migration candidate: feature allocation is #48=034, #50=035, #49=036–037, #60=038–040. Main has only 001–033. No exact candidate has proven fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum behavior, schema audit, and zero DB leakage together.
+- [ ] Consolidate #60 and #62 before either merge: #60 has the runtime-role/API/WAHA environment split but lacks #62's pre-DDL target, local-seed, and sequence guards. #62 has those guards but still mounts .env.production into API, WAHA, and migrate and does not provision the restricted runtime role. Either merge order can undo the other's safety boundary.
+- [ ] Verify #60's new runtime-role safeguards: the test is now guarded to the disposable CI database or explicit local *_test target, uses unique credentials and cleans up role grants/default ACLs; the consent-event sequence denies UPDATE/setval(). Exact-head run 41273052626 is still in progress, so these changes are not yet verified.
+- [ ] P0 STOP policy acceptance: current policy makes opt-out terminal across mapped aliases and has no owner re-consent/override. The OWNER must explicitly accept or revise it. A STOP committed before final reservation vetoes; an already in-flight WAHA attempt cannot reliably be recalled and must never be blindly retried/replayed.
+- [ ] Identity Registry decisions (#50): decide whether generic introductions remove project/Datacube claims (recommended) or gate every named registry fact; leave unverifiable legacy provenance NULL/unknown rather than infer it from timestamps, unless OWNER attestation is approved.
+- [ ] Independent review: #60 has 8 unresolved threads; #62 has 7; #50 has 3; #49 has 1; #59 has 3; #57 has 1; #63 has 1. No self-approval, self-resolution, or merge.
+- [ ] Controlled-test plan and explicit authorization: stage OWNER self-DM text → commands → media/view-once → one explicitly approved external contact. Do not exercise live WhatsApp autonomously.
 
 ### Deferred work
 
@@ -44,7 +44,7 @@ All PRs remain open. Zero review threads is not approval; unresolved threads req
 - #49 remains a content library foundation, not a live producer/selector/dashboard; do not wire it into outbound until P0 and migration integration are cleared.
 - True embedding-based FAQ/Knowledge retrieval, DerivedArtifact media intelligence, and Project Intelligence remain later work.
 
-**NOT TEST READY.** The latest overall workflow is cancelled, the latest successful workflow covers only 001–033 on the documentation parent, the integrated feature migration chain is unproven, and blocking review/OWNER/operator decisions remain. No production DB mutation, production WAHA reconnection, real WhatsApp send, private-media retention activation, PR merge, or review-thread resolution occurred in this verification.
+**NOT TEST READY.** The latest #60 exact-head workflow is in progress, the integrated feature migration chain is unproven, and blocking review/OWNER/operator decisions remain. No production DB mutation, production WAHA reconnection, real WhatsApp send, private-media retention activation, PR merge, or review-thread resolution occurred in this verification.
 
 ## Historical release-verification snapshot — 2026-10-31 21:18 WAT (superseded by the current overlay above)
 
