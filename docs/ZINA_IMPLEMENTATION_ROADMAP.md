@@ -1,3 +1,53 @@
+## Current verification — 2026-11-01 07:18 WAT
+
+This overlay supersedes earlier snapshots. It is a source-grounded status review, not a test or release certification. Main and PR heads were re-fetched from GitHub for this update.
+
+### Main and CI baseline
+
+- Main remains 5aadd725ed9da08a5eb84eb42b64f0f45f231c79; its last commit is 2026-09-08. Main contains migrations 001–033 only.
+- Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that exact SHA on 2026-09-08. The checked-in workflow applies migrations lexically and runs pytest with a 57% coverage floor, but does not run migration-sequence preflight, schema audit, or the post-test DB-leakage audit.
+- GitHub's rulesets endpoint returned an empty list, but the branch-protection read is not available to this integration. Do not assert current branch-protection state; the earlier unprotected finding remains historical/unverified.
+- The latest exact-head run for PR #60, [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626), was cancelled at 2026-11-01 04:46 UTC on 93f97fd192a3141869a419f5832df89b888ca9e2. Migrations 001–033 and 038–040 completed, but pytest/coverage was cancelled; there is no exact-head test count or coverage result. Migrations 034–037 were skipped.
+
+### Open PRs — exact current heads and review state
+
+| PR | Exact head | Exact-head Tests evidence | Unresolved / total threads |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | 3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | 0a2b38c0ce72b3c4a8fdd49490be504facb34bac | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 3 / 11 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | bcd0033e024b177561b8afd41589afe1897ba4de | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | 3d35793ef72cfcfe1e188bc51df6d4e538679f7b | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
+| [#57 seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | d831ce4e3dd7e56f38d8563dc63abc44f8c37bba | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 docs refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | 61b8aa70b6137df5c0cf3e63ae4abcd5f23fa229 | No CI for docs-only [skip ci] commits; parent code/test head d8edcae5a8f16da22def88093a2573ab9ca8278f run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 tests / 76.01%, migrations 001–033 only | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | 93f97fd192a3141869a419f5832df89b888ca9e2 | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) cancelled during pytest/coverage; no count/coverage | 8 / 8 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | 8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | 13fad868affe01d6069f4288481f8cd8dd341c62 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
+
+All PRs remain open. The review submissions currently visible are comments, not independent approvals; zero threads is not approval.
+
+### Migration and deployment integration
+
+- The former duplicate migration 034 allocation is now renumbered at current branch heads: #48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040. The allocation is contiguous, but main still has only 001–033 and no candidate has proved a fresh integrated 001–040 chain plus installed 033→040 upgrade, second-run no-op/checksums, schema audit, and zero DB leakage.
+- #60 and #62 remain unsafe to merge in either order. #60 has the restricted runtime-role/API/WAHA environment split but lacks #62's pre-DDL target, seed, and contiguous-sequence guards. #62 has those guards but still mounts broad .env.production into API/WAHA/migrate and does not provision the restricted runtime role. Consolidate both into one reviewed candidate.
+- On #60, a new P2 review comment [6554387711](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6554387711) identifies an incomplete role-membership cleanup: the provisioner and validator check roles that zina_runtime belongs to, but do not check other roles that may be members of zina_runtime. Either revoke/fail on those incoming memberships and verify both directions, or prove the role is newly created with no prior grantees. This is review-only; no code or test result is claimed.
+
+### P0 and OWNER decisions
+
+- Main does not yet contain PR #60's contact-consent state, opt-out receipts, or final consent fence. Until #60 is integrated and independently reviewed, explicit contact consent/terminal opt-out is not a verified main-branch capability.
+- #60's current policy makes opt-out terminal across the Contact's mapped aliases and has no owner re-consent/override command. OWNER must explicitly accept or revise this policy. A STOP committed before final dispatch reservation vetoes; once the single WAHA request has entered transport, it cannot reliably be recalled, and an uncertain attempt must never be replayed.
+- The .contact consent grant command records an OWNER attestation plus an opaque evidence reference; OWNER must decide whether that means independently obtained contact consent exists and the reference points to durable external evidence, or whether contact consent and OWNER automation permission must be modelled as separate authorities.
+- #50's registry-read failure path now returns a non-assertive fallback, but its generic introduction still names projects/Datacube AU without checking those registry keys. The outstanding recommendation is to keep the generic introduction limited to Zina/Fabian and answer project facts through Identity Registry.
+- Migration 035 still uses updated_at = created_at as historical provenance evidence. That cannot reliably distinguish old default rows from administrator-edited rows whose timestamps were already advanced by pre-033 read/update behavior. Preserve ambiguous legacy rows as unknown/NULL unless OWNER-approved evidence exists; do not infer system provenance from that equality.
+
+### Readiness
+
+- No integrated migration proof, installed upgrade proof, combined schema/leakage proof, exact-head green test for #60, independent approvals, or OWNER policy decisions are present.
+- Controlled-test plan remains staged OWNER self-DM text → commands → media/view-once → one explicitly approved external contact. Do not exercise live WhatsApp autonomously.
+- **NOT TEST READY. No production DB mutation, production WAHA reconnection, real WhatsApp send, private-media retention activation, merge, approval, or review-thread resolution occurred in this verification.**
+
+---
+
 ## Current verification — 2026-11-01 06:21 WAT
 
 This overlay supersedes the historical snapshots below. The detailed phase-by-phase inventory later in this file still originates from the 2026-09-08 audit; it is not a fresh code inventory.
