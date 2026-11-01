@@ -1,4 +1,4 @@
-## Current release verification — 2026-11-01 02:24 WAT (NOT TEST READY)
+## Current release verification — 2026-11-01 03:21 WAT (NOT TEST READY)
 
 This overlay supersedes the historical snapshots below. Verification is against current GitHub state; a green branch-local run is not an integrated release result.
 
@@ -20,7 +20,7 @@ This overlay supersedes the historical snapshots below. Verification is against 
 | #55 DB-leakage CI gate | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
 | #57 local seed safety | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
 | #59 documentation refresh | `d8edcae5` (parent of this docs-only commit) | [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) success; 797 passed, 76.01% | 3 / 3 |
-| #60 P0 contact consent | `8f4ec99f` | [41253380443](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41253380443) cancelled | 7 / 7 |
+| #60 P0 contact consent | `8f4ec99f` | [41253380443](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41253380443) cancelled | 8 / 8 |
 | #61 migration-sequence gate | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
 | #62 deployment integration | `a8d032de` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
 | #63 conversation observability | `13fad868` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
@@ -32,9 +32,10 @@ All PRs remain open. Zero review threads is not approval; unresolved threads req
 - [ ] **One integrated migration candidate:** feature allocation is #48=034, #50=035, #49=036–037, #60=038–040. Main has only 001–033. No exact candidate has proven fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum behavior, schema audit, and zero DB leakage together.
 - [ ] **Consolidate #60 and #62 before either merge:** #60 has the runtime-role/API/WAHA environment split but lacks #62's pre-DDL target, local-seed, and sequence guards. #62 has those guards but still mounts `.env.production` into API, WAHA, and migrate and does not provision the restricted runtime role. Either merge order can undo the other's safety boundary.
 - [ ] **Make runtime-role tests non-destructive:** current #60 `test_runtime_db_role.py` provisions a fixed `zina_runtime_test` login with a hard-coded password against configured `DATABASE_URL_SYNC`, with no disposable-target allowlist and no role/grant cleanup. Use an explicit disposable target, unique credentials, and robust cleanup; prove no provisioner call occurs for unapproved targets.
+- [ ] **Narrow consent-audit sequence privileges:** #60 currently grants the runtime role `UPDATE` on all sequences, including `contact_messaging_consent_events_id_seq`; PostgreSQL UPDATE permits `setval()`. Retain only required USAGE/SELECT for that sequence, verify UPDATE is absent in the provisioner, and prove a runtime `setval()` attempt is denied.
 - [ ] **P0 STOP policy acceptance:** the current policy makes opt-out terminal across current aliases and has no owner re-consent/override. The OWNER must explicitly accept or revise it. A STOP committed before final reservation vetoes; an already in-flight WAHA attempt cannot reliably be recalled and must never be blindly retried/replayed.
 - [ ] **Identity Registry decisions (#50):** decide whether generic introductions remove project/Datacube claims (recommended) or gate every named registry fact; leave unverifiable legacy provenance NULL/unknown rather than infer it from timestamps, unless OWNER attestation is approved.
-- [ ] **Independent review:** #60 has 7 unresolved threads; #62 has 7; #50 has 3; #49 has 1; #59 has 3; #57 has 1; #63 has 1. No self-approval, self-resolution, or merge.
+- [ ] **Independent review:** #60 has 8 unresolved threads; #62 has 7; #50 has 3; #49 has 1; #59 has 3; #57 has 1; #63 has 1. No self-approval, self-resolution, or merge.
 - [ ] **Controlled-test plan and explicit authorization:** stage OWNER self-DM text → commands → media/view-once → one explicitly approved external contact. Do not exercise live WhatsApp autonomously.
 
 ### Deferred work
