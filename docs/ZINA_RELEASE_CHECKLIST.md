@@ -19,7 +19,7 @@ This overlay supersedes the historical snapshots below. Verification is against 
 | #49 Outbound Message Library | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
 | #55 DB-leakage CI gate | `3d35793e` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
 | #57 local seed safety | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
-| #59 documentation refresh | `8f95b043` (current docs-only head) | No run for the `[skip ci]` docs commits; parent `d8edcae5` run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 tests at 76.01% on 001–033 | 3 / 3 |
+| #59 documentation refresh | `1e868ba7` (parent of this docs-only refresh) | No CI for the current `[skip ci]` docs-only commits; prior code/test head `d8edcae5` run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 tests at 76.01% on 001–033 | 3 / 3 |
 | #60 P0 contact consent | `8f4ec99f` | [41253380443](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41253380443) cancelled | 8 / 8 |
 | #61 migration-sequence gate | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
 | #62 deployment integration | `a8d032de` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
