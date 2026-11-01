@@ -1,3 +1,61 @@
+## Current release verification — 2026-11-01 23:22 WAT (NOT TEST READY)
+
+This release-gate delta supersedes the 20:23 WAT snapshot below. It was rechecked against live GitHub heads, review-thread states, the main workflow, migration filenames, and PR #60 source/Actions logs. PR #59 was at `ac071ac25f7118717914bdb4956b62aa76830b7e` when this audit began; this docs-only refresh uses `[skip ci]`, so no exact-head CI result is claimed for the resulting documentation commit.
+
+### Release gate summary
+
+| Gate | Current evidence | Status |
+|---|---|---|
+| Main source baseline | `main` = `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; migrations 001–033 | Main only |
+| Fresh integrated migrations 001–040 | Branch allocations are contiguous (#48=034, #50=035, #49=036–037, #60=038–040), but no single candidate applies all 001–040 | **NOT PROVED** |
+| Installed upgrade 033→040 | No integrated upgrade/re-run/no-op/checksum evidence | **NOT PROVED** |
+| Migration/schema preflight | #61 and #62 pass on their branch candidates; #62's latest exact-head run is 41073226073 | Candidate only |
+| ORM schema audit | #62 run 41073226073 passed on 001–033 | Candidate only |
+| DB leakage | #55 run 41026581000 passed on 001–033; #62 run 41073226073 passed on 001–033 | Candidate only; combined chain not checked |
+| Full pytest/coverage | #62: 864 passed, 76.01%; #50: 828 passed, 76.52%; #49: 896 passed, 76.67%; #63: 803 passed, 76.08% | Branch-local only |
+| P0 contact consent | Implemented only on open draft #60, not main; latest run 41311022671 cancelled | **NOT PROVED** |
+| Runtime-role privilege boundary | #60's latest test marked failed; incoming role membership remains unchecked | **BLOCKED** |
+| Quiet-hours/rate-limit safety | #60 has open findings for approval/scheduled quiet-hours bypass and per-chat rather than per-contact limits | **BLOCKED** |
+| Independent review | #60 10 unresolved; #62 7; #50 3; #49 1; #59 3; #57 1; #63 1 | **BLOCKED** |
+| Live transport | No real WAHA call is permitted in unattended engineering | NONE |
+
+### P0 consent and runtime-role gates
+
+- #60 run [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) is **cancelled**, not green. Migration application and the Compose helper tests passed, but `test_runtime_role_cannot_mutate_or_disable_consent_history` was marked FAILED at 86%; the 120-second faulthandler fired and the job was cancelled at 20 minutes. The log contains no assertion traceback, final test count, or coverage result. The denial probes are visible in PostgreSQL logs, but they do not identify the failing assertion.
+- The runtime-role provisioner and verifier must revoke/check `pg_auth_members` in both directions. Current code handles rows where runtime is the member, not rows where runtime is the granted role. Add a second temporary role granted `zina_runtime`, rerun provisioning, and prove the membership is removed and `SET ROLE zina_runtime` is denied.
+- The final external-contact fence must apply quiet hours regardless of whether permission came from a one-use OWNER approval, ScheduledAction binding, or contact automation policy. Invalid timezone/window configuration must deny.
+- Per-contact backlog/rate/duplicate ceilings must use stable Contact identity across mapped WhatsApp aliases, not only exact `chat_id`.
+- The API runtime role must be a non-owner/non-superuser with no path to assume a privileged role. The API receives runtime-only DB credentials; WAHA receives no DB/admin/provider secrets; only migrate receives migration-owner credentials.
+
+### Deployment/migration integration order
+
+Do not merge #60 or #62 independently. #60 contains runtime-role isolation and service-specific environment allowlists but lacks #62's database-target, seed, and migration-sequence preflights. #62 contains those preflights, schema audit, and leakage gate but still exposes the shared production environment file to API/WAHA/migrate and has no restricted runtime role. Consolidate #60/#62/#61/#57/#55 into one candidate, preserving every gate before DDL and every service credential boundary.
+
+The current migration allocation is no longer a duplicate-number collision: #48=034, #50=035, #49=036–037, #60=038–040. The remaining blocker is integration and proof, not numbering. Required evidence on the same exact candidate:
+1. Fresh PostgreSQL 16 application of migrations 001–040.
+2. Upgrade an isolated database already at 033 through 040.
+3. Re-run migration runner and prove no-op/checksum stability.
+4. Run ORM schema audit against the same endpoint/schema modified by migrations.
+5. Run the complete DB-leakage audit after pytest on the combined schema.
+6. Prove runtime-role SELECT/INSERT works while UPDATE/DELETE/TRUNCATE/ALTER/DISABLE TRIGGER/SET ROLE and sequence setval are denied.
+7. Run the P0 adversarial matrix, including STOP races, alias remapping, exact payload binding, duplicate/restart, quiet hours, and uncertain-send no-retry.
+
+### Human decisions still required
+
+- Accept or revise the terminal STOP policy: a committed STOP before final transport reservation vetoes; once a single request enters WAHA it cannot reliably be recalled, but the attempt must never be retried/replayed and all later sends remain denied.
+- Decide whether `.contact consent grant <exact-chat-id> <evidence-ref>` means OWNER attests that independent contact consent exists (with a durable external evidence reference), or whether it is only an OWNER automation permission. These are separate authorities and must not be conflated.
+- Decide whether opt-out is permanently terminal or an explicit OWNER re-consent path is permitted. Current #60 code intentionally provides no override.
+- Confirm the introduction-copy scope in #50: remove project/Datacube claims from the generic introduction (recommended) or require every named registry key to be available.
+- Accept truthful `legacy_unknown` provenance for pre-upgrade Identity Registry rows rather than inferring origin from timestamps, or authorize a separate evidence-backed attestation process.
+
+### Controlled test stage
+
+**NOT TEST READY.** The main branch lacks the proposed contact-consent gate; the exact #60 run is cancelled; runtime-role, quiet-hours, alias-rate-limit, integration, and independent-review gates remain open. Do not connect/reconnect production WAHA, mutate a production database, or send any real WhatsApp message from this automation. The controlled test sequence remains: owner self-DM text → commands → media/view-once → one explicitly approved external contact, only after all gates pass and Fabian explicitly authorizes the live session.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Current release verification — 2026-11-01 20:23 WAT
 
 This delta supersedes the older 2026-09-08 baseline below. It is a fresh review snapshot, not release approval.
