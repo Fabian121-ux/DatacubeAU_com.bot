@@ -1,3 +1,55 @@
+## Current engineering verification — 2026-11-01 23:22 WAT
+
+This delta supersedes the earlier 20:23 WAT snapshot below. It was checked against the live repository and all ten open pull requests. PR #59 was at `ac071ac25f7118717914bdb4956b62aa76830b7e` when this audit began; the two documentation commits that append this delta intentionally use `[skip ci]`. No exact-head CI result is claimed for the resulting docs head.
+
+### Main and workflow
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (latest main commit: 2026-09-08 11:09:59 UTC). Its migration directory contains 001–033 only.
+- The latest visible Tests run associated with main is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. No newer run is associated with this exact main SHA.
+- Main `.github/workflows/tests.yml` triggers on pull requests and pushes to main/master, uses PostgreSQL 16, applies `bot_core/migrations/*.sql` lexically, and runs pytest with a 57% coverage floor. Main does not yet contain the sequence preflight, schema audit, or post-test DB-leakage gate now proposed in #61/#62/#55.
+
+### All live open PRs — exact heads, latest visible exact-head Tests, unresolved / total review threads
+
+| PR | Exact head | Latest visible exact-head Tests | Unresolved / total |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 3 / 11 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
+| [#57 deployment seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 documentation refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `ac071ac25f7118717914bdb4956b62aa76830b7e` at audit start | No run for this exact head; documentation commits use `[skip ci]` | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `e0685c8bbeb380a684816b463ddd4f8eee4db10c` | [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) **cancelled**; runtime-role test marked failed at 86%, then faulthandler timeout; no final count/coverage | 10 / 10 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
+
+All ten PRs remain open. A green branch-local run is not integrated release proof and does not replace independent review. Thread counts are live GitHub `is_resolved` counts, not comment counts.
+
+### Migration and deployment reconciliation
+
+- Migration numbering is now contiguous at branch level: #48 owns 034; #50 owns 035; #49 owns 036–037; #60 owns 038–040. The former duplicate-034 filename collision is resolved by renumbering.
+- The branches remain separate. Main has 001–033. #60's latest workflow applied 001–033 plus 038–040 and skipped 034–037. No candidate has proved a fresh 001–040 chain, installed 033→040 upgrade, second-run no-op/checksum behavior, combined schema audit, and zero DB leakage together.
+- #60 and #62 cannot safely merge in either order. #60 contains the restricted runtime API role and service-specific API/WAHA environment allowlists, but lacks #62's database-target, local-seed, and contiguous-sequence preflights. #62 contains those preflights plus schema/leakage checks, but still mounts broad `.env.production` into API, WAHA, and migrate and does not provision the restricted runtime role. Consolidate #60 with #62/#61/#57/#55 into one independently reviewed candidate before any merge.
+
+### Current source and review blockers
+
+- **P0 contact consent is not on main.** Explicit contact consent and terminal STOP enforcement at final dispatch exist only on open #60. Main still has the older outbound authority path without this proposed consent domain.
+- **Runtime-role membership is one-directional on #60.** `deploy/scripts/provision-runtime-role.sql`, the runtime verifier, and the disposable integration test inspect memberships where `pg_auth_members.member = runtime_role`, but do not revoke/check where `pg_auth_members.roleid = runtime_role`. A second role granted `zina_runtime` may still `SET ROLE zina_runtime`. The current-head security review [5729336758](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#pullrequestreview-5729336758) requires symmetric revocation, two-direction verification, and a second-role PostgreSQL regression.
+- **The #60 runtime-role test remains unexplained.** Run 41311022671 applied its branch migrations and the two Compose helper tests passed. `test_runtime_role_cannot_mutate_or_disable_consent_history` was marked FAILED at 86%; a 120-second faulthandler timeout followed and the job was cancelled at the 20-minute limit. The log shows the runtime-role denial probes for sequence mutation, UPDATE/DELETE/TRUNCATE, trigger disable, schema CREATE, and SET ROLE; it does not include the assertion traceback or final suite/coverage. Do not infer the failed assertion. Reproduce the single test on disposable PostgreSQL with bounded, robust cleanup before another full run.
+- **Quiet hours are not a universal final external-delivery fence on #60.** `OutboundAuthorizationService.authorize()` returns for an exact OWNER approval before loading the contact policy and checking `quiet_hours_json`. The open review comment [6557906754](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6557906754) also identifies the ScheduledAction worker branch accepting an exact binding without the policy quiet-hours check. Move this to one shared final external-contact fence covering owner approvals, scheduled actions, and contact policies; malformed timezone/window configuration must deny. Add zero-mock-WAHA tests for overnight and invalid configurations.
+- **Per-contact limits are alias-local on #60.** `OutboundSafetyLimitService` counts backlog, recent sends, and duplicates by `OutboundMessage.chat_id`; the consent domain explicitly supports multiple mapped aliases for one Contact. A second alias can therefore consume a separate nominal per-contact budget and avoid duplicate suppression. Aggregate those reservations by stable Contact identity under the established exact-chat mapping lock; add a two-alias regression.
+- **#50 still has three unresolved Identity Registry decisions.** `introduction_reply()` now checks availability of `zina` and `fabian` and fails closed on registry read errors, but its generic copy still claims “his projects” and “Datacube AU” without checking `projects` / `datacube_au`. Recommended bounded contract: remove project claims from the generic introduction and answer project facts only through Identity Registry. Migration 035 still cannot infer legacy default provenance from `updated_at = created_at`; leave historically ambiguous rows unclassified (`legacy_unknown`) unless immutable seed evidence or explicit OWNER attestation exists.
+- **#49 remains a foundation only**: no live producer selection or dashboard integration. It answers what Zina could say, never whether a send is authorized. Keep it out of live outbound until P0 and migration integration are cleared. #48 remains metadata/observation only; private bytes are absent and retention remains OFF.
+- #63's malformed internet-observability parsing is fixed on its current head, but one independent review thread remains unresolved.
+
+### Work and readiness
+
+This run re-queried main, all ten open PRs, review threads, workflow YAML, migration filenames, exact-head run associations, PR #60's current consent/runtime-role source, and the failed Actions job log. No source code or migration was changed; only this durable verification snapshot is being refreshed. No local pytest, fresh/upgrade migration, schema audit, or DB-leakage run was available in this run.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Current engineering verification — 2026-11-01 20:23 WAT
 
 This delta supersedes the 18:21 WAT snapshot below. It re-queries the current main SHA, all ten open PR heads, exact-head Tests runs, review-thread resolution flags, migration filenames, the checked-in workflow, and the current deployment branches. It also corrects the #48/#49 unresolved-thread counts in the preceding 18:21 table: GitHub's live GraphQL `is_resolved` values are 0/15 and 1/80, not 15/15 and 80/80.
