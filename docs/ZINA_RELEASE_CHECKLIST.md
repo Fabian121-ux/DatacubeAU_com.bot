@@ -1,3 +1,58 @@
+## Release verification — 2026-11-01 08:21 WAT
+
+This is the current source-grounded gate review. It supersedes the 07:18 WAT snapshot below. It is not release approval. The documentation-only refresh commits use `[skip ci]`; the prior code/test head is not promoted to an exact-head result by these docs edits.
+
+### Mechanical engineering gates
+
+| Gate | Current evidence | Release status |
+|---|---|---|
+| Main exact-head full suite | Main `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), 2026-09-08 | Stale; re-run after reviewed integration |
+| Fresh migration chain | Main has 001–033; feature branches allocate 034–040 | Not proved as one 001–040 candidate |
+| Installed upgrade | No disposable 033→040 candidate proof | Not proved |
+| Second-run no-op/checksums | No integrated candidate evidence | Not proved |
+| Migration sequence guard | PR #61 exact head `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f`, run [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; not merged | Candidate only |
+| Schema audit / deployment preflight | PR #62 exact head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`, run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; not integrated with #60 | Candidate only |
+| DB leakage | PR #55 exact head `3d35793ef72cfcfe1e188bc51df6d4e538679f7b`, run [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success (815 passed, 76.01%); not merged | Candidate only |
+| Runtime DB-role isolation | Implemented on PR #60, but exact-head run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) was cancelled after two test failures and a fixture timeout | Not proved |
+| Consent audit tamper resistance | Runtime role is intended to have SELECT/INSERT only; incoming `zina_runtime` memberships remain an open P2 review finding | Not proved |
+| P0 contact consent | PR #60 only; absent from main | Not proved on main |
+| Independent review | Open blocking threads remain on #49, #50, #57, #59, #60, #62, and #63 | Not cleared |
+| Controlled test plan | Staged plan remains gated on the engineering/product criteria below | Do not start |
+
+### Live PR and exact-head status
+
+| PR | Head | Tests result | Unresolved / total threads |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 / 76.67% | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 / 76.52% | 3 / 11 |
+| [#55 DB leakage](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 / 76.01% | 0 / 0 |
+| [#57 seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 docs refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | Current docs refresh branch; this commit is docs-only `[skip ci]` | No exact-head test run | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `93f97fd192a3141869a419f5832df89b888ca9e2` | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) cancelled; 2 failures at 86%, 120s fixture timeout | 8 / 8 |
+| [#61 migration sequence](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 / 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 / 76.08% | 1 / 1 |
+
+All remain open. A green branch-local run is not an integrated release result; zero threads is not approval.
+
+### Required integration and owner decisions
+
+1. **#60/#62/#61 must be one candidate.** Migration allocation is now #48=034, #50=035, #49=036–037, #60=038–040, but no branch proves the complete chain. #60 has the restricted API runtime role and service-specific environments but lacks #62's target/seed/sequence preflights. #62 has those preflights but still exposes broad `.env.production` to API/WAHA/migrate and does not provision the restricted runtime role. Do not merge in either order.
+2. **Repair current #60 CI before more hardening.** Run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) is not green. The Compose allowlist test helper matches the nested `api.depends_on.migrate` key instead of the top-level migrate service; the exact fix is to parse YAML or anchor the service key at top-level indentation. The runtime-role test also failed, but its traceback was not emitted before cancellation; isolate it and verify cleanup before extending the timeout. Review note: [#6554967378](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6554967378).
+3. **Role boundary:** prove runtime and migration roles are distinct, runtime owns no objects, cannot assume the migration role, and no other role can assume the runtime role unless explicitly allowed. Keep owner credentials out of API/WAHA.
+4. **Consent policy:** OWNER must accept or revise terminal opt-out across mapped aliases and decide whether `.contact consent grant` is an attestation of independently obtained contact consent with durable external evidence, or whether contact consent and OWNER automation policy are separate authorities.
+5. **Identity provenance:** preserve ambiguous pre-033 Identity Registry rows as unknown/NULL unless immutable evidence or explicit OWNER attestation proves their origin; do not infer provenance from `updated_at = created_at`. Decide whether generic introductions should mention only Zina/Fabian, with project facts routed through the registry.
+6. **Product gates:** Identity lifecycle, FAQ per-entry CRUD, Knowledge edit/delete/disable, single Command Center authority, Scheduled Actions/Media/Conversation dashboard coverage, and accurate observability remain incomplete or candidate-only. #49 is not yet integrated into live producers/selection/dashboard. Private media byte retention must remain OFF.
+
+### Readiness decision
+
+**NOT TEST READY.** Do not begin Stage A–E controlled WhatsApp testing until an exact integrated candidate passes fresh 001–040, installed 033→040 upgrade, rerun/checksum, schema audit, DB leakage, runtime-role privilege tests, full pytest/coverage, P0 adversarial matrix, and independent review—and the OWNER decisions above are recorded.
+
+**REAL WAHA ACTIONS: NONE.** No production DB mutation, WAHA reconnection, real send, approval, or merge occurred.
+
+---
+
 ## Current verification — 2026-11-01 07:18 WAT
 
 This overlay supersedes earlier snapshots. It is a source-grounded status review, not a test or release certification. Main and PR heads were re-fetched from GitHub for this update.
