@@ -1,3 +1,56 @@
+## Release verification — 2026-11-01 10:27 WAT
+
+This live source-grounded gate review supersedes the 08:21 WAT overlay below. It is not release approval; green branch-local runs do not prove the integrated feature migration chain.
+
+### Mechanical engineering gates
+
+| Gate | Current evidence | Release status |
+|---|---|---|
+| Main exact-head suite | Main `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded 2026-09-08 | Stale; main has not moved since 2026-09-08 |
+| Migration sequence | #61 head `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f`, run [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | Candidate only; not merged |
+| Fresh integrated migrations | Main 001–033; branch allocation #48=034, #50=035, #49=036–037, #60=038–040 | No single 001–040 chain proved |
+| Installed upgrade / rerun | No disposable 033→040 upgrade plus second-run no-op/checksum result | Not proved |
+| Deployment target / seed / sequence guards | #62 head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`, run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success | Candidate only; not integrated with #60 runtime-role boundary |
+| Schema audit / DB leakage | #55 is carried in #62; #62 run reports schema audit and leakage passed on its branch, migrations 001–033 only | Candidate only; not an integrated 001–040 result |
+| Runtime DB-role isolation | #60 exact head `93f97fd192a3141869a419f5832df89b888ca9e2`; run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) cancelled after two test failures and timeout | Not proved |
+| Consent audit tamper resistance | Runtime role has SELECT/INSERT-only consent-event privileges and sequence UPDATE revoked in source; incoming `zina_runtime` memberships are not yet revoked/verified | Not proved |
+| P0 contact consent | Implemented only on open #60; absent from main | Not verified on main |
+| Independent review | #60 8 unresolved; #62 7; #59 3; #50 3; #49 1; #57 1; #63 1 | Blocking review remains |
+| OWNER policy decisions | STOP permanence and `.contact consent grant` evidence semantics remain undecided | Required before P0 acceptance |
+| Controlled test plan | OWNER self-DM text → commands → media/view-once → one explicitly approved external contact | Do not start |
+
+### Live PR state
+
+| PR | Exact head | Tests result | Unresolved / total threads |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 / 76.67% | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 / 76.52% | 3 / 11 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 / 76.01% | 0 / 0 |
+| [#57 seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 docs refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `6150ff03c19bb52bc49afaf39b5c4e65058be9ea` before this refresh; this commit is docs-only `[skip ci]` | Parent code/test head `d8edcae5a8f16da22def88093a2573ab9ca8278f` run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 / 76.01%, migrations 001–033 only | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `93f97fd192a3141869a419f5832df89b888ca9e2` | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) cancelled; two failures + timeout; no final count/coverage | 8 / 8 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 / 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 / 76.08% | 1 / 1 |
+
+All ten PRs remain open. No independent approval was found in the retrieved review submissions; comments and branch-local CI do not authorize merge.
+
+### Blocking decisions and next engineering work
+
+1. **Fix #60 CI first.** Correct the Compose helper so it selects the top-level `migrate` service, not `api.depends_on.migrate`. Isolate the runtime-role test failure on disposable PostgreSQL; the cancelled log has no assertion traceback, so no root cause is claimed.
+2. **Complete role isolation.** The provisioner/validator inspect memberships where runtime is the member but not where runtime is the granted role. Revoke or reject memberships in both directions and test a temporary second role granted `zina_runtime`; keep the test guarded to disposable DBs with unique credentials and guaranteed cleanup.
+3. **Integrate #60 with #62/#61/#57/#55.** Neither #60 nor #62 can be merged first: #60 lacks target/seed/sequence preflights; #62 still injects broad `.env.production` into API/WAHA/migrate and lacks the restricted runtime role. One candidate must preserve both sides before DDL and validate fresh 001–040, installed 033→040 upgrade, rerun/checksum, schema audit, DB leakage, and runtime privileges.
+4. **OWNER must accept/revise the STOP policy.** Current behavior is terminal across a Contact's mapped aliases, with no re-consent/override. A STOP committed before final dispatch reservation vetoes; once a single WAHA request enters transport it cannot reliably be recalled, and uncertain sends must never be retried.
+5. **OWNER must define consent-grant evidence.** `.contact consent grant` records an OWNER attestation and opaque evidence reference. Decide whether it identifies independently obtained contact consent (durable evidence outside Zina) or whether contact consent and OWNER automation permission remain separate authorities and both are required.
+6. **Resolve #50 identity decisions.** `introduction_reply()` still mentions projects/Datacube AU while checking only Zina/Fabian; recommended fix is to keep the introduction minimal and route project facts through Identity Registry. Migration 035 still uses `updated_at = created_at` as historical provenance proof; leave ambiguous pre-033 rows unknown/NULL unless immutable evidence or explicit OWNER attestation exists.
+7. **Keep #49 and #48 bounded.** #49 is a content-library foundation only, not live selection/producer/dashboard; it never grants send authority. #48 is metadata-only; private bytes and retention activation remain out of scope, with retention OFF.
+
+**NOT TEST READY.** No integrated migration proof, installed-upgrade/no-op/checksum proof, combined schema/leakage proof, exact-head green #60 suite, independent review clearance, or OWNER policy decisions exist.
+
+**REAL WAHA ACTIONS: NONE.** No production DB mutation, production WAHA reconnection, real WhatsApp send, private-media retention activation, merge, or approval occurred.
+
+---
 ## Release verification — 2026-11-01 08:21 WAT
 
 This is the current source-grounded gate review. It supersedes the 07:18 WAT snapshot below. It is not release approval. The documentation-only refresh commits use `[skip ci]`; the prior code/test head is not promoted to an exact-head result by these docs edits.
