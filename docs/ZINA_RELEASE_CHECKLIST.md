@@ -1,14 +1,14 @@
-## Current release verification — 2026-11-01 05:18 WAT (NOT TEST READY)
+## Current release verification — 2026-11-01 06:21 WAT (NOT TEST READY)
 
 This overlay supersedes the historical snapshots below. Verification is against current GitHub state; a green branch-local run is not an integrated release result.
 
 ### Current baseline and CI
 
-- Main SHA: 5aadd725ed9da08a5eb84eb42b64f0f45f231c79; last main commit 2026-09-08; main migrations 001–033. Main is not branch-protected and has no required status checks.
+- Main SHA: 5aadd725ed9da08a5eb84eb42b64f0f45f231c79; last main commit 2026-09-08; main migrations 001–033. Branch-protection/ruleset state could not be re-queried (GitHub API 403 Resource not accessible by integration); the earlier unprotected/no-required-checks finding remains historical only.
 - Main workflow .github/workflows/tests.yml (blob 445b1fd628489b6a3b1c4f463880e4a1e709e978) applies migrations lexically and runs pytest with a 57% coverage floor. It does not include migration-sequence preflight, schema audit, or DB-leakage audit.
-- Latest overall Tests run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) is IN PROGRESS on PR #60 exact head 93f97fd192a3141869a419f5832df89b888ca9e2. No result is claimed.
+- Latest exact-head Tests run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) on PR #60 head 93f97fd192a3141869a419f5832df89b888ca9e2 was CANCELLED at 2026-11-01T04:46:00Z. Migrations 001–033 and 038–040 completed, then pytest/coverage was cancelled; no test count or coverage result exists for this head. Feature migrations 034–037 were skipped.
 - Latest completed successful run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) ran on PR #59 parent head d8edcae5a8f16da22def88093a2573ab9ca8278f: 797 passed, 1 warning, 76.01% coverage; only migrations 001–033. It is not feature-chain or release proof.
-- PR #60 commits d14d6eb6a7c0c3e7e382b0552b9e16e65fffe630 and 93f97fd192a3141869a419f5832df89b888ca9e2 narrow sequence privileges, test setval() denial, guard the runtime-role integration test to a disposable target, use unique credentials, clean up the temporary role/grants, and fix an undefined migration_runner reference. Exact-head CI and independent review are pending.
+- PR #60 commits d14d6eb6a7c0c3e7e382b0552b9e16e65fffe630 and 93f97fd192a3141869a419f5832df89b888ca9e2 narrow sequence privileges, test setval() denial, guard the runtime-role integration test to a disposable target, use unique credentials, clean up the temporary role/grants, and fix an undefined migration_runner reference. Exact-head CI was cancelled during pytest/coverage; independent review remains pending.
 - This docs-only refresh is marked [skip ci]; no exact-head CI result is claimed for this docs commit.
 
 ### Open PRs — exact heads and unresolved / total review threads
@@ -21,7 +21,7 @@ This overlay supersedes the historical snapshots below. Verification is against 
 | #55 DB-leakage CI gate | 3d35793e | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
 | #57 local seed safety | d831ce4e | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
 | #59 documentation refresh | 7472e234 | No CI for current [skip ci] docs-only commit; prior code/test head d8edcae5 run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) passed 797 tests, 76.01%, migrations 001–033 | 3 / 3 |
-| #60 P0 contact consent | 93f97fd1 | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) IN PROGRESS | 8 / 8 |
+| #60 P0 contact consent | 93f97fd1 | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) CANCELLED during pytest/coverage after 001–033 and 038–040; no test count/coverage | 8 / 8 |
 | #61 migration-sequence gate | 8a1c1dbf | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
 | #62 deployment integration | a8d032de | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
 | #63 conversation observability | 13fad868 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
