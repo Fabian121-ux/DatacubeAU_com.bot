@@ -1,3 +1,59 @@
+## Current engineering verification — 2026-11-01 10:27 WAT
+
+This snapshot supersedes the 08:21 WAT overlay below. It is a live source/PR verification, not release approval. Exact-head CI on one feature branch does not prove the integrated migration chain.
+
+### Main baseline and workflow
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC). The branch API reports `protected=false` / protection disabled and the repository rulesets list is empty; required checks are not enforced by the current branch metadata.
+- Main contains migrations 001–033 only. Its latest exact-SHA Tests run is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on `5aadd725...` at 2026-09-08 11:10 UTC. The current main combined-status endpoint reports no individual status contexts.
+- Main workflow `.github/workflows/tests.yml` (blob `445b1fd628489b6a3b1c4f463880e4a1e709e978`) applies migration files lexically and runs pytest with a 57% coverage floor. It has no migration-sequence preflight, ORM schema audit, or post-test DB-leakage audit.
+- Latest repository Tests run is PR #60 run [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626), cancelled at 2026-11-01 04:46 UTC on head `93f97fd192a3141869a419f5832df89b888ca9e2`. Migrations 001–033 and 038–040 completed; 034–037 were skipped. Pytest reached 86%, reported two failed nodes, emitted a 120-second faulthandler timeout, and the 20-minute job was cancelled. There is no final test count or coverage result.
+- Confirmed #60 failure 1: `_compose_service_block(compose, "migrate")` matches the nested `api.depends_on.migrate` key instead of the top-level `services.migrate` block. Parse Compose YAML structurally or anchor top-level keys (for example `(?m)^  migrate:$`) and add a regression for nested-vs-top-level service names. See [comment 6554967378](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6554967378).
+- #60 failure 2, `test_runtime_role_cannot_mutate_or_disable_consent_history`, has no captured assertion traceback because the job was cancelled. PostgreSQL logs show the runtime connection received permission denials for `setval`, UPDATE, DELETE, TRUNCATE, trigger alteration, CREATE, and SET ROLE, but that is not proof the test passed; reproduce it alone on disposable PostgreSQL and inspect cleanup/fixture teardown before inferring a root cause.
+
+### Open PRs — exact current heads and review threads
+
+| PR | Exact head | Exact-head Tests evidence | Unresolved / total threads |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 3 / 11 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
+| [#57 seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 documentation refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `6150ff03c19bb52bc49afaf39b5c4e65058be9ea` | No exact-head run (`[skip ci]` docs-only commit); predecessor code/test head `d8edcae5a8f16da22def88093a2573ab9ca8278f` run [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250) succeeded: 797 passed, 76.01%, migrations 001–033 only | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `93f97fd192a3141869a419f5832df89b888ca9e2` | [41273052626](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41273052626) cancelled; two failed nodes and fixture timeout; no final count/coverage | 8 / 8 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
+
+All ten PRs remain open. No independent approval was found in the retrieved review submissions; comments and green branch-local runs are not approvals.
+
+### Migration allocation and deployment integration
+
+Current branch trees allocate migrations without a filename collision: #48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040. Main remains 001–033. #61 and #62 contain only 001–033. The old duplicate-034 allocation has been renumbered at branch level, but no branch proves fresh 001–040, installed 033→040 upgrade, second-run no-op/checksums, schema audit, and DB leakage together.
+
+PR #60 and #62 are unsafe in either merge order:
+- #60 has the restricted runtime role and service-specific environment allowlists (API gets only `DATABASE_URL_RUNTIME`; WAHA gets transport settings; migrate gets owner URLs), but its runner lacks #62's pre-DDL database-target, local-seed, and contiguous-sequence preflights.
+- #62 carries the #57 seed guard, #61 sequence preflight, and #55 schema/leakage controls, but still mounts broad `.env.production` into API, WAHA, and migrate and does not provision the restricted runtime role.
+- Consolidate the two into one reviewed candidate. Every target/role/seed/sequence preflight must execute before the first DDL; only migrate receives owner credentials; API receives the non-owner runtime URL; WAHA receives only transport variables. Then prove fresh 001–040, installed 033→040 upgrade, rerun/checksum behavior, schema audit, DB leakage, and runtime-role privileges on disposable PostgreSQL.
+
+### P0 and architecture decisions
+
+- Main has the existing exact-payload outbound authorization fence, but not PR #60's contact-consent state, durable STOP receipts, or final consent fence. Explicit contact consent and terminal opt-out are not yet verified main-branch capabilities.
+- PR #60's current STOP policy is terminal across a Contact's mapped WhatsApp aliases and has no owner re-consent/override command. OWNER must explicitly accept or revise this policy. A STOP committed before final dispatch reservation vetoes; once a single WAHA request enters transport it cannot reliably be recalled, and an uncertain attempt must never be replayed.
+- `.contact consent grant <exact-chat-id> <evidence-ref>` records an OWNER attestation plus an opaque evidence reference. OWNER must decide whether that reference proves independently obtained contact consent (and points to durable external evidence), or whether contact consent and OWNER automation permission must remain separate authorities and both be required at dispatch.
+- PR #60's runtime-role provisioner/validator currently checks memberships where `zina_runtime` is the member, but not memberships where `zina_runtime` is the granted role. A pre-existing role granted `zina_runtime` could still assume its DML privileges. Revoke or fail on those incoming memberships too; verify both `pg_auth_members.member` and `pg_auth_members.roleid`, and test a second temporary role granted `zina_runtime`. See [comment 6554387711](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6554387711).
+- PR #50 now fails closed on registry-read errors and its prior deleted/disabled identity guard has been expanded. The remaining introduction decision is architectural: `introduction_reply()` still says “his projects, and Datacube AU” while checking only `zina`/`fabian`; the recommended single-authority fix is to limit the generic introduction to Zina/Fabian and answer project facts only through Identity Registry.
+- Migration 035 still backfills `source`/`entity_type` when `updated_at = created_at`. That timestamp equality is not immutable proof for pre-033 rows because earlier reads/edits could have advanced `updated_at`. Preserve ambiguous legacy rows as unknown/NULL; stamp only new defaults, and classify old rows only through immutable evidence or explicit OWNER attestation.
+- PR #49 is a content-library foundation, not live producer selection or dashboard integration. It answers what could be said, never whether an exact send is authorized. Do not wire it into live outbound until P0 and migration integration are cleared. PR #48 remains metadata/observation work; private bytes are absent and retention stays OFF.
+
+### Next safe step and readiness
+
+Fix the #60 Compose service-block regression and reproduce the runtime-role integration test independently; close the incoming-membership gap with a two-direction privilege regression. Then create one #60/#62/#61/#57/#55 integration candidate and run the complete disposable PostgreSQL fresh/upgrade/no-op/schema/leakage/P0 matrix. Keep all PRs open for independent review.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.** No production DB mutation, production WAHA reconnection, real WhatsApp send, private-media retention activation, merge, or approval occurred.
+
+---
 ## Current engineering verification — 2026-11-01 08:21 WAT
 
 This snapshot was re-fetched from GitHub and checked against the live source/PR heads. It is a verification delta, not a release certification. It supersedes the older 07:18 WAT snapshot below; branch-local CI is not integrated migration proof.
