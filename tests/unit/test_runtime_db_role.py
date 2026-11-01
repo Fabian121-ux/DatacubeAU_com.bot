@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 import shutil
 import subprocess
@@ -23,6 +24,39 @@ def _runtime_url(owner_url: str, role: str, password: str) -> str:
         username=role,
         password=password,
     ).render_as_string(hide_password=False)
+
+
+def _is_disposable_runtime_role_target(owner_sync: str, environ: dict[str, str]) -> bool:
+    """Allow role DDL only against the isolated CI DB or an explicit local test DB."""
+    try:
+        url = make_url(owner_sync)
+    except Exception:
+        return False
+    host = (url.host or "").lower()
+    database = (url.database or "").lower()
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    if environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        return database == "datacube_bot_test"
+    return (
+        environ.get("ZINA_ALLOW_RUNTIME_ROLE_INTEGRATION_TEST") == "1"
+        and database.endswith("_test")
+    )
+
+
+def _runtime_role_integration_enabled(
+    owner_sync: str | None,
+    owner_async: str | None,
+    environ: dict[str, str],
+    *,
+    psql_available: bool,
+) -> bool:
+    return bool(
+        owner_sync
+        and owner_async
+        and psql_available
+        and _is_disposable_runtime_role_target(owner_sync, environ)
+    )
 
 
 def _valid_env() -> dict[str, str]:
@@ -106,6 +140,7 @@ def test_compose_uses_service_specific_environment_allowlists():
     api = _compose_service_block(compose, "api")
     waha = _compose_service_block(compose, "waha")
     migrate = _compose_service_block(compose, "migrate")
+    migration_runner = (ROOT / "deploy" / "scripts" / "run-migrations.sh").read_text(encoding="utf-8")
 
     for block in (postgres, api, waha, migrate):
         assert "env_file:" not in block
@@ -125,18 +160,61 @@ def test_compose_uses_service_specific_environment_allowlists():
     assert migration_runner.index("validate_runtime_database_urls.py") < migration_runner.index("psql_cmd -c")
 
 
+def test_runtime_role_integration_requires_an_approved_disposable_target():
+    remote_production = "postgresql://migrator:secret@db.example:5432/production"
+    local_production = "postgresql://migrator:secret@localhost:5432/production"
+    local_test = "postgresql://migrator:secret@localhost:5432/zina_test"
+    ci_test = "postgresql://postgres:postgres@localhost:5432/datacube_bot_test"
+
+    assert not _runtime_role_integration_enabled(
+        remote_production, remote_production, {"GITHUB_ACTIONS": "true"}, psql_available=True
+    )
+    assert not _runtime_role_integration_enabled(
+        local_production,
+        local_production,
+        {"ZINA_ALLOW_RUNTIME_ROLE_INTEGRATION_TEST": "1"},
+        psql_available=True,
+    )
+    assert not _runtime_role_integration_enabled(
+        local_test, local_test, {}, psql_available=True
+    )
+    assert _runtime_role_integration_enabled(
+        local_test,
+        local_test,
+        {"ZINA_ALLOW_RUNTIME_ROLE_INTEGRATION_TEST": "1"},
+        psql_available=True,
+    )
+    assert _runtime_role_integration_enabled(
+        ci_test, ci_test, {"GITHUB_ACTIONS": "true"}, psql_available=True
+    )
+    assert not _runtime_role_integration_enabled(
+        ci_test.replace("datacube_bot_test", "production"),
+        ci_test.replace("datacube_bot_test", "production"),
+        {"GITHUB_ACTIONS": "true"},
+        psql_available=True,
+    )
+
+
 @pytest.mark.asyncio
 async def test_runtime_role_cannot_mutate_or_disable_consent_history():
     owner_sync = os.environ.get("DATABASE_URL_SYNC")
     owner_async = os.environ.get("DATABASE_URL")
-    if not owner_sync or not owner_async or not shutil.which("psql"):
-        pytest.skip("migration-owner URLs and psql are required for the PostgreSQL role integration test")
+    environ = os.environ.copy()
+    if not _runtime_role_integration_enabled(
+        owner_sync, owner_async, environ, psql_available=bool(shutil.which("psql"))
+    ):
+        pytest.skip(
+            "runtime-role DDL is restricted to GitHub's disposable datacube_bot_test "
+            "database or an explicitly opted-in local *_test database"
+        )
 
-    role = "zina_runtime_test"
-    password = "runtime-test@password:with/slashes"
+    # Unique credentials prevent cross-run collisions; cleanup below always revokes
+    # grants/default ACLs and drops the temporary login, including failed provisions.
+    role = f"zina_rt_test_{uuid.uuid4().hex}"
+    password = secrets.token_urlsafe(32)
     runtime_url = _runtime_url(owner_sync, role, password)
-    env = os.environ.copy()
     owner_parts = make_url(owner_sync)
+    env = environ.copy()
     env.update({
         "DATABASE_URL": owner_async,
         "DATABASE_URL_SYNC": owner_sync,
@@ -148,21 +226,27 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
         "POSTGRES_DB": owner_parts.database or "",
     })
 
-    provision = subprocess.run(
-        ["sh", str(PROVISIONER)],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert provision.returncode == 0, provision.stderr
-
     admin = await asyncpg.connect(dsn=owner_sync)
-    runtime = await asyncpg.connect(dsn=runtime_url.replace("postgresql+asyncpg://", "postgresql://", 1))
-    transaction = runtime.transaction()
+    runtime = None
+    transaction = None
     try:
+        provision = subprocess.run(
+            ["sh", str(PROVISIONER)],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert provision.returncode == 0, provision.stderr
+
+        runtime = await asyncpg.connect(
+            dsn=runtime_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        )
+        transaction = runtime.transaction()
+        await transaction.start()
+
         owner = await admin.fetchval(
             """
             SELECT owner.rolname
@@ -194,7 +278,20 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
         )
         assert memberships == 0
 
-        await transaction.start()
+        sequence = await admin.fetchval(
+            "SELECT pg_get_serial_sequence('public.contact_messaging_consent_events', 'id')"
+        )
+        assert sequence
+        assert await admin.fetchval(
+            "SELECT has_sequence_privilege($1, $2, 'USAGE')", role, sequence
+        )
+        assert await admin.fetchval(
+            "SELECT has_sequence_privilege($1, $2, 'SELECT')", role, sequence
+        )
+        assert not await admin.fetchval(
+            "SELECT has_sequence_privilege($1, $2, 'UPDATE')", role, sequence
+        )
+
         inserted = await runtime.fetchrow(
             """
             INSERT INTO contact_messaging_consent_events (
@@ -211,6 +308,24 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
             inserted["id"],
         )
         assert visible == 1
+
+        sequence_state = await admin.fetchrow(
+            "SELECT last_value, is_called FROM public.contact_messaging_consent_events_id_seq"
+        )
+        savepoint = runtime.transaction()
+        await savepoint.start()
+        try:
+            await runtime.fetchval(
+                "SELECT setval($1::regclass, $2, $3)",
+                sequence,
+                sequence_state["last_value"],
+                sequence_state["is_called"],
+            )
+        except asyncpg.InsufficientPrivilegeError:
+            await savepoint.rollback()
+        else:
+            await savepoint.rollback()
+            pytest.fail("restricted runtime role unexpectedly used setval() on consent audit sequence")
 
         statements = [
             "UPDATE contact_messaging_consent_events SET evidence_ref = 'tampered'",
@@ -231,7 +346,19 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
                 await savepoint.rollback()
                 pytest.fail(f"restricted runtime role unexpectedly executed: {statement}")
     finally:
-        if transaction.is_active:
+        if transaction is not None and transaction.is_active:
             await transaction.rollback()
-        await runtime.close()
-        await admin.close()
+        if runtime is not None:
+            await runtime.close()
+        try:
+            role_exists = await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role
+            )
+            if role_exists:
+                await admin.execute(f'DROP OWNED BY "{role}"')
+                await admin.execute(f'DROP ROLE "{role}"')
+            assert not await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role
+            )
+        finally:
+            await admin.close()
