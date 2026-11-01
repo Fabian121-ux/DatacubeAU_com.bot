@@ -1,3 +1,19 @@
+## Current release verification — 2026-11-01 20:23 WAT
+
+This delta supersedes the older 2026-09-08 baseline below. It is a fresh review snapshot, not release approval.
+
+- Main is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only. Its exact-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08; no newer run is associated with that SHA.
+- Main's workflow still applies migration files lexically and runs pytest with a 57% coverage floor. Migration-sequence preflight, ORM schema audit, and post-test DB-leakage audit are not yet on main.
+- The former 034 collision is renumbered across branches: #48=034, #50=035, #49=036–037, #60=038–040. This is filename reconciliation only. No integrated fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, combined schema audit, or combined leakage proof exists.
+- #60 and #62 must be consolidated before either is merged: #60 has runtime-role/service-environment isolation but lacks #62's pre-DDL target/seed/sequence checks; #62 has those checks but still mounts broad `.env.production` into API, WAHA, and migrate and has no restricted runtime role.
+- PR #60's exact-head Tests run [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) is **cancelled**, not green. The Compose helper tests passed, but `test_runtime_role_cannot_mutate_or_disable_consent_history` failed at 86%; the 120-second faulthandler fired without a captured assertion traceback or final suite/coverage result. The runtime-role membership check is still one-directional; the current-head inline review [5729336758](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#pullrequestreview-5729336758) requires symmetric role-membership revocation/verification and a regression.
+- Additional #60 P0 review findings remain open: owner-approved and scheduled external messages bypass the contact policy quiet-hours check; per-contact rate/backlog/duplicate limits use exact chat IDs rather than stable Contact identity across aliases. Consent/STOP is not on main.
+- Exact live unresolved / total review threads: #48 0/15; #49 1/80; #50 3/11; #55 0/0; #57 1/1; #59 3/3; #60 10/10; #61 0/0; #62 7/7; #63 1/1. The preceding 18:21 roadmap table inverted the #48/#49 resolution counts; these values use GitHub's live `is_resolved` field.
+- No local pytest, isolated PostgreSQL migration, schema audit, or DB-leakage audit was run in this verification update. No source code was changed. OWNER must decide whether STOP is permanently terminal or can be reversed by an explicit re-consent, and confirm the evidence semantics for OWNER-granted consent.
+- **NOT TEST READY. REAL WAHA ACTIONS: NONE.** No production DB mutation, WAHA reconnection, real WhatsApp send, private-media retention activation, merge, approval, or review-thread resolution occurred.
+
+---
+
 ## Current engineering verification — 2026-11-01 18:21 WAT
 
 This delta supersedes the 16:25 WAT snapshot below. It rechecks main, all ten open PR heads, exact-head Tests associations, all review-thread resolution counts, the main workflow, and the migration/deployment branches. It records one new inline security review on PR #60; it does not approve or merge any PR.
