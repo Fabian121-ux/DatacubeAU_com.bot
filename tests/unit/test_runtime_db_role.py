@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from pathlib import Path
 import shutil
@@ -121,17 +122,35 @@ def test_runtime_database_url_preflight_rejects_unsafe_configuration(change, mes
 
 
 def _compose_service_block(compose: str, name: str) -> str:
-    markers = [
-        "  postgres:\n",
-        "  api:\n",
-        "  waha:\n",
-        "  nginx:\n",
-        "  migrate:\n",
-        "\nvolumes:\n",
-    ]
-    start = compose.index(f"  {name}:\n")
-    ends = [compose.find(marker, start + 1) for marker in markers if compose.find(marker, start + 1) >= 0]
-    return compose[start:min(ends) if ends else len(compose)]
+    # Match only a top-level Compose service key. A substring search for
+    # "  migrate:" also matches the tail of the six-space-indented
+    # api.depends_on.migrate key and returns the wrong block.
+    service = re.search(rf"(?m)^  {re.escape(name)}:\s*$", compose)
+    if service is None:
+        raise AssertionError(f"Compose service {name!r} was not found")
+
+    remainder = compose[service.end():]
+    next_boundary = re.search(r"(?m)^(?:  [A-Za-z0-9_-]+:|volumes:)\s*$", remainder)
+    end = service.end() + next_boundary.start() if next_boundary else len(compose)
+    return compose[service.start():end]
+
+
+def test_compose_service_block_ignores_nested_dependency_keys():
+    compose = """services:
+  api:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  migrate:
+    environment:
+      DATABASE_URL_SYNC: owner-url
+
+volumes:
+  data:
+"""
+    block = _compose_service_block(compose, "migrate")
+    assert "DATABASE_URL_SYNC: owner-url" in block
+    assert "condition: service_completed_successfully" not in block
 
 
 def test_compose_uses_service_specific_environment_allowlists():
