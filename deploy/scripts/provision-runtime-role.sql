@@ -49,7 +49,7 @@ SELECT format(
 )
 \gexec
 SELECT format(
-    'GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO %I',
+    'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I',
     :'runtime_role'
 )
 \gexec
@@ -63,7 +63,7 @@ SELECT format(
 )
 \gexec
 SELECT format(
-    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I',
+    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I',
     current_user,
     :'runtime_role'
 )
@@ -82,6 +82,41 @@ SELECT format('REVOKE ALL ON TABLE public.contact_messaging_consent_events FROM 
 \gexec
 SELECT format('GRANT SELECT, INSERT ON TABLE public.contact_messaging_consent_events TO %I', :'runtime_role')
 \gexec
+
+-- The runtime API needs nextval/currval for ordinary inserts, not setval().
+-- Narrow this immutable audit table's BIGSERIAL sequence even after earlier
+-- provisioning runs may have granted UPDATE through the broad application ACL.
+SELECT format(
+    'REVOKE UPDATE ON SEQUENCE %s FROM %I',
+    pg_get_serial_sequence('public.contact_messaging_consent_events', 'id'),
+    :'runtime_role'
+)
+WHERE pg_get_serial_sequence('public.contact_messaging_consent_events', 'id') IS NOT NULL
+\gexec
+
+SELECT (
+    pg_get_serial_sequence('public.contact_messaging_consent_events', 'id') IS NOT NULL
+    AND has_sequence_privilege(
+        :'runtime_role',
+        pg_get_serial_sequence('public.contact_messaging_consent_events', 'id'),
+        'USAGE'
+    )
+    AND has_sequence_privilege(
+        :'runtime_role',
+        pg_get_serial_sequence('public.contact_messaging_consent_events', 'id'),
+        'SELECT'
+    )
+    AND NOT has_sequence_privilege(
+        :'runtime_role',
+        pg_get_serial_sequence('public.contact_messaging_consent_events', 'id'),
+        'UPDATE'
+    )
+) AS consent_sequence_privileges_ok \gset
+\if :consent_sequence_privileges_ok
+\else
+\echo Runtime role consent-event sequence must allow USAGE/SELECT but deny UPDATE.
+\quit 3
+\endif
 
 SELECT (
     has_table_privilege(:'runtime_role', 'public.contact_messaging_consent_events', 'SELECT')
