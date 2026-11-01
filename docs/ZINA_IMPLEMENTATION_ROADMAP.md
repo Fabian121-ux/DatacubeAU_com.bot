@@ -1,3 +1,65 @@
+## Current engineering verification — 2026-11-01 16:25 WAT
+
+This snapshot supersedes the 10:27 WAT overlay below. It was checked against the live main ref, all ten open PR heads, their review threads, exact-head Actions associations, workflow YAML, migration trees, and deployment files. It is an engineering status snapshot, not release approval. The documentation PR itself is the only work changed by this commit.
+
+### Main baseline and workflow
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC). Main has migrations 001–033 only.
+- Main's latest exact-SHA Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. The checked-in `.github/workflows/tests.yml` runs PostgreSQL 16, applies every `bot_core/migrations/*.sql` file lexically, then runs pytest with a 57% coverage floor. Main's workflow has no migration-sequence preflight, schema audit, or post-test DB-leakage audit.
+- Main `docker-compose.yml` still mounts `.env.production` into postgres, API, WAHA, and migrate. Main's `deploy/scripts/run-migrations.sh` has no local-seed opt-in guard or restricted API runtime role; it applies every seed on each invocation and then runs the schema audit.
+- The branch-protection endpoint returned 403 (`Resource not accessible by integration`). The rulesets endpoint returned an empty list, but that does not prove that branch protection is disabled. Protection state is therefore unverified in this run.
+
+### Open PRs — exact heads and review state
+
+| PR | Exact head at audit | Latest exact-head Tests evidence | Unresolved / total threads |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 passed, 76.67% | 1 / 80 |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success; 828 passed, 76.52% | 3 / 11 |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success; 815 passed, 76.01% | 0 / 0 |
+| [#57 deployment seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| [#59 documentation refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `7a56ce9cb4e94453b00514c1555e57f946d4ba8c` before this docs-only refresh | No run on this exact docs head; parent code/test head `d8edcae5a8f16da22def88093a2573ab9ca8278f` passed [41238779250](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41238779250): 797 passed, 76.01%, migrations 001–033 only | 3 / 3 |
+| [#60 P0 contact consent](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `e0685c8bbeb380a684816b463ddd4f8eee4db10c` | [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) cancelled; `test_runtime_role_cannot_mutate_or_disable_consent_history` failed at 86%, followed by a 120-second faulthandler timeout and 20-minute job cancellation; no final count/coverage | 9 / 9 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| [#62 deployment integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08% | 1 / 1 |
+
+All ten PRs remain open. Zero unresolved threads on a PR is not an approval. No PR was merged, approved, or had a review thread resolved in this run.
+
+### Migration allocation and deployment integration
+
+The former 034 filename collision has been renumbered at branch level, but the branches are still not one tested release candidate:
+
+- #48 owns migration 034.
+- #50 owns migration 035.
+- #49 owns migrations 036–037.
+- #60 owns migrations 038–040.
+- Main, #55, #57, #61, and #62 contain only 001–033.
+
+No candidate has proved fresh migrations 001–040, installed upgrade 033→040, second-run no-op/checksum behavior, schema audit, and DB-leakage audit together.
+
+PR #60 and #62 remain unsafe to merge in either order:
+- #60 introduces the restricted API runtime role and service-specific environment allowlists, but does not carry #62's migration-target, local-seed, and contiguous-sequence preflights.
+- #62 carries those preflights and schema/leakage controls, but its Compose file still injects broad `.env.production` into API, WAHA, and migrate and does not provision the restricted runtime role.
+- Consolidate #60 with #62/#61/#57/#55 in one reviewed candidate. All database-target, role, seed, and sequence checks must complete before the first DDL. Only migrate receives owner credentials; API receives the restricted runtime URL; WAHA receives transport-only settings.
+
+### P0 and architecture blockers
+
+- Main has the existing recipient- and payload-bound outbound delivery fence, but contact consent and terminal STOP enforcement at final dispatch exist only on open PR #60, not main.
+- On #60's latest run, both Compose helper tests passed, so the previously documented nested-service-key helper defect is corrected on the current head. The remaining observed failing node is `test_runtime_role_cannot_mutate_or_disable_consent_history`; the captured log has no final assertion traceback. PostgreSQL logs show expected privilege denials, but they do not establish why pytest marked the node failed. Reproduce the test alone on disposable PostgreSQL before claiming a root cause.
+- #60's provisioner and test inspect memberships where `zina_runtime` is the member, but not where it is the granted role (`pg_auth_members.roleid`). A pre-existing role granted `zina_runtime` could still be able to assume that runtime role. Revoke or reject memberships in both directions and test a second temporary role that is granted `zina_runtime`.
+- #60 still needs OWNER decisions on terminal STOP semantics (currently terminal across mapped aliases, with no re-consent/override) and on whether the opaque consent evidence reference attests independently obtained contact consent or whether contact consent and OWNER automation permission remain separate requirements.
+- #50's registry-read failure path now fails closed on its current head. Two identity decisions remain: remove project/Datacube claims from the generic introduction and route those facts through Identity Registry; stop using `updated_at = created_at` as historical provenance proof and leave ambiguous pre-033 rows unknown unless immutable evidence or explicit OWNER attestation exists.
+- #49 remains a content-library foundation, not live producer selection or dashboard integration; it never grants send authority. #48 remains metadata observation only; private bytes are absent and retention must remain OFF.
+
+### Highest-value next safe step
+
+Reproduce and isolate the #60 runtime-role integration failure, close the two-direction role-membership check, then consolidate #60 with #62/#61/#57/#55 and run the full disposable-PostgreSQL fresh/upgrade/no-op/checksum/schema/leakage/P0 matrix. Keep all PRs open for independent review.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.** No local PostgreSQL test, local pytest run, migration execution, or leakage audit was available in this documentation-only run. No production DB mutation, WAHA reconnection, real send, private-media retention activation, merge, or approval occurred.
+
+---
+
 ## Current engineering verification — 2026-11-01 10:27 WAT
 
 This snapshot supersedes the 08:21 WAT overlay below. It is a live source/PR verification, not release approval. Exact-head CI on one feature branch does not prove the integrated migration chain.

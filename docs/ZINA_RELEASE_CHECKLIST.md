@@ -1,3 +1,38 @@
+## Release verification — 2026-11-01 16:25 WAT
+
+This source-grounded gate review supersedes the 10:27 WAT snapshot below. It is not release approval. Branch-local green runs do not prove the integrated 001–040 migration chain.
+
+### Mechanical engineering gates
+
+| Gate | Current evidence | Release status |
+|---|---|---|
+| Main baseline | `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main Tests [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed 2026-09-08; main has migrations 001–033 | Stale; exact main suite must be rerun on the reviewed release candidate |
+| Main workflow controls | Main workflow applies SQL files lexically and runs pytest at a 57% coverage floor | No sequence preflight, schema audit, or post-test leakage gate on main |
+| Migration sequence | #61 head `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f`, run [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | Candidate only; not merged |
+| Fresh integrated migrations | Main 001–033; #48=034, #50=035, #49=036–037, #60=038–040 | No single 001–040 chain proved |
+| Installed upgrade / rerun | No disposable 033→040 upgrade plus second-run no-op/checksum result | Not proved |
+| Deployment target / seed / sequence guards | #62 head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`, run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) passed 864 tests / 76.01% | Candidate only; not integrated with #60 runtime-role boundary |
+| Schema audit / DB leakage | #55 run [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) passed 815 / 76.01%; #62 reports schema and leakage checks passed on its branch | Candidate only; not integrated 001–040 evidence |
+| Runtime DB-role isolation | #60 head `e0685c8bbeb380a684816b463ddd4f8eee4db10c`, run [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) cancelled after the runtime-role test failed and timed out | Not proved |
+| Consent audit tamper resistance | Runtime role is intended to have SELECT/INSERT only; incoming memberships where runtime is the granted role remain unchecked | Not proved |
+| P0 contact consent | Implemented only on open #60; absent from main | Not verified on main |
+| Independent review | #60 9 unresolved; #62 7; #59 3; #50 3; #49 1; #57 1; #63 1 | Blocking review remains |
+| OWNER policy decisions | STOP permanence and consent-grant evidence semantics remain undecided | Required before P0 acceptance |
+| Controlled test plan | OWNER self-DM text → commands → media/view-once → one explicitly approved external contact | Do not start |
+
+### Current blockers and next work
+
+1. Reproduce `test_runtime_role_cannot_mutate_or_disable_consent_history` alone on disposable PostgreSQL. The latest run proves the Compose helper regressions now pass, but the runtime-role node still fails and the job times out; there is no captured assertion traceback or final coverage result.
+2. Inspect role memberships in both directions: where the runtime role is `pg_auth_members.member` and where it is `pg_auth_members.roleid`. Add a regression using a second temporary role granted `zina_runtime`; revoke/reject that membership before runtime credentials are issued.
+3. Consolidate #60 with #62/#61/#57/#55. Neither #60 nor #62 is independently mergeable: #60 lacks target/seed/sequence preflights; #62 still exposes broad `.env.production` to API/WAHA/migrate and lacks the restricted runtime role. Complete all preflights before DDL and preserve service-specific credentials.
+4. Run one exact candidate through fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, schema audit, DB leakage, P0 adversarial matrix, and runtime-role privilege proof.
+5. Obtain independent review for the remaining inline threads. No approval or merge is implied by green branch-local CI or resolved-thread counts.
+6. Obtain OWNER decisions on terminal STOP behavior and consent evidence. Resolve #50's introduction-copy scope and legacy provenance without timestamp inference.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.** No production DB operation, WAHA reconnection, real WhatsApp send, private-media retention activation, merge, or approval occurred in this run.
+
+---
+
 ## Release verification — 2026-11-01 10:27 WAT
 
 This live source-grounded gate review supersedes the 08:21 WAT overlay below. It is not release approval; green branch-local runs do not prove the integrated feature migration chain.
