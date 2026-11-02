@@ -1,3 +1,33 @@
+## Fresh release verification — 2026-11-02 08:32 WAT
+
+**Status: NOT TEST READY.** This snapshot supersedes the 06:34 WAT verification and is based on fresh live refs, exact-head Actions runs, review threads, migration trees, workflow YAML, and deployment/source inspection.
+
+- Main remains 5aadd725ed9da08a5eb84eb42b64f0f45f231c79, with migrations 001–033 only. Its exact-main Tests run 34219252390 succeeded on 2026-09-08; no newer run is associated with that exact SHA. Main currently reports protected=false and no required status checks.
+- The former duplicate migration 034 has been reconciled across branches: #48=034, #50=035, #49=036–037, #60=038–040. No single candidate has passed fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, combined schema audit, and zero-leakage audit.
+- PR #60 current head bcc34cdcd012e2735d5f51d899ff7a2274c018f9 has a symmetric runtime-role membership fix. Exact-head Tests run 41400297589 is CANCELLED, not green: migrations passed, Compose helper tests passed, test_runtime_role_cannot_mutate_or_disable_consent_history failed at 86%, then faulthandler timed out during async fixture setup. There is no assertion traceback, final test count, or coverage result.
+- P0 policy is not complete: OWNER must decide whether a STOP committed after the final pre-transport reservation but before the WAHA request is considered too late; active OWNER approval and exact ScheduledAction paths currently bypass contact-policy quiet-hours evaluation; per-contact safety limits are scoped to exact chat_id rather than stable Contact identity across aliases.
+- PR #48 and #60 both modify the sole outbound worker/authorization service. Integrate #48's exact-source OWNER view-once lock and post-success return audit with #60's external-contact consent, STOP, and final safety fence in one candidate.
+- PR #60 and #62 must also be consolidated: preserve #62's pre-DDL target/seed/sequence preflights, schema audit, and leakage gate while retaining #60's runtime-role separation and service-specific Compose environments. No merge order alone is safe.
+- PR #50 still needs the introduction-copy decision and a truthful legacy-provenance policy; timestamp equality is not reliable historical provenance. PR #49 remains foundation-only and has one active retired-key review thread.
+- Exact active unresolved review counts remain: #60 6, #62 4, #50 3, #49 1, #59 1. Other open PRs have no active unresolved threads, although some outdated threads remain unresolved.
+
+### Required before TEST READY
+
+1. Resolve the STOP linearization and consent-evidence semantics with Fabian.
+2. Close quiet-hours and cross-alias rate/backlog/duplicate gaps with PostgreSQL-backed regressions.
+3. Diagnose and pass the isolated runtime-role integration test, then the full exact-head suite and 57% coverage gate.
+4. Integrate #48/#50/#49/#60 and #62/#61/#57/#55 into one reviewed migration/deployment candidate; prove fresh 001–040 and installed 033→040 upgrade, no-op/checksum stability, schema audit, and zero DB leakage on that same candidate.
+5. Resolve blocking reviews independently; preserve one router, one scheduler, one authority/dispatcher, and the sole WAHA transport.
+6. Complete dashboard/observability gates and publish the staged controlled-test plan.
+
+No local tests or migrations were run for this documentation-only refresh. No production DB mutation, WAHA reconnection, or real WhatsApp send occurred. Private-media retention remains OFF.
+
+Controlled test sequence remains owner self-DM text → commands → media/view-once → one explicitly approved external contact, only after all gates pass and Fabian explicitly authorizes the live session.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release verification — 2026-11-02 (after runtime-role hardening)
 
 **Status: NOT TEST READY.** This snapshot is based on current live GitHub state, not the older 2026-09-08 main verification.

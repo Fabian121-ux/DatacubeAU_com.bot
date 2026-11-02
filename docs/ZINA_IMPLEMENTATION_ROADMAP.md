@@ -1,3 +1,68 @@
+## Fresh cross-PR verification — 2026-11-02 08:32 WAT
+
+This snapshot supersedes the 06:34 WAT verification below. It was checked against live branch refs, exact-head Actions queries, GraphQL review threads, recursive migration trees, workflow YAML, deployment files, and the relevant outbound worker/authorization source. The documentation-only update does not certify release readiness.
+
+### Main and workflow state
+
+- Main remains 5aadd725ed9da08a5eb84eb42b64f0f45f231c79 (last commit 2026-09-08 11:09:59 UTC). The current branch endpoint reports protected=false and no required status checks.
+- Main contains migrations 001–033 only. Its latest exact-head Tests run is 34219252390, successful on 2026-09-08; no newer run is associated with this exact main SHA.
+- Main workflow blob 445b1fd628489b6a3b1c4f463880e4a1e709e978 applies all present SQL migrations lexically and runs pytest with a 57% coverage floor. It does not run the migration-sequence preflight, ORM schema audit, or post-test leakage audit.
+- PR #60 workflow blob 66820c36fb2590226e8fc80f63c630da763804d1 adds a 20-minute job timeout and verbose pytest with a 120-second faulthandler timeout. It still applies only the migrations present on that branch.
+- PR #62 adds the migration-sequence preflight, ORM schema audit, and post-test DB-leakage audit. Those gates are not yet integrated with PR #60's runtime-role/service-environment boundary.
+
+### All open PRs — exact heads, exact-head Tests, review threads
+
+Counts are unresolved / total; the final number in parentheses is active unresolved (not outdated).
+
+| PR | Exact head | Latest exact-head Tests | Unresolved / total (active) |
+|---|---|---|---:|
+| #48 PrivateMediaArtifact | 3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca | 40158094566 success | 0 / 15 (0) |
+| #49 Outbound Message Library | bcd0033e024b177561b8afd41589afe1897ba4de | 39920982545 success; 896 passed, 76.67% | 1 / 80 (1) |
+| #50 Identity Registry | 0a2b38c0ce72b3c4a8fdd49490be504facb34bac | 41202063757 success; 828 passed, 76.52% | 3 / 11 (3) |
+| #55 DB-leakage gate | 3d35793ef72cfcfe1e188bc51df6d4e538679f7b | 41026581000 success | 0 / 0 (0) |
+| #57 local-seed safety | d831ce4e3dd7e56f38d8563dc63abc44f8c37bba | 40169146406 success | 1 / 1 (0) |
+| #59 release documentation | 5821703c351ed949b0034e2b07779b287a7fcf54 before this update | No run; documentation commits use [skip ci] | 3 / 3 (1) |
+| #60 contact-consent P0 | bcc34cdcd012e2735d5f51d899ff7a2274c018f9 | 41400297589 cancelled | 11 / 11 (6) |
+| #61 migration-sequence gate | 8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f | 40300425938 success | 0 / 0 (0) |
+| #62 deployment preflight/seed integration | a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc | 41073226073 success; 864 passed, 76.01% | 7 / 7 (4) |
+| #63 conversation observability | 13fad868affe01d6069f4288481f8cd8dd341c62 | 41080836429 success; 803 passed, 76.08% | 1 / 1 (0) |
+
+### Migration allocation and integration
+
+The former duplicate-034 filename collision has been renumbered across the live feature branches. Recursive trees confirm main 001–033, #48 adds 034, #50 adds 035, #49 adds 036–037, and #60 adds 038–040. #62's branch still carries 001–033 only. This is now an integration/proof gap, not a duplicate-number collision.
+
+No single candidate has proved all of the following together: fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, schema audit against the modified schema, and zero DB leakage.
+
+PR #48 and #60 both modify the sole outbound worker and OutboundAuthorizationService. #48 adds exact OWNER view-once source-message/chat/command binding, locks the active source immediately before dispatch, and records return only after successful transport. #60 adds external-contact consent, refreshed authorization/safety checks, current-contact mapping checks, and pending-STOP veto. Neither branch contains the other's complete worker behavior. They must be reconciled in one reviewed candidate; merge order alone is unsafe.
+
+PR #60 and #62 also conflict in deployment. #60's Compose uses service-specific environment allowlists (API runtime DB URL, WAHA-only variables, migration-owner URLs only in migrate) and provisions a non-owner runtime role, but its runner lacks #62's pre-DDL database-target, local-seed, and migration-sequence preflights. #62 contains those preflights plus schema/leakage gates, but still mounts .env.production into API, WAHA, and migrate and does not provision the restricted runtime role. Neither branch is safe to merge independently.
+
+### PR #60 latest source and CI evidence
+
+- Commit bcc34cd changes the runtime-role provisioner, runtime URL verifier, and disposable-PostgreSQL test. It now revokes and verifies pg_auth_members edges in both directions and tests that neither a secondary login nor the runtime login can retain a SET ROLE path.
+- Exact-head run 41400297589 completed as cancelled at 2026-11-02T06:50:28Z. Migration application passed. The Compose helper tests passed. Pytest marked test_runtime_role_cannot_mutate_or_disable_consent_history FAILED at 86%; the 120-second faulthandler then fired while pytest was in async fixture setup, and the job was cancelled at its 20-minute timeout. No assertion traceback, final suite count, or coverage result was produced.
+- PostgreSQL logs show the intended denial probes for both SET ROLE directions, sequence setval, consent-event UPDATE/DELETE/TRUNCATE, ALTER TABLE DISABLE TRIGGER, CREATE TABLE, and SET ROLE to the migration owner. Those log lines do not identify which assertion failed; do not infer that the test passed.
+- No newer exact-head Tests run exists for bcc34cd.
+
+### Remaining P0 and architecture blockers
+
+1. STOP linearization: a STOP receipt can commit after the worker's final pending-intent read but before the WAHA request begins. The current implementation treats that final read as the reservation point; an attempt already entering transport cannot reliably be recalled. Fabian must accept or revise this contract.
+2. Quiet hours are not universal. OutboundAuthorizationService returns immediately for an exact active OWNER approval before loading the contact policy/quiet-hours row. The ScheduledAction exact-binding path also returns from the worker authorization helper without checking that policy. The final worker fence must apply current contact quiet hours to every external recipient, regardless of authority path, and deny invalid timezone/window configuration.
+3. Per-contact backlog, rate, and duplicate suppression in OutboundSafetyLimitService filter by exact OutboundMessage.chat_id. Current aliases for one durable Contact can therefore consume separate limits. Aggregate against stable Contact identity and its current mapped aliases.
+4. The API runtime role is now more strongly constrained on #60, but the exact-head integration test is cancelled and the runtime-role/deployment changes are not yet integrated with #62's preflight/schema/leakage gates.
+5. PR #50's old introduction_reply lifecycle concern has been changed to fail closed on registry read errors. The remaining active review decisions are introduction-copy scope (recommended: remove project/Datacube claims from the generic greeting and keep project facts in Identity Registry answers) and truthful provenance for pre-033 rows. The migration's updated_at = created_at heuristic cannot reliably distinguish historical defaults from rows whose timestamps were advanced by earlier reads; preserve ambiguous legacy rows as legacy_unknown unless immutable evidence proves origin.
+6. PR #49 remains a content-library foundation, not live producer/selection/dashboard integration. Its active review thread concerns permanent reservation of retired set keys; the current migration 037 registry and exact-head CI evidence are present, but the integrated 034–037 chain remains unverified.
+
+### Next safe engineering step
+
+On a disposable PostgreSQL 16 database, isolate test_runtime_role_cannot_mutate_or_disable_consent_history by itself with verbose output and fixture teardown tracing, capture the actual assertion traceback, and resolve that exact failure before another full suite. Then build one integrated reviewed candidate containing #48, #60, #62, #61, #57, and #55 behavior, preserving all worker and deployment invariants above. Do not merge any candidate without independent human review and authorization.
+
+No local pytest, migration execution, schema audit, or DB-leakage audit was run for this documentation refresh. No production database mutation, WAHA reconnection, real send, or private-media retention activation occurred. Private-media retention remains OFF.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh cross-PR verification — 2026-11-02 (after runtime-role hardening)
 
 This snapshot supersedes the 01:15 WAT snapshot below. GitHub state was re-queried from live branch refs, review threads, workflow runs, migration directories, and deployment files. Main itself has not advanced.
