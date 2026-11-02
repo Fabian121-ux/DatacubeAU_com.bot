@@ -1,3 +1,40 @@
+## Fresh release verification — 2026-11-02 (current engineering pass)
+
+**Status: NOT TEST READY.** This overlay supersedes the 11:23 WAT snapshot below. It is based on fresh live branch refs, exact-head Actions associations, review threads, workflow YAML, migration allocation, and source review. Historical checked boxes later in this file describe the September baseline, not an integrated release candidate.
+
+### Verified state
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only. Exact-main Tests run `34219252390` succeeded on 2026-09-08; no newer run is associated with this SHA. Main's workflow has a 57% coverage floor but lacks the migration-sequence preflight, ORM schema audit, and post-test DB-leakage gate.
+- Latest overall Tests run [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) on PR #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` is **cancelled**. Migration application and Compose helper tests passed; the runtime-role integration test was marked FAILED at 86%, then the 120-second faulthandler timed out during async fixture setup and the job reached its 20-minute cancellation. No assertion traceback, final suite count, or coverage result exists.
+- Migration allocation is contiguous by branch only: #48=034, #50=035, #49=036–037, #60=038–040. No single candidate has passed fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, schema audit, and zero-leakage proof.
+- #60 and #62 cannot be merged independently or in either order: #60 provides runtime-role/service credential separation but lacks #62's pre-DDL target/seed/sequence guards; #62 provides those guards plus schema/leakage checks but lacks the restricted API role and still exposes the broad production env file to API/WAHA/migrate. One integrated candidate is required.
+- Current branch protection is unverified: the classic protection endpoint returned 403 and the rulesets endpoint returned an empty list.
+
+### P0 release blockers
+
+1. OWNER approval and ScheduledAction authority paths bypass the contact policy's quiet-hours check. The final external-contact fence must enforce quiet hours regardless of authority source and reject malformed timezone/window settings.
+2. Contact backlog/rate/duplicate controls are scoped to exact `chat_id`, not stable Contact identity across aliases.
+3. STOP receipt commit can race after the worker's final pending-intent read but before the WAHA request. The reservation/linearization contract needs an explicit two-session regression and OWNER acceptance, or a stronger shared lock protocol.
+4. Approval/policy expiry can pass while the worker waits for consent, safety-reservation, or mapping locks. Recheck/reserve time-bounded authority after all locks immediately before transport.
+5. Media duplicate suppression compares caption/text rather than the exact media-aware payload digest (locator, kind, caption, MIME, filename); blank-caption duplicate media can bypass suppression.
+6. The current PR #60 runtime-role integration test is not green or complete; obtain its assertion traceback and fix the async fixture/test-isolation timeout before relying on audit-history protection.
+
+### Other integration and review gates
+
+- PR #50: registry-read failures now fail closed, but generic introduction copy scope and truthful provenance for pre-033 rows remain unresolved. Ambiguous historical rows should remain `legacy_unknown` unless immutable evidence proves origin.
+- PR #49: outbound-message library remains foundation only; no live producer selection or dashboard. No external-send integration before P0 and migration gates pass.
+- PR #48: private-media observation/return wiring only; retention remains OFF.
+- No PR currently has an APPROVED review state. Unresolved threads remain on #60 (16), #62 (7), #59 (3), #50 (3), #49 (1), #63 (1), and #57 (1). #48/#61/#55 have zero unresolved threads, which is not independent approval.
+
+### Current-pass evidence
+
+- Added two source-anchored P0 comments to [PR #60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60): [time-bounded approval/policy expiry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4442435895) and [media-aware duplicate identity](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4442484093). These are review findings, not approvals.
+- This pass made no application-code or migration change and ran no local tests, migrations, schema audit, or leakage audit. It triggered no Actions workflow and performed no production DB, WAHA, or real WhatsApp operation. Private-media retention remains OFF.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release verification — 2026-11-02 11:23 WAT
 
 **Status: NOT TEST READY.** This snapshot supersedes the 09:27 WAT overlay below. The historical checked boxes later in this file were verified against a September 2026 code state; they are not current integrated-release evidence.
