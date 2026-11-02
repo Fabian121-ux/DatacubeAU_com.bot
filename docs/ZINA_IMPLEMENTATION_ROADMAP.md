@@ -1,3 +1,50 @@
+## Fresh cross-PR verification — 2026-11-02 (after runtime-role hardening)
+
+This snapshot supersedes the 01:15 WAT snapshot below. GitHub state was re-queried from live branch refs, review threads, workflow runs, migration directories, and deployment files. Main itself has not advanced.
+
+### Main and exact-head CI
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last commit 2026-09-08 11:09:59 UTC. Main is not branch-protected (`protected=false`).
+- Main's latest visible Tests run for that exact SHA is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. No newer run for that exact main SHA was found.
+- Main still contains migrations 001–033 and its deployment example still uses the same `postgres` login for `DATABASE_URL` and `DATABASE_URL_SYNC`; Compose injects `.env.production` into API, WAHA, and migrate.
+
+### All open PRs — current heads, latest visible Tests, unresolved review threads
+
+Counts are GitHub's unresolved threads / total threads; active excludes outdated unresolved threads.
+
+| PR | Exact head | Latest visible Tests | Unresolved / total (active) |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 (0) |
+| [#49 Outbound Message Library](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success | 1 / 80 (1) |
+| [#50 Identity Registry](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success | 3 / 11 (3) |
+| [#55 DB-leakage gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success | 0 / 0 (0) |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 (0) |
+| [#59 release documentation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `36940ee92256f46a12916ddc48ca7675f74bfa6c` | No run (documentation commits use `[skip ci]`) | 3 / 3 (1) |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` | [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) in progress; migration step passed, pytest/coverage still running | 11 / 11 (6) |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 (0) |
+| [#62 deployment preflight/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success | 7 / 7 (4) |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 (0) |
+
+### Migration and deployment integration
+
+The historical 034 collision has been renumbered on the live feature branches. Current allocation is contiguous: #48=034, #50=035, #49=036–037, #60=038–040; main remains 001–033. No single candidate has proved the combined 001–040 fresh chain, installed 033→040 upgrade, second-run no-op/checksum stability, schema audit, and zero DB leakage.
+
+The deployment branches still conflict: #60 separates API runtime credentials from migration-owner credentials and uses service-specific Compose environment allowlists, but its runner does not include #62's pre-DDL database-target, local-seed, and migration-sequence preflights. #62 has those preflights and seed guards but still mounts `.env.production` into API/WAHA/migrate and does not provision the restricted runtime role. Do not merge either branch independently or assume merge order preserves both.
+
+PR #48 and #60 both change the sole outbound worker and authorization service. One integration candidate must preserve #48's OWNER view-once exact-source lock/return-after-success behavior and #60's external-contact consent/STOP/final safety fence. Do not merge by order alone.
+
+### Latest #60 source work and remaining P0 blockers
+
+- Commit [bcc34cd](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/bcc34cdcd012e2735d5f51d899ff7a2274c018f9) updates the runtime-role provisioner, runtime URL verifier, and disposable-PostgreSQL regression. It revokes/checks `pg_auth_members` in both directions and tests that a secondary login cannot `SET ROLE` into the runtime role after re-provisioning, while the runtime login cannot retain a parent-role `SET ROLE` path.
+- Exact-head Tests run [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) is still in progress; do not claim a pass yet. The preceding exact-head run [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) was cancelled after the runtime-role integration test was marked failed at 86%; it produced no assertion traceback, final suite count, or coverage result.
+- The new source change does not resolve the latest P0 policy question: a STOP receipt may commit after the worker's final pending-intent read but before the WAHA POST. The current contract treats the final read as the reservation/linearization point; an already-in-flight single attempt cannot reliably be recalled. OWNER must explicitly accept or revise that boundary.
+- Current source review also finds quiet-hours checks can be bypassed by the exact OWNER-approval branch and exact ScheduledAction binding path; the final worker fence must enforce quiet hours for every external recipient and fail closed on invalid configuration.
+- Per-contact backlog/rate/duplicate controls still key by exact chat ID, not stable Contact identity, so current aliases can consume separate limits. Aggregate these limits across a Contact's current mapped aliases before P0 completion.
+
+**Release remains NOT TEST READY.** No integrated migration/schema/leakage candidate, no complete P0 adversarial matrix, no independent resolution of blocking review threads, and no controlled live test authorization. No local PostgreSQL/pytest execution, production DB mutation, WAHA reconnection, or real WhatsApp send occurred.
+
+---
+
 ## Cross-PR worker integration verification — 2026-11-02 01:15 WAT
 
 This source recheck adds one integration dependency not recorded in the 2026-11-01 23:22 snapshot. The live PR heads and exact-head workflow associations were re-queried; no code branch head changed during this audit. This is a documentation-only delta and uses `[skip ci]`; no exact-head CI result is claimed for the resulting documentation commit.

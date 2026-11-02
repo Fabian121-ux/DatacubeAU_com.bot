@@ -1,3 +1,18 @@
+## Fresh release verification — 2026-11-02 (after runtime-role hardening)
+
+**Status: NOT TEST READY.** This snapshot is based on current live GitHub state, not the older 2026-09-08 main verification.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest exact-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. Main contains migrations 001–033 only and is not branch-protected.
+- Feature migration allocation is now contiguous by branch: #48=034, #50=035, #49=036–037, #60=038–040. This resolves the historical filename collision, not integrated validation. Fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, combined schema audit, and zero DB leakage remain unproved on one candidate.
+- PR #60 current head is `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`; exact-head Tests run [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) is in progress. Its latest code patch closes the symmetric role-membership gap in provisioner + verifier and adds a disposable-PostgreSQL SET ROLE regression; no green result is claimed yet.
+- PR #60 still has P0 blockers: the STOP final-read/transport-entry linearization point needs OWNER acceptance; quiet-hours checks are bypassed by active approval and scheduled-action paths; per-contact frequency/backlog/duplicate limits are keyed by chat ID rather than stable Contact identity.
+- PR #60 and #62 must be consolidated so API receives only restricted runtime credentials, WAHA receives only its explicit variables, migrate alone receives owner credentials, and all #62 target/seed/sequence preflights remain before DDL. PR #48 and #60 must also be integrated without dropping either view-once source locking/return audit or external-contact consent/STOP enforcement.
+- Independent review remains open on #60 (6 active unresolved), #62 (4 active unresolved), #50 (3 active unresolved), #49 (1 active unresolved), and #59 (1 active unresolved); other open PR thread state is recorded in the roadmap snapshot above.
+
+No integrated release-candidate tests or controlled WhatsApp test stages are authorized by these branch-local checks. No production DB mutation, WAHA reconnection, or real WhatsApp send occurred. Private-media retention remains OFF.
+
+---
+
 ## Cross-PR worker integration gate — 2026-11-02 01:15 WAT
 
 This delta adds a verified dependency between the view-once and contact-consent branches. It is documentation-only and uses `[skip ci]`; no exact-head CI result is claimed for the resulting docs commit.
