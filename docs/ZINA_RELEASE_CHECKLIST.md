@@ -1,3 +1,15 @@
+## Exact Actions log triage — 2026-11-02 14:43 UTC
+
+This is a source/log verification update, not a test pass.
+
+- Re-read the decoded job log for [Tests run 41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589), job `125130478315`, on PR #60 exact head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`.
+- PostgreSQL recorded the expected denials for both `pg_auth_members` membership directions (`SET ROLE zina_runtime` from the secondary login and `SET ROLE <parent>` from the runtime login), `setval()`, consent-event UPDATE/DELETE/TRUNCATE, trigger-disable, CREATE in `public`, and `SET ROLE postgres`.
+- Pytest still marks `test_runtime_role_cannot_mutate_or_disable_consent_history` **FAILED** immediately after the final denied `SET ROLE postgres` probe. The 120-second faulthandler then fires while pytest is setting up the next async-generator fixture; the captured stack shows the event loop waiting in the fixture wrapper, not an assertion traceback. The run was cancelled at the 20-minute job limit. These logs demonstrate the privilege-denial probes ran, but they do **not** establish why the test failed or that cleanup completed.
+- Next diagnostic is an isolated invocation of that one test against the explicitly disposable PostgreSQL service, with uncensored pytest failure/teardown output and bounded connection/cleanup timeouts. Do not infer a source root cause from the PostgreSQL denial messages alone.
+- No local test or migration was run in this pass; no Actions run was triggered. The current run remains cancelled, with no final suite count or coverage result. No source change, production DB operation, WAHA reconnection, or real WhatsApp send occurred.
+
+**Release state remains NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
 ## Fresh release verification — 2026-11-02 (current engineering pass)
 
 **Status: NOT TEST READY.** This overlay supersedes the 11:23 WAT snapshot below. It is based on fresh live branch refs, exact-head Actions associations, review threads, workflow YAML, migration allocation, and source review. Historical checked boxes later in this file describe the September baseline, not an integrated release candidate.
