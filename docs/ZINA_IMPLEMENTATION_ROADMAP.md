@@ -1,3 +1,32 @@
+## Cross-PR worker integration verification — 2026-11-02 01:15 WAT
+
+This source recheck adds one integration dependency not recorded in the 2026-11-01 23:22 snapshot. The live PR heads and exact-head workflow associations were re-queried; no code branch head changed during this audit. This is a documentation-only delta and uses `[skip ci]`; no exact-head CI result is claimed for the resulting documentation commit.
+
+### Shared outbound worker changes: PR #48 + PR #60
+
+- PR #48 is at `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca`; exact-head Tests run [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) succeeded; review threads 0/15 unresolved.
+- PR #60 is at `e0685c8bbeb380a684816b463ddd4f8eee4db10c`; exact-head Tests run [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) is cancelled; review threads 10/10 unresolved.
+- Both branches change `bot_core/app/workers/background_workers.py` and `bot_core/app/services/outbound_authorization_service.py`. Their worker blobs are different from main and from each other (main `ea1e8b03`, #48 `bf4333eb`, #60 `42bc7fbc`); their authorization blobs are also different (main `37547232`, #48 `4812c993`, #60 `8d81190b`).
+- #48 adds the OWNER view-once source-row lock before transport and records the return only after successful delivery; its authorization change binds exact source message/chat/command IDs into the OWNER payload digest. #60 adds the refreshed queue-row check, final authority recheck, external-contact consent fence, safety reservation, and pending-STOP veto; its authorization change locks the current contact-policy row.
+- Neither branch contains the other's worker behavior. One integrated candidate must preserve both: external-contact authority/consent/STOP/safety before the single WAHA attempt; OWNER view-once exact source binding and active-source lock before the attempt; mark the source returned only after confirmed success. Do not choose a merge order that drops either path.
+- This overlap is separate from the #60/#62 deployment-runner conflict. The same reviewed candidate must also combine #62's pre-DDL target/seed/sequence preflights and schema/leakage gates with #60's runtime-role and service-environment boundary.
+
+### Exact-head P0 findings rechecked on #60
+
+- Comparing #60's previous head `93f97fd192a3141869a419f5832df89b888ca9e2` to current `e0685c8bbeb380a684816b463ddd4f8eee4db10c` shows only `tests/unit/test_runtime_db_role.py` changed. The current authorization, worker, and safety-limit implementation files remain byte-identical to the previous head.
+- Quiet hours still are not universal: an exact active OWNER approval returns before policy quiet-hours evaluation, and the exact ScheduledAction binding path returns without invoking that policy check. The worker's later consent and rate-limit checks do not evaluate quiet hours.
+- The nominal per-contact backlog/rate/duplicate limits still filter by exact `OutboundMessage.chat_id`, so two current aliases of one Contact can consume separate limits and evade cross-alias duplicate suppression.
+- The runtime-role provisioner and URL verifier still inspect membership where the runtime role is the member, not where it is the granted role. A second role granted `zina_runtime` can retain a `SET ROLE` path. The current runtime-role test also remains unexplained: run 41311022671 marked it FAILED at 86%, then emitted a 120-second faulthandler timeout and was cancelled; no assertion traceback, final suite count, or coverage was captured.
+- These source-grounded findings were refreshed in existing #60 comment [6557906754](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6557906754); the #48/#60 worker overlap was recorded in [6566210443](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6566210443). Both are owner-authored engineering notes, not independent approval.
+
+### Migration/release status unchanged
+
+Migration numbering is allocated contiguously: #48=034, #50=035, #49=036–037, #60=038–040. Main remains 001–033. No single candidate has proved fresh 001–040, installed 033→040 upgrade, second-run no-op/checksums, combined schema audit, and zero DB leakage. The current #60 workflow applies 001–033 plus 038–040 and skips 034–037.
+
+No source code or migration was changed, no test or migration was run locally, no Actions run was triggered, and no production DB or WAHA action occurred. Keep all affected PRs open for independent review.
+
+---
+
 ## Current engineering verification — 2026-11-01 23:22 WAT
 
 This delta supersedes the earlier 20:23 WAT snapshot below. It was checked against the live repository and all ten open pull requests. PR #59 was at `ac071ac25f7118717914bdb4956b62aa76830b7e` when this audit began; the two documentation commits that append this delta intentionally use `[skip ci]`. No exact-head CI result is claimed for the resulting docs head.
