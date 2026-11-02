@@ -1,3 +1,18 @@
+## Cross-PR worker integration gate — 2026-11-02 01:15 WAT
+
+This delta adds a verified dependency between the view-once and contact-consent branches. It is documentation-only and uses `[skip ci]`; no exact-head CI result is claimed for the resulting docs commit.
+
+- PR #48 exact head: `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca`, Tests run [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success, 0/15 unresolved threads.
+- PR #60 exact head: `e0685c8bbeb380a684816b463ddd4f8eee4db10c`, Tests run [41311022671](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41311022671) cancelled, 10/10 unresolved threads.
+- Both change `background_workers.py` and `outbound_authorization_service.py`. #48 adds exact OWNER view-once source binding/locking and post-success return recording; #60 adds final external-contact authority/consent/STOP/safety checks. Neither branch contains the other's worker behavior. Integrate both in one reviewed candidate; do not rely on merge order.
+- On #60, quiet hours still bypass exact OWNER approval and exact ScheduledAction binding paths; per-contact rate/backlog/duplicate controls still key by exact chat ID rather than stable Contact identity. The runtime-role verifier/provisioner still omit incoming memberships (`pg_auth_members.roleid = runtime_role`), and the latest runtime-role integration test is unexplained/cancelled.
+- The #60/#62 deployment conflict remains: #60 has service-specific environment allowlists/runtime role but lacks #62's pre-DDL target/seed/sequence preflights; #62 has preflights/schema/leakage but still shares `.env.production` with API/WAHA/migrate and lacks the restricted runtime role.
+- Migration numbers are contiguous by branch allocation (#48=034, #50=035, #49=036–037, #60=038–040), but no exact candidate proves fresh 001–040, installed 033→040, rerun/checksum stability, schema audit, and leakage together.
+
+**Release status remains NOT TEST READY.** No local PostgreSQL/pytest or integrated migration execution was available; no Actions run was triggered; no production DB mutation or WAHA action occurred.
+
+---
+
 ## Current release verification — 2026-11-01 23:22 WAT (NOT TEST READY)
 
 This release-gate delta supersedes the 20:23 WAT snapshot below. It was rechecked against live GitHub heads, review-thread states, the main workflow, migration filenames, and PR #60 source/Actions logs. PR #59 was at `ac071ac25f7118717914bdb4956b62aa76830b7e` when this audit began; this docs-only refresh uses `[skip ci]`, so no exact-head CI result is claimed for the resulting documentation commit.
