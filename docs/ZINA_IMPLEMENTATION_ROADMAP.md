@@ -1,3 +1,51 @@
+## Fresh live verification — 2026-11-02 11:23 WAT
+
+This overlay supersedes the 09:27 WAT snapshot below. It was checked against the current default branch, all open PR heads, review threads, recent Actions runs, workflow YAML, and the relevant outbound/deployment source. The new PR #60 inline review is comment-only and is not approval.
+
+### Default branch and CI
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59Z), with migrations 001–033 only.
+- Latest exact-main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. Main's `.github/workflows/tests.yml` applies the SQL files present in that checkout lexically and runs pytest with a 57% coverage floor; it does not itself run the newer migration-sequence preflight, schema audit, or post-test DB-leakage gate.
+- The latest overall Tests run is [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) on PR #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`: **cancelled** at 2026-11-02 06:50:28Z. Migrations and Compose helper tests passed; `test_runtime_role_cannot_mutate_or_disable_consent_history` was marked FAILED at 86%, followed by a 120-second faulthandler timeout during async fixture setup. The job reached its 20-minute cancellation. No assertion traceback, final suite count, or coverage result is available.
+- The branch-protection endpoint returned 403 `Resource not accessible by integration`. Current branch protection and required checks therefore remain **unverified**; do not rely on the historical unprotected-main observation.
+
+### All ten open PRs — exact heads, exact-head Tests associations, unresolved / total threads
+
+| PR | Exact head | Exact-head Tests | Unresolved / total |
+|---|---|---|---:|
+| #48 PrivateMediaArtifact | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
+| #49 Outbound Message Library | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success | 1 / 80 |
+| #50 Identity Registry | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success | 3 / 11 |
+| #55 DB-leakage gate | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) success | 0 / 0 |
+| #57 local-seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| #59 release documentation | this verification branch | docs-only commits use `[skip ci]`; no exact-head Tests run expected | 3 / 3 |
+| #60 contact-consent P0 | `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` | [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) cancelled | 14 / 14 |
+| #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| #62 deployment preflight/seed integration | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success | 7 / 7 |
+| #63 conversation observability | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 |
+
+### Migration and integration state
+
+- Branch-level migration allocation is contiguous: main 001–033; #48 adds 034; #50 adds 035; #49 adds 036–037; #60 adds 038–040. The historical duplicate-034 allocation is resolved at branch level only.
+- No single candidate has proved fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, combined schema audit, and zero DB leakage together.
+- #48 and #60 both change the sole outbound worker and authorization service. One reviewed candidate must preserve #48's exact OWNER view-once source binding/lock and post-success return audit together with #60's external-contact consent, STOP, and final safety fence.
+- #60 and #62 cannot be merged in either order. #60 contains runtime-role provisioning and a WAHA environment allowlist but lacks #62's pre-DDL target/seed/sequence preflights and integrated schema/leakage gates. #62 contains those deployment preflights but still injects the broad production env file into API/WAHA/migrate and lacks #60's restricted runtime-role boundary. Consolidate the two in one candidate.
+
+### Current P0 / architecture blockers
+
+1. **STOP linearization requires OWNER acceptance.** A STOP receipt may commit after the worker's final pending-intent read but before the WAHA request begins. The current code treats that read as the dispatch reservation/in-flight boundary. Fabian must accept or revise that contract; the transport request cannot be recalled once network entry has begun.
+2. **Quiet hours are not universal.** Exact one-use OWNER approval returns before checking the active contact policy's `quiet_hours_json`; the exact ScheduledAction branch also returns allowed without that check. On 2026-11-02, review [#5735157529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) added source-anchored comments requiring one shared authority-independent quiet-hours fence, invalid timezone/window rejection, and mock-WAHA regressions.
+3. **Per-contact limits are alias-local.** `OutboundSafetyLimitService` keys backlog, rate, and duplicate checks by `OutboundMessage.chat_id`, although consent/STOP is contact-wide across current aliases. Aggregate by stable Contact identity under the exact-chat mapping lock.
+4. **Runtime-role integration test is not green.** Isolate `test_runtime_role_cannot_mutate_or_disable_consent_history` on the disposable PostgreSQL target, preserve the assertion traceback, and diagnose the subsequent fixture-setup timeout before another full-suite run.
+5. **Identity Registry (#50):** three review decisions remain: whether generic introduction copy should mention projects/Datacube AU (recommended: remove project claims and keep them in registry answers); do not infer historical seed provenance from `updated_at = created_at`; and independently verify the fail-closed registry-read behavior.
+6. **Outbound Message Library (#49):** foundation only; no live producer selection or dashboard. Do not wire it into external sends before P0 and integrated migration gates pass. Private-media retention remains OFF.
+
+No application code or migration changed in this verification. No local tests, migrations, schema audit, or leakage audit were run. No production DB mutation, WAHA reconnection, or real WhatsApp send occurred.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh live verification — 2026-11-02 09:27 WAT
 
 This overlay supersedes older snapshots below. It was rechecked against the live default branch, all ten open PRs, exact-head Tests associations, review-thread resolution state, workflow YAML, deployment files, and recursive migration trees.
