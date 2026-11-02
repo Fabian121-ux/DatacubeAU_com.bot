@@ -1,3 +1,58 @@
+## Fresh live verification — 2026-11-02 (current engineering pass)
+
+This overlay supersedes the 11:23 WAT snapshot below. It rechecks the default branch, all ten open PR heads, review-thread state, exact-head Actions associations, migration allocation, deployment/workflow source, and the P0 worker/authority code. Review comments added to PR #60 are comment-only; they are not independent approval.
+
+### Default branch and CI
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; no newer main commit was found. Main still contains migrations 001–033 only.
+- Exact-main Tests run `34219252390` remains the latest associated run (success, 2026-09-08). The main workflow still applies the SQL files present in that checkout and runs pytest with a 57% coverage floor; it does not run the newer migration-sequence preflight, ORM schema audit, or post-test DB-leakage audit.
+- Latest overall Tests run is [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) on PR #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`: **cancelled**. Migration application and Compose helper tests passed; `test_runtime_role_cannot_mutate_or_disable_consent_history` was marked FAILED at 86%, then the 120-second faulthandler fired during async fixture setup and the job reached its 20-minute cancellation. The logs contain no assertion traceback, final suite count, or coverage result. Do not infer that the runtime-role integration test passed.
+- The branch-protection endpoint returned 403 `Resource not accessible by integration`; the repository rulesets endpoint returned an empty list. Classic branch protection and required checks remain unverified in this pass.
+
+### Active PRs, exact heads, and review state
+
+| PR | Current head | Migration allocation | Unresolved review threads | Exact-head Tests |
+|---|---|---:|---:|---|
+| #63 observability | `13fad868affe01d6069f4288481f8cd8dd341c62` | — | 1 | 41080836429 success |
+| #62 migration/deployment preflights | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | — | 7 | 41073226073 success |
+| #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | — | 0 | 40300425938 success |
+| #60 contact-consent P0 | `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` | 038–040 | 16 | 41400297589 cancelled |
+| #59 roadmap/checklist | `a81ac6286f0c14a9e1dbe0a43f1d73d2f23812f6` | — | 3 | no exact-head run |
+| #57 seed policy | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | — | 1 | 40169146406 success |
+| #55 DB leakage gate | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | — | 0 | 41026581000 success |
+| #50 Identity Registry | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 035 | 3 | 41202063757 success |
+| #49 Outbound Message Library | `bcd0033e024b177561b8afd41589afe1897ba4de` | 036–037 | 1 | 39920982545 success |
+| #48 PrivateMediaArtifact | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 034 | 0 | 40158094566 success |
+
+No PR has an APPROVED review state in the current review responses; COMMENTED reviews and zero-thread counts are not independent approval. #48 has no unresolved threads but remains unmerged.
+
+### Migration and deployment integration
+
+- The former duplicate migration-034 allocation is resolved **at branch allocation only**: #48=034, #50=035, #49=036–037, #60=038–040. Main remains 001–033.
+- No single candidate has proved fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, ORM schema audit, and zero DB leakage together.
+- #60 and #62 remain unsafe to merge independently or in either order. #60 has the restricted non-owner API DB role and service-specific Compose environment allowlists, but its migration runner lacks #62's pre-DDL target, local-seed, and migration-sequence preflights. #62 has those preflights plus schema/leakage gates, but still mounts the broad production environment file into API/WAHA/migrate and does not provision the restricted runtime role. Build one integrated candidate preserving all preflights before DDL and the API/WAHA/migrate credential boundaries.
+- #60's current workflow applies only the migrations present on that branch (001–033 plus 038–040); it does not prove the integrated 001–040 chain.
+
+### Current P0 and architecture blockers
+
+1. **Quiet hours are not authority-independent.** Exact one-use OWNER approval returns before reading the active contact policy's `quiet_hours_json`; exact ScheduledAction binding also returns allowed without the shared quiet-hours check. Both paths must deny active quiet hours and malformed timezone/window data.
+2. **Contact safety budgets are alias-local.** Backlog, rate, and duplicate checks key on `OutboundMessage.chat_id`, while consent resolves a stable Contact ID. Current aliases for one Contact can therefore consume separate limits and bypass contact-wide duplicate suppression.
+3. **STOP boundary needs an explicit contract.** A STOP receipt can commit after the worker's pending-intent read but before the WAHA POST. The current implementation treats the final read/reservation as the linearization point. Add a deterministic two-session race test and obtain OWNER acceptance of that boundary, or change the shared lock protocol.
+4. **Time-bounded authority can expire while final locks are acquired.** The final authorization check precedes consent, global safety-reservation, and mapping locks. An approval or policy may expire during those waits; the worker can still POST and only then fail approval consumption. A new source-anchored review comment requests a post-lock, immediately pre-transport expiry check/reservation and clock-controlled zero-WAHA regressions.
+5. **Media duplicate suppression is not media-aware.** The duplicate key is caption/text only. Blank-caption identical media bypasses suppression; different attachments sharing a caption can be falsely treated as duplicates. A new source-anchored review comment requests the canonical locator/kind/caption/MIME/filename digest plus media regressions.
+6. **Runtime-role test remains unresolved.** The latest exact-head run is cancelled after the new disposable-PostgreSQL role test was marked failed and the async fixture timed out. Obtain the actual assertion traceback and fix the fixture/test isolation before treating audit-history protection as proven.
+7. **Identity Registry (#50):** the prior registry-read fallback concern now fails closed on the current head. Still unresolved: keep generic introduction copy limited to Zina/Fabian rather than project claims, and do not infer historical provenance from `updated_at = created_at`; preserve ambiguous pre-033 rows as `legacy_unknown` unless immutable evidence proves origin.
+8. **Outbound Message Library (#49):** foundation only; no live producer selection or dashboard. Do not integrate into external sends before P0 and integrated migration gates pass. Private-media retention remains OFF.
+
+### Work in this pass and release state
+
+- Added two source-anchored P0 review comments to PR #60: [time-bounded approval/policy expiry at the final worker fence](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4442435895) and [media-aware duplicate identity](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4442484093). Both are unresolved review findings, not approvals.
+- No application source or migration was changed. No local pytest, PostgreSQL migration, schema audit, or DB-leakage audit was run. No Actions run was triggered. No production DB mutation, WAHA reconnection, real WhatsApp send, or private-media retention activation occurred.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh live verification — 2026-11-02 11:23 WAT
 
 This overlay supersedes the 09:27 WAT snapshot below. It was checked against the current default branch, all open PR heads, review threads, recent Actions runs, workflow YAML, and the relevant outbound/deployment source. The new PR #60 inline review is comment-only and is not approval.
