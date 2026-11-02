@@ -1,3 +1,32 @@
+## Fresh release verification — 2026-11-02 11:23 WAT
+
+**Status: NOT TEST READY.** This snapshot supersedes the 09:27 WAT overlay below. The historical checked boxes later in this file were verified against a September 2026 code state; they are not current integrated-release evidence.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only. Latest exact-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. The checked-in workflow has a 57% coverage floor but no integrated migration-sequence/schema/leakage gates.
+- Latest overall Tests run [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) on PR #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` is **cancelled**, not green. Migration application and Compose helper tests passed; the runtime-role integration test failed at 86%, then the 120-second faulthandler fired during async fixture setup. No traceback, final suite count, or coverage is available.
+- Open PR #60 now has 14 unresolved / 14 total review threads, including three fresh source-anchored findings: quiet-hours bypass for exact approval, quiet-hours bypass for ScheduledAction, and alias-local per-contact backlog/rate/duplicate limits. STOP reservation linearization still needs explicit OWNER acceptance.
+- Branch-level migrations are allocated contiguously (#48=034, #50=035, #49=036–037, #60=038–040), but no single candidate has passed fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, combined schema audit, and zero-leakage proof.
+- #48/#60 must be combined without losing either OWNER view-once source locking/post-success return audit or external-contact consent/STOP/final safety. #60/#62 must also be combined: preserve #62's pre-DDL target/seed/sequence preflights and schema/leakage gates while retaining #60's runtime-role boundary and API/WAHA/migrate environment separation.
+- #50 still needs human/independent decisions on introduction-copy scope and truthful legacy provenance. #49 remains an outbound-library foundation only. Private-media retention stays OFF.
+- Branch-protection verification is inconclusive: the GitHub branch-protection endpoint returned 403 to the connected integration. Do not claim current protection status.
+
+### Required before controlled testing
+
+1. Fabian accepts or revises the STOP reservation/in-flight boundary and the consent-evidence/re-consent policy.
+2. Close quiet-hours and cross-alias limits with PostgreSQL-backed regressions; preserve one shared final authorization/worker fence.
+3. Diagnose and pass the isolated runtime-role integration test, then pass full exact-head pytest/coverage.
+4. Build one reviewed integration candidate preserving #48/#60 worker behavior and #60/#62 deployment isolation/preflights.
+5. Prove fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, schema audit, and zero DB leakage on that same exact candidate.
+6. Resolve blocking review threads independently; complete dashboard/observability gates and publish the staged controlled-test plan.
+
+No local tests or migrations were run for this documentation-only refresh. No production DB mutation, WAHA reconnection, or real WhatsApp send occurred. Private-media retention remains OFF.
+
+Controlled sequence after all gates and explicit OWNER authorization: owner self-DM text → commands → media/view-once → one explicitly approved external contact.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release verification — 2026-11-02 09:27 WAT
 
 **Status: NOT TEST READY.** This recheck supersedes older status overlays below.
