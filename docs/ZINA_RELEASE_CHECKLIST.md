@@ -1,3 +1,5 @@
+# Zina Release Checklist
+
 ## Fresh review-thread reconciliation — 2026-11-02 15:25 UTC
 
 This snapshot distinguishes unresolved threads from outdated threads. A thread is counted as **active current-diff** only when it is unresolved and not outdated.
@@ -754,7 +756,7 @@ Choose the runtime-role provisioning/rotation contract for existing deployments;
 
 ---
 
-# Zina Release Checklist
+
 
 ## Live release-verification delta — 2026-10-30 14:21 WAT (partial; NOT TEST READY)
 
