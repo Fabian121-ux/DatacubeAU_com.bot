@@ -1,3 +1,70 @@
+## Fresh live engineering verification — 2026-11-02 20:20 WAT
+
+This snapshot supersedes the 15:25 UTC review-state overlay below. It was captured from live GitHub refs before the two documentation-only commits described after this snapshot. The snapshot base for PR #59 was head `55e621e2422b051aeb47f913f37f7e26f85fd7f0`; the new commits on this same branch intentionally use `[skip ci]`, so the resulting docs head has no exact-head Tests run.
+
+### Main and workflow state
+
+- `main` is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; the latest main commit is dated 2026-09-08 11:09:59 UTC. No newer main commit was returned.
+- The latest Tests run associated with this exact main SHA is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. It is historical evidence, not current feature-chain verification.
+- Main's `.github/workflows/tests.yml` applies the lexical `bot_core/migrations/*.sql` glob and runs pytest with a 57% coverage floor. It does **not** run the migration-sequence preflight, ORM schema audit, or post-test DB-leakage audit. The current `deploy/scripts/run-migrations.sh` has checksum skip/mismatch handling and a schema audit, but no contiguous-sequence preflight.
+- Main's `docker-compose.yml` still mounts the broad `.env.production` into API, WAHA, and migrate. PR #60 introduces service-specific environment allowlists and a restricted runtime DB login, but lacks PR #62's pre-DDL target/seed/sequence guards. PR #62 has those guards plus schema/leakage checks, but still has the broad environment exposure and no restricted runtime-role boundary. Neither branch is safe to merge independently or in either order; one cumulative deployment candidate is required.
+- `docs/ZINA_IMPLEMENTATION_ROADMAP.md` and `docs/ZINA_RELEASE_CHECKLIST.md` on main still identify 2026-09-08 / main `0034587a90bb8d5a79bda41e85091cfea33b969d` as their last-verified baseline. That baseline predates current main `5aadd72` and all current open feature PRs.
+
+### All open PRs — exact heads, exact-head Tests, review threads
+
+Review counts below distinguish unresolved current-diff threads from unresolved outdated threads. No open PR has an APPROVED review submission; submissions are COMMENTED or absent.
+
+| PR | Exact head | Exact-head Tests | Active unresolved | Outdated unresolved | Total unresolved / threads |
+|---|---|---|---:|---:|---:|
+| #63 observability audit | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) | 0 | 1 | 1 / 1 |
+| #62 deployment/seed/migration integration | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) | 4 | 3 | 7 / 7 |
+| #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | 0 | 0 | 0 / 0 |
+| #60 contact-consent P0 | `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` | [41400297589 cancelled](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) | 11 | 5 | 16 / 16 |
+| #59 roadmap/checklist | snapshot base `55e621e2422b051aeb47f913f37f7e26f85fd7f0` | no run (docs commits use `[skip ci]`) | 1 | 2 | 3 / 3 |
+| #57 local-seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | 0 | 1 | 1 / 1 |
+| #55 DB-leakage gate | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) | 0 | 0 | 0 / 0 |
+| #50 Identity Registry | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) | 3 | 0 | 3 / 11 |
+| #49 Outbound Message Library | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | 1 | 0 | 1 / 80 |
+| #48 PrivateMediaArtifact wiring | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | 0 | 0 | 0 / 15 |
+
+The latest overall Tests run is #60 run 41400297589 and is **cancelled**, not green. Its migration step and Compose helper tests passed, but `test_runtime_role_cannot_mutate_or_disable_consent_history` was marked FAILED at 86%; a 120-second faulthandler fired while pytest entered the next async-generator fixture, and the job was cancelled at its 20-minute limit. The captured log contains the expected PostgreSQL privilege-denial probes but no assertion/teardown traceback, final test count, or coverage result. Do not infer that the test passed or guess its root cause.
+
+### Migration inventory and integration gate
+
+The earlier 034 filename collision has been renumbered on the feature branches, but only branch-local allocation is proven:
+
+- Main: migrations 001–033.
+- PR #48: 034 `private_media_artifact_source_identity`.
+- PR #50: 035 `identity_registry_default_backfill`.
+- PR #49: 036–037 Outbound Message Library.
+- PR #60: 038–040 contact consent / sender identity / sender contact IDs.
+- PR #62's successful exact-head run applies 001–033 only.
+
+No candidate has demonstrated one contiguous 001–040 chain from empty PostgreSQL, an installed 033→040 upgrade, second-run no-op/checksum stability, ORM schema audit, and zero DB leakage on the **same integrated candidate**. The former #48/#49 034 collision is therefore resolved at branch allocation, not at release validation.
+
+### Highest-risk integration and policy blockers
+
+1. **Worker paths are not cumulative.** #48 locks the exact OWNER view-once source before WAHA and marks it returned only after confirmed success. #60 adds external-contact consent/current mapping/STOP and final safety checks, but its worker lacks #48's view-once source lock and post-success return audit. Both change `background_workers.py` and `outbound_authorization_service.py`; produce one reviewed candidate preserving both paths. Uncertain WAHA delivery must remain quarantined and never be blindly retried.
+2. **#60 quiet-hours bypasses remain P0.** Exact one-use OWNER approval returns before the contact-policy quiet-hours check; exact ScheduledAction binding also returns allowed without that check. A single authority-independent external-contact delivery-window guard must apply to both paths and reject malformed timezone/window configuration.
+3. **Contact limits are alias-local.** Backlog/rate/duplicate checks use exact `chat_id`, so aliases for one Contact can receive separate budgets. Aggregate by stable Contact identity across current mapped aliases while holding the exact-chat/Contact mapping lock.
+4. **Time-bounded authority can expire while final locks are acquired.** Revalidate approval/policy expiry at the final dispatch boundary after all relevant locks and before transport.
+5. **Media duplicate suppression is not payload-complete.** The current duplicate key uses message text/caption, not the canonical media-aware digest (locator, kind, caption, MIME, filename). Identical blank-caption media can evade duplicate detection, while different attachments with the same caption can be conflated.
+6. **STOP reservation semantics need explicit OWNER acceptance or a stronger lock protocol.** Current contract treats the final pending-STOP read as the reservation boundary: STOP committed before it vetoes; STOP committed after transport entry cannot reliably recall the attempt, which must remain uncertain/quarantined and never replay. Add the two-session regression and obtain OWNER acceptance before calling this policy complete.
+7. **Deployment integration is non-cumulative.** Consolidate #60 runtime-role/service isolation with #62 target preflight, seed safety, migration sequence validation, schema audit, and leakage gate. Keep database-owner credentials out of API/WAHA and prove the runtime login cannot mutate consent history or assume privileged roles.
+8. **#50 Identity Registry still needs independent architecture review.** Its exact-head suite is green only for 001–033 plus 035. Keep legacy provenance unknown unless immutable evidence or explicit OWNER attestation exists; do not infer origin from `updated_at = created_at`. Keep introduction copy to identity keys actually governed by the registry (recommended: assistant/owner only; project facts remain registry answers). Registry-read failure must suppress identity claims rather than fall back to hardcoded `bot_config` assertions.
+9. **#49 remains foundation-only.** Its green run applies 001–033 and 036–037, not the integrated chain; no live producer/selection/dashboard integration is established by this PR.
+
+### Readiness
+
+- **Controlled WhatsApp testing: NOT READY; Stage A must not begin.** The controlled test plan file `docs/ZINA_CONTROLLED_TEST_PLAN.md` is not present on main (GitHub returned 404).
+- Private-media byte retention remains OFF.
+- No integrated migration, DB-leakage, or exact-head full-suite proof exists for the combined worker/deployment candidate.
+- No merge, approval, production DB operation, WAHA reconnection, or real WhatsApp action is implied by this snapshot.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh review-thread reconciliation — 2026-11-02 15:25 UTC
 
 This snapshot distinguishes unresolved threads from outdated threads. A thread is counted as **active current-diff** only when it is unresolved and not outdated.
