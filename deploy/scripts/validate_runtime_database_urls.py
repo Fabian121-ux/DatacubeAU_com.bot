@@ -108,6 +108,7 @@ async def verify_runtime_role(role: str) -> None:
             AND NOT EXISTS (
                 SELECT 1 FROM pg_auth_members membership
                 WHERE membership.member = r.oid
+                   OR membership.roleid = r.oid
             )
             AND NOT EXISTS (
                 SELECT 1 FROM pg_class relation

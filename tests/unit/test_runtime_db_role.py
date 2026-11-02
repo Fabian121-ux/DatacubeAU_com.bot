@@ -232,6 +232,9 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
     role = f"zina_rt_test_{uuid.uuid4().hex}"
     password = secrets.token_urlsafe(32)
     runtime_url = _runtime_url(owner_sync, role, password)
+    secondary_role = f"zina_rt_secondary_{uuid.uuid4().hex}"
+    secondary_password = secrets.token_urlsafe(32)
+    parent_role = f"zina_rt_parent_{uuid.uuid4().hex}"
     owner_parts = make_url(owner_sync)
     env = environ.copy()
     env.update({
@@ -247,6 +250,8 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
 
     admin = await asyncpg.connect(dsn=owner_sync)
     runtime = None
+    runtime_probe = None
+    secondary = None
     transaction = None
     try:
         provision = subprocess.run(
@@ -260,9 +265,73 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
         )
         assert provision.returncode == 0, provision.stderr
 
-        runtime = await asyncpg.connect(
-            dsn=runtime_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        # Seed both pg_auth_members directions. A secondary login granted the
+        # runtime role can SET ROLE into its privileges; the runtime login can
+        # SET ROLE into a parent role even though it is NOINHERIT. Re-provisioning
+        # must remove both edges, not merely prevent automatic inheritance.
+        await admin.execute(
+            f"CREATE ROLE \"{secondary_role}\" WITH LOGIN PASSWORD '{secondary_password}'"
         )
+        await admin.execute(f'CREATE ROLE "{parent_role}" NOLOGIN')
+        await admin.execute(f'GRANT "{role}" TO "{secondary_role}"')
+        await admin.execute(f'GRANT "{parent_role}" TO "{role}"')
+
+        secondary_dsn = _runtime_url(
+            owner_sync, secondary_role, secondary_password
+        ).replace("postgresql+asyncpg://", "postgresql://", 1)
+        secondary = await asyncpg.connect(dsn=secondary_dsn)
+        await secondary.execute(f'SET ROLE "{role}"')
+        assert await secondary.fetchval("SELECT current_user") == role
+        await secondary.execute("RESET ROLE")
+        await secondary.close()
+        secondary = None
+
+        runtime_dsn = runtime_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        runtime_probe = await asyncpg.connect(dsn=runtime_dsn)
+        await runtime_probe.execute(f'SET ROLE "{parent_role}"')
+        assert await runtime_probe.fetchval("SELECT current_user") == parent_role
+        await runtime_probe.execute("RESET ROLE")
+        await runtime_probe.close()
+        runtime_probe = None
+
+        # Re-run the production provisioner after introducing both membership
+        # edges. It must revoke them and its own runtime verifier must reject
+        # either direction if a future regression leaves one behind.
+        reprovision = subprocess.run(
+            ["sh", str(PROVISIONER)],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert reprovision.returncode == 0, reprovision.stderr
+
+        secondary = await asyncpg.connect(dsn=secondary_dsn)
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await secondary.execute(f'SET ROLE "{role}"')
+        await secondary.close()
+        secondary = None
+
+        runtime_probe = await asyncpg.connect(dsn=runtime_dsn)
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await runtime_probe.execute(f'SET ROLE "{parent_role}"')
+        await runtime_probe.close()
+        runtime_probe = None
+
+        memberships = await admin.fetchval(
+            """
+            SELECT count(*)
+            FROM pg_auth_members
+            WHERE member = (SELECT oid FROM pg_roles WHERE rolname = $1)
+               OR roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
+            """,
+            role,
+        )
+        assert memberships == 0
+
+        runtime = await asyncpg.connect(dsn=runtime_dsn)
         transaction = runtime.transaction()
         await transaction.start()
 
@@ -367,17 +436,45 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
     finally:
         if transaction is not None and transaction.is_active:
             await transaction.rollback()
-        if runtime is not None:
-            await runtime.close()
+        for connection in (secondary, runtime_probe, runtime):
+            if connection is not None:
+                await connection.close()
         try:
-            role_exists = await admin.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role
+            secondary_exists = await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                secondary_role,
             )
-            if role_exists:
-                await admin.execute(f'DROP OWNED BY "{role}"')
-                await admin.execute(f'DROP ROLE "{role}"')
+            parent_exists = await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                parent_role,
+            )
+            runtime_exists = await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                role,
+            )
+            if secondary_exists and runtime_exists:
+                await admin.execute(f'REVOKE "{role}" FROM "{secondary_role}"')
+            if parent_exists and runtime_exists:
+                await admin.execute(f'REVOKE "{parent_role}" FROM "{role}"')
+            for cleanup_role in (secondary_role, parent_role, role):
+                exists = await admin.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                    cleanup_role,
+                )
+                if exists:
+                    await admin.execute(f'DROP OWNED BY "{cleanup_role}"')
+                    await admin.execute(f'DROP ROLE "{cleanup_role}"')
             assert not await admin.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                role,
+            )
+            assert not await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                secondary_role,
+            )
+            assert not await admin.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                parent_role,
             )
         finally:
             await admin.close()

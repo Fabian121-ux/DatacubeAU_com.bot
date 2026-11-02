@@ -28,12 +28,21 @@ SELECT format(
 )
 \gexec
 
--- Remove every role membership, including a previously granted SET ROLE path.
+-- Remove memberships in both directions. NOINHERIT prevents automatic
+-- privilege inheritance, but a member can still explicitly SET ROLE.
+-- First remove parent roles granted to the runtime login.
 SELECT format('REVOKE %I FROM %I', granted.rolname, :'runtime_role')
 FROM pg_auth_members membership
 JOIN pg_roles granted ON granted.oid = membership.roleid
 JOIN pg_roles member ON member.oid = membership.member
 WHERE member.rolname = :'runtime_role'
+\gexec
+
+-- Then remove the runtime login from every role that could SET ROLE into it.
+SELECT format('REVOKE %I FROM %I', :'runtime_role', member.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles member ON member.oid = membership.member
+WHERE membership.roleid = (SELECT oid FROM pg_roles WHERE rolname = :'runtime_role')
 \gexec
 
 SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'runtime_role')
@@ -182,6 +191,7 @@ SELECT NOT EXISTS (
 SELECT NOT EXISTS (
     SELECT 1 FROM pg_auth_members
     WHERE member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime_role')
+       OR roleid = (SELECT oid FROM pg_roles WHERE rolname = :'runtime_role')
 ) AS no_role_memberships \gset
 \if :no_role_memberships
 \else
