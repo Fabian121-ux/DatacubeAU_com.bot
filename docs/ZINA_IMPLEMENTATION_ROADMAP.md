@@ -17,7 +17,7 @@ This overlay supersedes the 11:23 WAT snapshot below. It rechecks the default br
 | #62 migration/deployment preflights | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | — | 7 | 41073226073 success |
 | #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | — | 0 | 40300425938 success |
 | #60 contact-consent P0 | `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` | 038–040 | 16 | 41400297589 cancelled |
-| #59 roadmap/checklist | `a81ac6286f0c14a9e1dbe0a43f1d73d2f23812f6` | — | 3 | no exact-head run |
+| #59 roadmap/checklist | this documentation PR (head changes with this commit) | — | 3 | no exact-head run |
 | #57 seed policy | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | — | 1 | 40169146406 success |
 | #55 DB leakage gate | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | — | 0 | 41026581000 success |
 | #50 Identity Registry | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 035 | 3 | 41202063757 success |
