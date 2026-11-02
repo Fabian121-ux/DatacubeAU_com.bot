@@ -1,3 +1,20 @@
+## Fresh release verification — 2026-11-02 09:27 WAT
+
+**Status: NOT TEST READY.** This recheck supersedes older status overlays below.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only. Latest main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08.
+- The latest overall Tests run, [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) on PR #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`, is **cancelled**. Migrations and Compose helper tests passed; the runtime-role integration test was marked FAILED at 86%, followed by a 120-second faulthandler timeout during async fixture setup. No traceback, final test count, or coverage is available.
+- The former migration-034 collision is resolved at branch allocation: #48=034, #50=035, #49=036–037, #60=038–040. No integrated fresh 001–040 / installed 033→040 / second-run no-op/checksum / schema-audit / DB-leakage proof exists.
+- #48/#60 worker changes and #60/#62 deployment changes must be integrated into one reviewed candidate; neither deployment branch is safe to merge alone.
+- P0 blockers remain: STOP reservation linearization needs OWNER acceptance; quiet-hours checks are bypassed by approval and scheduled-action paths; per-contact limits are keyed by chat alias rather than stable Contact identity.
+- #50 still needs the introduction-copy scope and truthful legacy-provenance decisions. #49 remains foundation-only. Private-media retention remains OFF.
+- The branch-protection endpoint returned 403 and the rulesets endpoint returned an empty list; branch protection / required checks could not be conclusively verified.
+- No local tests or migrations were run for this documentation-only refresh. No production DB mutation, WAHA reconnection, or real send occurred.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release verification — 2026-11-02 08:32 WAT
 
 **Status: NOT TEST READY.** This snapshot supersedes the 06:34 WAT verification and is based on fresh live refs, exact-head Actions runs, review threads, migration trees, workflow YAML, and deployment/source inspection.
