@@ -1,3 +1,28 @@
+## Fresh review-thread reconciliation — 2026-11-02 15:25 UTC
+
+This snapshot distinguishes unresolved threads from outdated threads. A thread is counted as **active current-diff** only when it is unresolved and not outdated.
+
+| PR | Active current-diff unresolved | Outdated | Unresolved | Total |
+|---|---:|---:|---:|---:|
+| #63 conversation observability | 0 | 1 | 1 | 1 |
+| #62 migration/deployment preflights | 4 | 3 | 7 | 7 |
+| #61 migration-sequence gate | 0 | 0 | 0 | 0 |
+| #60 contact-consent P0 | 11 | 5 | 16 | 16 |
+| #59 release documentation | 1 | 2 | 3 | 3 |
+| #57 local-seed safety | 0 | 1 | 1 | 1 |
+| #55 DB-leakage gate | 0 | 0 | 0 | 0 |
+| #50 Identity Registry | 3 | 3 | 3 | 11 |
+| #49 Outbound Message Library | 1 | 50 | 1 | 80 |
+| #48 PrivateMediaArtifact | 0 | 9 | 0 | 15 |
+
+- Fresh review-submission queries for all ten open PRs returned **no APPROVED review state**; submissions are COMMENTED or absent. Zero active threads, or a thread marked outdated, is not independent approval.
+- The earlier table in this overlay that listed #60 as 14/14 is superseded: the current thread query now reports 16 unresolved / 16 total, of which 11 are on the current diff and 5 are outdated. #59 has 1 active current-diff thread; its other 2 unresolved threads are outdated. #57 and #63 each have one unresolved but outdated thread.
+- The highest-risk active review work remains #60 (P0 consent/worker fence) and #62 (deployment preflight/runtime-role integration). #50 still has three active architectural/provenance decisions. #49 remains foundation-only with one active review thread. #48's 15 threads are all resolved, with 9 marked outdated; that does not replace integration testing with #60.
+
+No source code or migration was changed in this review pass. No test, migration, schema audit, or leakage audit was run; no Actions workflow was triggered. No production DB mutation, WAHA reconnection, or real WhatsApp action occurred.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
 ## Exact Actions log triage — 2026-11-02 14:43 UTC
 
 This is a source/log verification update, not a test pass.
