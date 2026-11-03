@@ -1,3 +1,18 @@
+## Current release gate — 2026-11-03 17:18 WAT
+
+This is the current source-verified release status and supersedes the older dated snapshots and historical checkboxes below. See the roadmap's 17:18 WAT overlay for exact PR heads and review-thread inventory.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033; latest exact-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. Main reports `protected=false`.
+- **Latest overall CI:** [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) was cancelled on older PR #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`. The current #60 head `1f1c85a3a56924d098085a54f9cd90a5d26a2be2` has no exact-head run because its diagnostic-only workflow commit uses `[skip ci]`.
+- **Migration allocation:** #48=034, #50=035, #49=036–037, #60=038–040. The old duplicate 034 is reconciled across branch names, but no integrated 001–040 fresh install or 033→040 upgrade has passed.
+- **P0:** PR #60 still has 17 unresolved review threads, including quiet-hours bypasses for approval and ScheduledAction, alias-local rate/duplicate limits, incomplete media duplicate identity, expiry-after-lock races, and the STOP/WAHA-entry contract. Its worker also lacks #48's exact view-once source lock and success-only return audit.
+- **Deployment:** #60's runtime-role/service allowlists and #62's pre-DDL target/seed/sequence guards are not cumulative. #62 still passes the broad `.env.production` file to all services; #60 lacks #62's preflights. Do not merge either independently.
+- **Evidence gaps:** no exact-head Tests run for current #60; no combined fresh/upgrade/checksum/no-op/schema/leakage/runtime-role proof; no current integrated-candidate P0 matrix; no independent approval of the blocking reviews.
+- **Human decisions:** accept or revise the STOP reservation boundary; confirm whether terminal opt-out is Contact-wide and irreversible; choose whether generic introductions may mention project claims; define how unverifiable legacy identity provenance is represented.
+- **Readiness:** **NOT TEST READY. Stage A is not authorized.** Private-media retention stays OFF. No real WhatsApp send, production DB mutation, or production WAHA reconnection during unattended engineering.
+
+---
+
 ## Fresh engineering delta — 2026-11-03 11:21 WAT
 
 This snapshot supersedes the 08:24 WAT verification overlay. I re-fetched `main`, all ten open PRs and review threads, exact-head Tests associations, the main and PR #60 Tests workflow YAML, the four feature migration trees, and the #60/#62 Compose configurations.
