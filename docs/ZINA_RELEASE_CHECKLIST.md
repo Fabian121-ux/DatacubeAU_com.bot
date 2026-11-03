@@ -1,5 +1,24 @@
 # Zina Release Checklist
 
+## Fresh live verification delta — 2026-11-03 07:20 WAT
+
+This delta supersedes only the cross-branch integration detail below; the 06:23 snapshot remains the source for the full PR inventory. Rechecked exact current PR heads, exact-head Tests associations, open review threads, main workflow YAML, deployment Compose files, migration tree, and the latest cancelled PR #60 job log. The PR #59 pre-update head was `106963b3165e2b6b61f72bc5c889f494d5bc91c5`. This is a documentation-only commit marked `[skip ci]`; no new Actions run, test, migration, schema audit, or DB-leakage audit is claimed.
+
+- **Main remains** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033. The main Tests workflow still applies the lexical migration glob and runs pytest at the 57% floor; it does not run the migration-sequence preflight or DB-leakage audit.
+- **Fresh branch comparison proves #60/#62 overlap:** from main, #60 is 104 commits ahead / 0 behind with 36 changed files; #62 is 38 ahead / 0 behind with 13 changed files. Both modify exactly `.github/workflows/tests.yml`, `README.md`, `deploy/scripts/run-migrations.sh`, and `docker-compose.yml`. They are separate main-based candidates, not cumulative branches.
+- **The current #62 Compose source** still uses `env_file: .env.production` for Postgres, API, WAHA, and migrate. This exposes unrelated database, admin, WAHA, and provider settings to containers that do not need them. The Postgres container needs only `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. The existing top-level review comment requests that allowlist plus a rendered-Compose regression; the finding remains unresolved.
+- **The current #60 Compose source** has explicit service-specific allowlists and sends the API only `DATABASE_URL_RUNTIME`, while migrate receives owner credentials and provisions the restricted runtime role. But #60's runner does not include #62's target/seed/sequence preflights; #62 does not provision the restricted runtime role. Either merge order can regress one side of the boundary.
+- **Exact-head CI:** #62 head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` has successful run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) (846 passed, 76.01%); that run applies 001–033 only. #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` has cancelled run [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589): `test_runtime_role_cannot_mutate_or_disable_consent_history` was marked FAILED at 86%, followed by a 120-second faulthandler during the next async-generator fixture setup. The job log contains no assertion/teardown traceback, final pytest summary, or coverage result; root cause remains unknown.
+- **Migration allocation remains branch-local:** #48=034, #50=035, #49=036–037, #60=038–040. No candidate proves fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, schema audit, and zero leakage together.
+- The branch-protection endpoint returned 403 for this integration connection; current protection status is unverified. Do not rely on required branch protection as a safety gate.
+
+**Next engineering step:** construct one dedicated cumulative candidate preserving #62's pre-DDL target/seed/sequence guards and #55 leakage audit, #57 seed policy, #60's restricted runtime-role provisioning and service allowlists, plus the ordered 034–040 feature migrations. Then prove fresh/upgrade/no-op/schema/leakage/runtime-role behavior on disposable PostgreSQL before independent review. Do not merge either deployment PR independently.
+
+**Human decision still required:** accept or strengthen the STOP linearization contract (whether a STOP committed after the final pending-intent read but before WAHA POST is too late). PR #50's introduction-copy and legacy-provenance decisions also remain open. **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
+
 ## Fresh live engineering verification — 2026-11-03 06:23 WAT
 
 This snapshot supersedes the 2026-11-03 05:24 WAT snapshot below. A new top-level review comment on PR #62 identifies a further deployment secret-boundary gap: the PostgreSQL service still receives the entire `.env.production` file. This is not an inline review thread, so PR #62 remains at 7 unresolved threads (4 current-diff, 3 outdated). Live GitHub refs, all ten open PRs, review threads, workflow YAML, deployment configuration, migration inventory, and the latest cancelled Actions job log were rechecked. PR #59's pre-update head was `f9d0e5ac0356bd515cbbd96e1d1ced8fd92b56bf`. This is a documentation-only refresh on that PR branch and uses `[skip ci]`; no exact-head Tests run is expected for this documentation commit.
