@@ -1,3 +1,16 @@
+## Exact-head CI follow-up — 2026-11-03 22:24 WAT
+
+This follow-up supersedes the 22:17 WAT statement that PR #60's latest run was still in progress.
+
+- PR #60 current exact head remains `fb9693014579283566358f30d80fcc2cc5581795`. Tests run [41721001922](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41721001922) completed successfully: **942 passed, 1 warning, 76.44% coverage**.
+- Its disposable PostgreSQL job applied migrations **001–033 and 038–040**. It did not contain 034–037; it also did not run the ORM schema audit or post-test DB-leakage audit. This is branch-local CI, not integrated 001–040 or installed 033→040 proof.
+- The new exact OWNER approval quiet-hours regression cases passed as part of the 942-test suite. `authorize()` now locks/evaluates the active exact-chat Contact policy before approval lookup, so a one-use OWNER approval cannot bypass an active quiet-hours window or malformed quiet-hours configuration.
+- PR #60 remains draft with 10 active + 7 outdated unresolved threads. ScheduledAction quiet-hours, alias-wide safety budgets, final authority expiry after locks, media duplicate identity, and STOP/dispatch linearization remain unresolved.
+- PR #55 remains exact-head green on [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314): 816 passed / 76.01%, migrations 001–033, schema audit and leakage audit passed. Its raw-table count is schema-qualified and the shadow-schema regression is present; one outdated review thread remains open.
+- All other review counts and branch-local migration allocation in the 22:17 WAT overlay are unchanged. No open PR has an APPROVED review.
+- **NOT TEST READY.** No integrated fresh/upgrade 001–040, no-op/checksum, schema/leakage/runtime-role proof, or controlled WhatsApp test has been established. **REAL WAHA ACTIONS: NONE.**
+
+---
 ## Fresh engineering delta — 2026-11-03 22:17 WAT
 
 This snapshot supersedes the 21:34 WAT overlay below. It is a source-state update, not a release approval.
