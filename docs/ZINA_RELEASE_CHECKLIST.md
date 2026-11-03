@@ -1180,7 +1180,7 @@ This is the current release gate and supersedes earlier checklist snapshots.
 - [ ] #60 and #62 deployment changes are reconciled: restricted runtime API role plus #62's target validation, migration sequence preflight, and local-seed opt-in; no broad `.env.production` injection into API/WAHA.
 - [ ] Independent human reviews resolve blocking threads. Zero unresolved inline threads alone is not approval; no current PR has an APPROVED review.
 - [ ] Classic branch protection is verified through an authorized repository-admin view; current connector request returns 403 and rulesets list is empty.
-- [ ] Mobile dashboard CRUD/disable and required observability/command-governance gates remain complete before controlled testing.
+- [ ] Complete mobile dashboard CRUD/disable and the required observability/command-governance gates before controlled testing.
 
 ### Human decisions still required
 
