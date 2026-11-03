@@ -1,3 +1,17 @@
+## Fresh engineering delta — 2026-11-03 21:21 WAT
+
+This update supersedes the PR #55 row in the 20:40 snapshot below; it does not change the release disposition.
+
+- **Main remains** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC); its latest exact-main Tests run is still [34219252390 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390). Main reports `protected=false`.
+- **Latest overall Tests run:** [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314), on PR #55 head `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c`, remains **in progress** at PostgreSQL service initialization. No test count, coverage result, migration result, or pass is claimed.
+- **PR #55 source change:** commit [b5cb5ff](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c) schema-qualifies raw-table counts as `public.<quoted identifier>` and adds a PostgreSQL regression with a same-named shadow table in a leading `search_path` schema. Its existing P2 review thread remains unresolved pending independent review and exact-head CI.
+- **PR #60 remains the P0 priority:** exact head `56ddd10ca7f315937c3f597fd2175fafe610f5ed`; [41695211554 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41695211554) reported 939 passed, 1 warning, 76.42%, but applied only 001–033 and 038–040. It still has 17 unresolved threads. A new source-grounded review comment [6614706465](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6614706465) consolidates the quiet-hours bypass, no-row policy-creation race, and post-lock authority-expiry recheck requirements. No source commit was made to #60 in this run.
+- **Migration allocation remains branch-local:** main 001–033; #48=034; #50=035; #49=036–037; #60=038–040. No integrated fresh 001–040 or installed 033→040 upgrade has passed.
+- **Deployment integration remains blocked:** #60's service-specific DB-role boundary is not cumulative with #62's pre-DDL target/seed/sequence checks; #62 still passes broad `.env.production` to API/WAHA/migrate. Neither merge order is safe.
+- **Readiness:** NOT TEST READY. No production DB mutation, live WhatsApp send, WAHA reconnection, or private-media retention activation occurred. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh engineering delta — 2026-11-03 (after the 17:18 WAT snapshot)
 
 This source-verified update supersedes the 17:18 snapshot above. Exact heads, review-thread flags, Actions runs, migration filenames, and deployment files were rechecked.

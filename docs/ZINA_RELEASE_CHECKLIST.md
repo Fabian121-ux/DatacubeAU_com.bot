@@ -1,3 +1,15 @@
+## Fresh engineering delta — 2026-11-03 21:21 WAT
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest exact-main Tests run [34219252390 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) from 2026-09-08; branch currently reports `protected=false`.
+- **Latest overall CI:** PR #55 head `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c`, run [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314), still in progress at PostgreSQL service initialization. No tests/coverage/migration/leakage pass is claimed.
+- **PR #55:** raw leakage-table counts are now schema-qualified to `public`; a shadow-schema PostgreSQL regression was added in commit [b5cb5ff](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c). Its one review thread remains unresolved pending independent review and exact-head CI.
+- **PR #60 P0:** head `56ddd10ca7f315937c3f597fd2175fafe610f5ed`; exact-head Tests run [41695211554 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41695211554), 939 passed / 76.42%, but only migrations 001–033 + 038–040. Seventeen unresolved review threads remain, including quiet-hours bypasses, approval/policy expiry at final dispatch, alias-wide rate/duplicate limits, media-aware duplicate identity, STOP linearization, and missing cumulative #48 view-once source locking. The consolidated review plan is [comment 6614706465](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6614706465).
+- **Migration allocation:** #48=034, #50=035, #49=036–037, #60=038–040. No integrated fresh 001–040 or installed 033→040 upgrade proof exists.
+- **Deployment:** #60 runtime-role/service allowlists and #62 target/seed/sequence preflights are not cumulative; #62 still exposes broad `.env.production` to API/WAHA/migrate. Neither merge order is safe.
+- **Release:** NOT TEST READY; Stage A not authorized; private-media byte retention remains OFF. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh engineering delta — 2026-11-03
 
 This current release gate supersedes the older dated snapshots below. See the roadmap's 2026-11-03 engineering delta for exact open-PR heads and review counts.
