@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.utils.time import utcnow
 
 
@@ -67,6 +68,12 @@ class OwnerContactAutomationPolicyService:
         if not created_by:
             return ContactAutomationPolicyResult(False, None, "owner identity required")
 
+        # Serialize policy creation/update with the worker's final delivery-window
+        # check, including when no policy row exists for SELECT FOR UPDATE to lock.
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            durable_chat_id,
+        )
         result = await self.session.execute(
             text(
                 """
@@ -136,6 +143,10 @@ class OwnerContactAutomationPolicyService:
         if not (owner_identity or "").strip():
             return ContactAutomationPolicyResult(False, None, "owner identity required")
 
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            durable_chat_id,
+        )
         instant = utcnow()
         result = await self.session.execute(
             text(

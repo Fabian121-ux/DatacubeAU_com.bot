@@ -296,6 +296,24 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
 
+                # Quiet hours are a delivery restriction, not an authority source.
+                # Apply the same final check to exact approvals and ScheduledActions;
+                # keep its advisory/row locks through the one transport attempt.
+                delivery_window = await OutboundAuthorizationService(
+                    session
+                ).check_contact_delivery_window(
+                    contact_id=consent.contact_id,
+                    exact_chat_id=message.chat_id,
+                )
+                if not delivery_window.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final contact delivery window denied: {delivery_window.reason}",
+                    )
+                    await session.commit()
+                    continue
+
             try:
                 if dispatch is not None:
                     response = await _send_authorized_media(client, message, dispatch.plan)

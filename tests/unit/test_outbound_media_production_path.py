@@ -20,7 +20,7 @@ production code. No real WhatsApp transport is contacted.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +35,7 @@ from app.services.scheduled_action_service import ScheduledActionService
 from app.utils.time import utcnow
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.owner_contact_automation_policy_service import OwnerContactAutomationPolicyService
 from app.services.owner_outbound_approval_service import OwnerOutboundApprovalService
 from app.services.waha_client import WahaClientError
 from app.workers import background_workers
@@ -144,6 +145,37 @@ async def _noop(*args, **kwargs):
 async def _deliver(db_session, monkeypatch, client):
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
     return await background_workers._deliver_due_outbound_messages(client)
+
+
+async def _scheduled_action_queue(db_session, contact, *, body: str, key: str):
+    queue = OutboundMessage(
+        chat_id=contact.whatsapp_id,
+        message_text=body,
+        formatting_json={},
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+    )
+    db_session.add(queue)
+    await db_session.flush()
+    action = ScheduledAction(
+        action_type="whatsapp.send_message",
+        target_contact_id=int(contact.id),
+        target_chat_id=contact.whatsapp_id,
+        payload_json={"text": body},
+        timezone="UTC",
+        scheduled_for=utcnow(),
+        status="queued",
+        is_enabled=True,
+        outbound_queue_id=int(queue.id),
+        idempotency_key=key,
+    )
+    db_session.add(action)
+    await db_session.flush()
+    queue.formatting_json = {"scheduled_action_id": int(action.id)}
+    await db_session.flush()
+    return queue
 
 
 # --------------------------------------------------------------------------------------
@@ -649,3 +681,111 @@ async def test_pending_stop_on_unmapped_alias_blocks_approved_queue_before_waha(
     assert client.calls == []
     assert row.status == "deferred"
     assert "pending inbound opt-out intent" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quiet_hours", "expected_reason"),
+    [
+        (
+            {"start": "00:00", "end": "00:00", "timezone": "Africa/Lagos"},
+            "contact policy quiet hours active",
+        ),
+        ({}, "contact policy quiet-hours configuration invalid"),
+    ],
+)
+async def test_scheduled_action_is_blocked_by_final_contact_quiet_hours(
+    db_session, monkeypatch, quiet_hours, expected_reason
+):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_CHAT)
+    chat_id = "2348000000091@c.us"
+    contact = Contact(
+        whatsapp_id=chat_id,
+        chat_id=chat_id,
+        display_name="Scheduled quiet-hours regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+    body = "owner-scheduled external message"
+    queue = await _scheduled_action_queue(
+        db_session,
+        contact,
+        body=body,
+        key=f"scheduled-quiet-hours-{expected_reason.replace(' ', '-')}",
+    )
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-scheduled-quiet-hours",
+        owner_identity="OWNER",
+    )
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=chat_id,
+        enabled=True,
+        allowed_categories=["normal_reply"],
+        quiet_hours=quiet_hours,
+    )
+    assert policy.ok is True
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(queue)
+
+    assert client.calls == []
+    assert queue.status == "deferred"
+    assert "final contact delivery window denied" in (queue.error_message or "")
+    assert expected_reason in (queue.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_scheduled_action_remains_exactly_once_outside_contact_quiet_hours(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_CHAT)
+    fixed_now = datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.services.outbound_authorization_service.utcnow", lambda: fixed_now)
+    chat_id = "2348000000092@c.us"
+    contact = Contact(
+        whatsapp_id=chat_id,
+        chat_id=chat_id,
+        display_name="Scheduled outside quiet-hours control",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+    queue = await _scheduled_action_queue(
+        db_session,
+        contact,
+        body="scheduled message outside quiet hours",
+        key="scheduled-outside-quiet-hours-control",
+    )
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-scheduled-outside-window",
+        owner_identity="OWNER",
+    )
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=chat_id,
+        enabled=True,
+        allowed_categories=["normal_reply"],
+        quiet_hours={
+            "start": "09:00",
+            "end": "17:00",
+            "timezone": "Africa/Lagos",
+        },
+    )
+    assert policy.ok is True
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(queue)
+
+    assert [operation for operation, _ in client.calls] == ["send_text"]
+    assert client.calls[0][1]["chatId"] == chat_id
+    assert queue.status == "sent"

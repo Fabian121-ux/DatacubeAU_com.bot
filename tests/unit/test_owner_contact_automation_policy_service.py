@@ -81,8 +81,9 @@ async def test_exact_contact_policy_is_bound_to_durable_contact_and_chat():
     assert result.policy_id == 23
     assert result.error is None
     assert session.flush_count == 1
-    assert len(session.calls) == 1
-    sql, params = session.calls[0]
+    assert len(session.calls) == 2
+    assert "pg_advisory_xact_lock" in session.calls[0][0]
+    sql, params = session.calls[1]
     assert "ON CONFLICT (contact_id, exact_chat_id)" in sql
     assert params["contact_id"] == 41
     assert params["exact_chat_id"] == "2348012345678@c.us"
@@ -163,7 +164,9 @@ async def test_disable_is_immediate_and_exact_target_only():
     assert result.ok is True
     assert result.policy_id == 31
     assert session.flush_count == 1
-    sql, params = session.calls[0]
+    assert len(session.calls) == 2
+    assert "pg_advisory_xact_lock" in session.calls[0][0]
+    sql, params = session.calls[1]
     assert "SET enabled = false" in sql
     assert "contact_id = :contact_id AND exact_chat_id = :exact_chat_id" in sql
     assert params["contact_id"] == 77

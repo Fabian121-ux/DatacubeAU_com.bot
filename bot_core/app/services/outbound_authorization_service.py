@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.utils.time import utcnow
 
 
@@ -321,6 +322,91 @@ class OutboundAuthorizationService:
             },
         )
         return result.scalar_one_or_none() is not None
+
+    async def check_contact_delivery_window(
+        self,
+        *,
+        contact_id: int | None,
+        exact_chat_id: str | None,
+        now: datetime | None = None,
+    ) -> AuthorizationDecision:
+        """Recheck contact quiet hours at the final pre-transport boundary.
+
+        This restriction is independent of whether a row is authorized by an exact
+        one-use approval, a contact policy, or an exact ScheduledAction binding. The
+        shared exact-chat advisory lock also serializes this read against OWNER policy
+        upserts when no policy row exists yet; FOR UPDATE keeps an existing row stable
+        through the caller's single transport attempt.
+        """
+        if (
+            not isinstance(contact_id, int)
+            or contact_id <= 0
+            or not isinstance(exact_chat_id, str)
+            or not ContactMessagingConsentService._is_direct_chat(exact_chat_id)
+        ):
+            return AuthorizationDecision(
+                False,
+                "contact_policy",
+                "exact contact/chat delivery-window identity invalid",
+            )
+
+        # Acquire the same lock used by Contact mapping writers before reading policy.
+        # OWNER policy mutations use it too, so a concurrent first INSERT cannot slip
+        # between a missing-row read and the outbound transport attempt.
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            exact_chat_id,
+        )
+        instant = now or utcnow()
+        result = await self.session.execute(
+            text(
+                """
+                SELECT id, quiet_hours_json
+                FROM contact_automation_policies
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :exact_chat_id
+                  AND enabled = true
+                  AND disabled_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > :instant)
+                FOR UPDATE
+                """
+            ),
+            {
+                "contact_id": contact_id,
+                "exact_chat_id": exact_chat_id,
+                "instant": instant,
+            },
+        )
+        row = result.mappings().first()
+        if row is None:
+            return AuthorizationDecision(
+                True,
+                "none",
+                "no active contact quiet-hours policy",
+            )
+
+        policy_id = int(row["id"])
+        quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
+        if quiet_active is None:
+            return AuthorizationDecision(
+                False,
+                "contact_policy",
+                "contact policy quiet-hours configuration invalid",
+                policy_id=policy_id,
+            )
+        if quiet_active:
+            return AuthorizationDecision(
+                False,
+                "contact_policy",
+                "contact policy quiet hours active",
+                policy_id=policy_id,
+            )
+        return AuthorizationDecision(
+            True,
+            "contact_policy",
+            "contact delivery window permits send",
+            policy_id=policy_id,
+        )
 
     async def authorize(self, context: AuthorizationContext, *, now: datetime | None = None) -> AuthorizationDecision:
         instant = now or utcnow()

@@ -142,6 +142,56 @@ async def test_authorize_queue_message_delegates_only_after_exact_context_valida
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quiet_hours_json", "expected_reason"),
+    [
+        (
+            {"start": "00:00", "end": "00:00", "timezone": "Africa/Lagos"},
+            "contact policy quiet hours active",
+        ),
+        ({}, "contact policy quiet-hours configuration invalid"),
+    ],
+)
+async def test_final_delivery_window_guard_denies_active_or_malformed_quiet_hours(
+    quiet_hours_json, expected_reason
+):
+    class Result:
+        def __init__(self, mapping=None):
+            self.mapping = mapping
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "pg_advisory_xact_lock" in sql:
+                return Result()
+            if "FROM contact_automation_policies" in sql:
+                return Result({"id": 41, "quiet_hours_json": quiet_hours_json})
+            raise AssertionError(f"Unexpected delivery-window query: {sql}")
+
+    session = Session()
+    decision = await OutboundAuthorizationService(session).check_contact_delivery_window(
+        contact_id=17,
+        exact_chat_id="2348012345678@c.us",
+        now=datetime(2026, 8, 31, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == expected_reason
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    assert "FOR UPDATE" in session.statements[1].upper()
+
+
+@pytest.mark.asyncio
 async def test_contact_policy_authorization_locks_policy_until_dispatch_transaction_finishes():
     """A concurrent OWNER disable must serialize behind a policy-based send fence."""
     class Result:

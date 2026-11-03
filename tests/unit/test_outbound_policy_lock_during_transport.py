@@ -11,6 +11,7 @@ from app.models.schema import Contact, Message, OutboundMessage
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_safety_limit_service import OutboundSafetyDecision, OutboundSafetyLimitService
+from app.services.owner_contact_automation_policy_service import OwnerContactAutomationPolicyService
 from app.utils.time import utcnow
 from app.workers import background_workers
 
@@ -429,3 +430,61 @@ async def test_stale_in_flight_reservation_blocks_second_worker_after_final_fenc
     assert first.status == "sent"
     await db_session.refresh(second)
     assert second.status == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_owner_policy_insert_serializes_with_final_window_check_when_row_is_absent(
+    db_session, test_contact
+):
+    """A missing policy row cannot appear between the final check and transport."""
+    exact_chat_id = "2348000000093@c.us"
+    test_contact.whatsapp_id = exact_chat_id
+    test_contact.chat_id = exact_chat_id
+    await db_session.commit()
+
+    sessions = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with sessions() as dispatch_session, sessions() as owner_session:
+        decision = await OutboundAuthorizationService(dispatch_session).check_contact_delivery_window(
+            contact_id=int(test_contact.id),
+            exact_chat_id=exact_chat_id,
+            now=utcnow(),
+        )
+        assert decision.allowed is True
+        assert decision.reason == "no active contact quiet-hours policy"
+
+        mutation_started = asyncio.Event()
+
+        async def create_quiet_hours_policy():
+            mutation_started.set()
+            return await OwnerContactAutomationPolicyService(owner_session).upsert_exact(
+                permission="owner",
+                owner_identity="OWNER",
+                contact_id=int(test_contact.id),
+                exact_chat_id=exact_chat_id,
+                enabled=True,
+                allowed_categories=["normal_reply"],
+                quiet_hours={
+                    "start": "00:00",
+                    "end": "00:00",
+                    "timezone": "Africa/Lagos",
+                },
+            )
+
+        mutation_task = asyncio.create_task(create_quiet_hours_policy())
+        await mutation_started.wait()
+        await asyncio.sleep(0.05)
+        assert not mutation_task.done(), "OWNER policy INSERT must wait for the final mapping lock"
+        await dispatch_session.commit()
+        result = await asyncio.wait_for(mutation_task, timeout=3)
+        await owner_session.commit()
+
+    assert result.ok is True
+    async with sessions() as verify_session:
+        final_decision = await OutboundAuthorizationService(verify_session).check_contact_delivery_window(
+            contact_id=int(test_contact.id),
+            exact_chat_id=exact_chat_id,
+            now=utcnow(),
+        )
+        assert final_decision.allowed is False
+        assert final_decision.reason == "contact policy quiet hours active"
+        await verify_session.rollback()
