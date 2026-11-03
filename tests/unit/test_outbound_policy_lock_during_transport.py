@@ -108,7 +108,7 @@ async def test_owner_policy_disable_cannot_commit_during_final_worker_transport_
 
     safety_calls: list[int] = []
 
-    async def allow_safety(self, message, *, now=None):
+    async def allow_safety(self, message, *, now=None, contact_id=None):
         safety_calls.append(int(message.id))
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
@@ -243,7 +243,7 @@ async def test_final_safety_recheck_denies_before_any_transport_call(
 
     safety_calls = 0
 
-    async def allow_initial_then_deny_final(self, message, *, now=None):
+    async def allow_initial_then_deny_final(self, message, *, now=None, contact_id=None):
         nonlocal safety_calls
         safety_calls += 1
         if safety_calls == 1:

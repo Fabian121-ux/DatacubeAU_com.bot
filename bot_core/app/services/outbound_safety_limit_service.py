@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.schema import Contact, OutboundMessage
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.utils.text import normalize_text
 from app.utils.time import utcnow
 
 
@@ -136,7 +137,7 @@ class OutboundSafetyLimitService:
         # Use the exact same media-aware digest as outbound authority. This binds
         # locator, kind, caption, MIME, and filename, so blank-caption media is still
         # deduplicated and distinct attachments sharing a caption remain distinct.
-        current = OutboundAuthorizationService.content_hash_for_message(message)
+        current = self._duplicate_key(message)
         aliases = sorted(chat_ids)
         # In-flight sends remain duplicate reservations even if a slow final fence or
         # transport attempt makes their updated_at older than the duplicate window.
@@ -152,7 +153,7 @@ class OutboundSafetyLimitService:
             .limit(self.PER_CONTACT_ACTIVE_BACKLOG + 1)
         )
         in_flight_rows = (await self.session.execute(in_flight_stmt)).scalars().all()
-        if any(OutboundAuthorizationService.content_hash_for_message(row) == current for row in in_flight_rows):
+        if any(self._duplicate_key(row) == current for row in in_flight_rows):
             return True
 
         sent_stmt = (
@@ -167,7 +168,16 @@ class OutboundSafetyLimitService:
             .limit(self.PER_CONTACT_PER_MINUTE * 10 + 1)
         )
         sent_rows = (await self.session.execute(sent_stmt)).scalars().all()
-        return any(OutboundAuthorizationService.content_hash_for_message(row) == current for row in sent_rows)
+        return any(self._duplicate_key(row) == current for row in sent_rows)
+
+    @staticmethod
+    def _duplicate_key(message: OutboundMessage) -> str:
+        media_metadata = OutboundAuthorizationService.transport_metadata_for_message(message)
+        if message.media_url or message.media_type or message.media_caption or media_metadata:
+            return "media:" + OutboundAuthorizationService.content_hash_for_message(message)
+        # Preserve the existing canonical text-only duplicate semantics while media
+        # payloads use the exact authority digest (locator/kind/caption/MIME/filename).
+        return "text:" + normalize_text(str(message.message_text or ""))
 
     async def _count(self, *filters) -> int:
         stmt = select(func.count()).select_from(OutboundMessage)

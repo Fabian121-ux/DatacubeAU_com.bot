@@ -180,7 +180,7 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
         assert context is not None
         return context, AuthorizationDecision(True, "contact_policy", "exact active contact policy")
 
-    async def _safe(self, message, *, now=None):
+    async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
@@ -261,7 +261,7 @@ async def test_external_contact_consent_is_required_even_when_authority_allows(
             True, authority_type, f"active {authority_type}", approval_id=approval_id
         )
 
-    async def _safe(self, message, *, now=None):
+    async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
@@ -460,7 +460,7 @@ async def test_contact_remap_after_queue_creation_blocks_external_dispatch(
     async def _authorized(session, authority, message):
         return True, "test authority permits this row", None
 
-    async def _safe(self, message, *, now=None):
+    async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
@@ -533,7 +533,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         assert context is not None
         return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
 
-    async def _safe(self, message, *, now=None):
+    async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
     monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
@@ -738,7 +738,7 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
         assert context is not None
         return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
 
-    async def _safe(self, message, *, now=None):
+    async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
     monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
@@ -902,7 +902,7 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
         assert context is not None
         return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
 
-    async def _safe(self, message, *, now=None):
+    async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
 
     monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)
