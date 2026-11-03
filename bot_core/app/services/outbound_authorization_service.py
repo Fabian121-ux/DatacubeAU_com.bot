@@ -325,6 +325,40 @@ class OutboundAuthorizationService:
     async def authorize(self, context: AuthorizationContext, *, now: datetime | None = None) -> AuthorizationDecision:
         instant = now or utcnow()
 
+        # Quiet hours are a contact-level delivery restriction, not an authority
+        # source. Lock and evaluate the current exact-chat policy before considering
+        # an OWNER approval so a one-use approval cannot bypass a configured window.
+        policy = await self.session.execute(
+            text(
+                """
+                SELECT id, allowed_categories, prohibited_categories,
+                       approval_required_categories, quiet_hours_json
+                FROM contact_automation_policies
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :target_chat_id
+                  AND enabled = true
+                  AND disabled_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > :instant)
+                FOR UPDATE
+                """
+            ),
+            {
+                "contact_id": context.contact_id,
+                "target_chat_id": context.target_chat_id,
+                "instant": instant,
+            },
+        )
+        row = policy.mappings().first()
+        policy_id = int(row["id"]) if row is not None else None
+        if row is not None:
+            quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
+            if quiet_active is None:
+                return AuthorizationDecision(False, "contact_policy", "contact policy quiet-hours configuration invalid", policy_id=policy_id)
+            if quiet_active:
+                return AuthorizationDecision(False, "contact_policy", "contact policy quiet hours active", policy_id=policy_id)
+
+        # OWNER approval remains an independent authority source. It is considered
+        # only after the authority-independent contact delivery window has passed.
         approval = await self.session.execute(
             text(
                 """
@@ -349,38 +383,16 @@ class OutboundAuthorizationService:
         )
         approval_id = approval.scalar_one_or_none()
         if approval_id is not None:
-            return AuthorizationDecision(True, "owner_approval", "exact active owner approval", approval_id=int(approval_id))
+            return AuthorizationDecision(
+                True,
+                "owner_approval",
+                "exact active owner approval",
+                approval_id=int(approval_id),
+                policy_id=policy_id,
+            )
 
-        policy = await self.session.execute(
-            text(
-                """
-                SELECT id, allowed_categories, prohibited_categories,
-                       approval_required_categories, quiet_hours_json
-                FROM contact_automation_policies
-                WHERE contact_id = :contact_id
-                  AND exact_chat_id = :target_chat_id
-                  AND enabled = true
-                  AND disabled_at IS NULL
-                  AND (expires_at IS NULL OR expires_at > :instant)
-                FOR UPDATE
-                """
-            ),
-            {
-                "contact_id": context.contact_id,
-                "target_chat_id": context.target_chat_id,
-                "instant": instant,
-            },
-        )
-        row = policy.mappings().first()
         if row is None:
             return AuthorizationDecision(False, "none", "no exact active owner approval or contact automation policy")
-
-        policy_id = int(row["id"])
-        quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
-        if quiet_active is None:
-            return AuthorizationDecision(False, "contact_policy", "contact policy quiet-hours configuration invalid", policy_id=policy_id)
-        if quiet_active:
-            return AuthorizationDecision(False, "contact_policy", "contact policy quiet hours active", policy_id=policy_id)
 
         allowed = {str(value).strip().lower() for value in (row["allowed_categories"] or [])}
         prohibited = {str(value).strip().lower() for value in (row["prohibited_categories"] or [])}
