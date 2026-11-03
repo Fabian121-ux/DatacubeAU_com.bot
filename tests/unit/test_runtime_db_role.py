@@ -253,6 +253,7 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
     runtime_probe = None
     secondary = None
     transaction = None
+    transaction_started = False
     try:
         provision = subprocess.run(
             ["sh", str(PROVISIONER)],
@@ -334,6 +335,7 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
         runtime = await asyncpg.connect(dsn=runtime_dsn)
         transaction = runtime.transaction()
         await transaction.start()
+        transaction_started = True
 
         owner = await admin.fetchval(
             """
@@ -434,7 +436,7 @@ async def test_runtime_role_cannot_mutate_or_disable_consent_history():
                 await savepoint.rollback()
                 pytest.fail(f"restricted runtime role unexpectedly executed: {statement}")
     finally:
-        if transaction is not None and transaction.is_active:
+        if transaction is not None and transaction_started:
             await transaction.rollback()
         for connection in (secondary, runtime_probe, runtime):
             if connection is not None:
