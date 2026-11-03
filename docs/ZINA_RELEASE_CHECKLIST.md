@@ -1,3 +1,11 @@
+## Fresh engineering delta — 2026-11-03 08:24 WAT
+
+PR #60 now points to diagnostic-only workflow commit [`1f1c85a3a56924d098085a54f9cd90a5d26a2be2`](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/1f1c85a3a56924d098085a54f9cd90a5d26a2be2). The test command uses `-x --tb=long` and a 30-second faulthandler timeout so the first failing test's traceback is emitted before later async fixture setup. The commit uses `[skip ci]`; no new run or test is claimed. The latest run remains [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589), cancelled on parent head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9` after the runtime-role test was marked FAILED at 86%; the log has no assertion traceback or final coverage summary. This diagnostic change is untested and does not clear the P0 consent, worker-integration, or deployment gates.
+
+Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`. Migration allocation remains main 001–033, #48 034, #50 035, #49 036–037, #60 038–040. No combined fresh/upgrade 001–040, checksum/no-op, schema-audit, DB-leakage, and runtime-role proof exists. **NOT TEST READY; REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Zina Release Checklist
 
 ## Fresh live verification delta — 2026-11-03 07:20 WAT
