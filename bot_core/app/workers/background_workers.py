@@ -238,6 +238,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 final_safety = await OutboundSafetyLimitService(session).authorize(
                     message,
                     now=utcnow(),
+                    contact_id=consent.contact_id,
                 )
                 if not final_safety.allowed:
                     await _mark_delivery_blocked(
