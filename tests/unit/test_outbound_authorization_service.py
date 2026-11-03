@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -299,3 +300,140 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
     assert decision.allowed is False
     assert decision.authority_type == "none"
     assert decision.reason == "no exact active owner approval or contact automation policy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quiet_hours_json", "expected_reason"),
+    [
+        (
+            {"start": "09:00", "end": "17:00", "timezone": "Africa/Lagos"},
+            "contact policy quiet hours active",
+        ),
+        ({}, "contact policy quiet-hours configuration invalid"),
+    ],
+)
+async def test_exact_owner_approval_cannot_bypass_contact_quiet_hours(
+    quiet_hours_json, expected_reason
+):
+    class Result:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "FROM contact_automation_policies" in sql:
+                return Result(
+                    mapping={
+                        "id": 41,
+                        "allowed_categories": ["normal_reply"],
+                        "prohibited_categories": [],
+                        "approval_required_categories": [],
+                        "quiet_hours_json": quiet_hours_json,
+                    }
+                )
+            if "FROM outbound_approvals" in sql:
+                # The exact one-use approval is valid. Quiet hours must still win.
+                return Result(scalar=99)
+            raise AssertionError(f"Unexpected authorization query: {sql}")
+
+    session = Session()
+    context = AuthorizationContext(
+        outbound_queue_id=91,
+        inbound_message_id=51,
+        contact_id=17,
+        target_chat_id="2348012345678@c.us",
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    decision = await OutboundAuthorizationService(session).authorize(
+        context,
+        now=datetime(2026, 8, 31, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision.allowed is False
+    assert decision.authority_type == "contact_policy"
+    assert decision.reason == expected_reason
+    assert decision.policy_id == 41
+    assert not any("FROM outbound_approvals" in sql for sql in session.statements)
+    assert "FOR UPDATE" in session.statements[0].upper()
+
+
+@pytest.mark.asyncio
+async def test_exact_owner_approval_remains_valid_outside_contact_quiet_hours():
+    class Result:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "FROM contact_automation_policies" in sql:
+                return Result(
+                    mapping={
+                        "id": 41,
+                        "allowed_categories": [],
+                        "prohibited_categories": ["normal_reply"],
+                        "approval_required_categories": ["normal_reply"],
+                        "quiet_hours_json": {
+                            "start": "09:00",
+                            "end": "17:00",
+                            "timezone": "Africa/Lagos",
+                        },
+                    }
+                )
+            if "FROM outbound_approvals" in sql:
+                return Result(scalar=99)
+            raise AssertionError(f"Unexpected authorization query: {sql}")
+
+    session = Session()
+    context = AuthorizationContext(
+        outbound_queue_id=91,
+        inbound_message_id=51,
+        contact_id=17,
+        target_chat_id="2348012345678@c.us",
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    decision = await OutboundAuthorizationService(session).authorize(
+        context,
+        now=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision.allowed is True
+    assert decision.authority_type == "owner_approval"
+    assert decision.approval_id == 99
+    assert decision.policy_id == 41
+    assert "FROM contact_automation_policies" in session.statements[0]
+    assert "FROM outbound_approvals" in session.statements[1]
