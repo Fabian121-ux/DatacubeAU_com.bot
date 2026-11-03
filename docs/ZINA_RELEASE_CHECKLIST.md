@@ -1,3 +1,19 @@
+## Fresh engineering delta — 2026-11-03
+
+This current release gate supersedes the older dated snapshots below. See the roadmap's 2026-11-03 engineering delta for exact open-PR heads and review counts.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest exact-main Tests run [34219252390 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) from 2026-09-08; branch currently reports `protected=false`.
+- **Latest exact-head CI:** PR #60 head `56ddd10ca7f315937c3f597fd2175fafe610f5ed`, run [41695211554 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41695211554): **939 passed, 1 warning, 76.42% coverage**. Its workflow applies migrations 001–033 and 038–040 only, not 034–037.
+- **P0 improvement:** contact consent expiry is now checked after mapping/Contact/consent locks and again after the final safety/STOP boundary immediately before the transport attempt. Both new PostgreSQL/mock-WAHA regressions passed. A separate asyncpg test-cleanup bug exposed by the first run was fixed; latest exact-head CI is green.
+- **Still blocking:** #60 has 17 unresolved threads and remains draft. Quiet-hours bypasses, approval/policy expiry, alias-wide budgets, complete media duplicate identity, and STOP linearization remain open. #60's worker still lacks #48's view-once source lock/success-only return audit.
+- **Migration allocation:** #48=034, #50=035, #49=036–037, #60=038–040. The old duplicate 034 is reconciled only across branch-local allocations; no integrated fresh 001–040 or installed 033→040 upgrade proof exists.
+- **Deployment:** #60 runtime-role/service allowlists and #62 database-target/seed/sequence preflights are not cumulative. #62 still exposes broad `.env.production` to all services. #55 has one unresolved shadow-schema counting issue; #57 and #61 safeguards remain branch-local.
+- **Evidence gaps:** no combined fresh/upgrade/checksum/no-op/schema/leakage/runtime-role proof; no independent approval of blocking reviews; no controlled WAHA test.
+- **Human decisions:** STOP after final reservation but before WAHA-entry semantics; whether terminal opt-out is irreversible or has a separately defined OWNER re-consent path; introduction project-claim scope; legacy unknown-provenance policy.
+- **Readiness:** **NOT TEST READY. Stage A is not authorized.** Private-media byte retention stays OFF. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Current release gate — 2026-11-03 17:18 WAT
 
 This is the current source-verified release status and supersedes the older dated snapshots and historical checkboxes below. See the roadmap's 17:18 WAT overlay for exact PR heads and review-thread inventory.
