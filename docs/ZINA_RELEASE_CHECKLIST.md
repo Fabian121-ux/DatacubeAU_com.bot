@@ -1,8 +1,8 @@
 # Zina Release Checklist
 
-## Fresh live engineering verification — 2026-11-03 05:24 WAT
+## Fresh live engineering verification — 2026-11-03 06:23 WAT
 
-This snapshot supersedes the 2026-11-02 21:19 WAT snapshot below. The current review delta is one additional unresolved PR #60 thread covering consent expiry during lock acquisition. Live GitHub refs, all ten open PRs, review threads, workflow YAML, deployment configuration, migration inventory, and the latest cancelled Actions job log were rechecked. PR #59's pre-update head was `f9d0e5ac0356bd515cbbd96e1d1ced8fd92b56bf`. This is a documentation-only refresh on that PR branch and uses `[skip ci]`; no exact-head Tests run is expected for this documentation commit.
+This snapshot supersedes the 2026-11-03 05:24 WAT snapshot below. A new top-level review comment on PR #62 identifies a further deployment secret-boundary gap: the PostgreSQL service still receives the entire `.env.production` file. This is not an inline review thread, so PR #62 remains at 7 unresolved threads (4 current-diff, 3 outdated). Live GitHub refs, all ten open PRs, review threads, workflow YAML, deployment configuration, migration inventory, and the latest cancelled Actions job log were rechecked. PR #59's pre-update head was `f9d0e5ac0356bd515cbbd96e1d1ced8fd92b56bf`. This is a documentation-only refresh on that PR branch and uses `[skip ci]`; no exact-head Tests run is expected for this documentation commit.
 
 ### Main and deployment state
 
@@ -43,7 +43,7 @@ The historical 034 collision is resolved **at branch allocation only**:
 
 No one candidate has proved fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum stability, ORM schema audit, and zero DB leakage together. #60 applies 001–033 plus 038–040; #62's successful run applies 001–033 only. The numbering is contiguous across branch allocations, not yet integrated or release-proven.
 
-#60 and #62 remain unsafe to merge independently or in either order. #60 has service-specific environment allowlists and a restricted non-owner API DB role, but lacks #62's pre-DDL database-target, local-seed, and migration-sequence preflights. #62 has those preflights plus schema/leakage gates, but still exposes the broad `.env.production` file to API/WAHA/migrate and does not provision the restricted runtime role. Build one cumulative candidate preserving all preflights before the first DDL and the API/WAHA/migrate credential boundaries. Integrate #61's sequence gate, #55's leakage audit, and #57's seed policy into that same candidate.
+#60 and #62 remain unsafe to merge independently or in either order. #60 has service-specific environment allowlists and a restricted non-owner API DB role, but lacks #62's pre-DDL database-target, local-seed, and migration-sequence preflights. #62 has those preflights plus schema/leakage gates, but still exposes the broad `.env.production` file to Postgres/API/WAHA/migrate and does not provision the restricted runtime role. The Postgres container only needs `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`; a new top-level review comment ([#62](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62#issuecomment-6596220710)) requests removal of its `env_file` and a rendered-Compose allowlist regression. Build one cumulative candidate preserving all preflights before the first DDL and the Postgres/API/WAHA/migrate credential boundaries. Integrate #61's sequence gate, #55's leakage audit, and #57's seed policy into that same candidate.
 
 ### Current P0 and architecture blockers
 
