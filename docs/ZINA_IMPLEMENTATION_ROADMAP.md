@@ -1,3 +1,55 @@
+## Fresh exact-head verification overlay — 2026-11-04
+
+This source-state overlay supersedes the 2026-11-03 22:24 WAT snapshot below. It is not a release approval. Main has not moved since 2026-09-08; the feature branches are still separate PRs.
+
+### Main, workflow, and governance
+
+- `main` is `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (2026-09-08 11:09:59 UTC); the branch API currently reports `protected=false`.
+- Main's `.github/workflows/tests.yml` still applies the lexical migration glob and runs pytest at the 57% coverage floor. It does not yet include PR #61's contiguous-migration preflight or PR #55's post-test DB-leakage audit.
+- No open PR has an `APPROVED` review submission. All recorded review submissions are `COMMENTED`; comments and passing CI are not independent approval.
+
+### Current open PR inventory — exact heads
+
+| PR | Exact head | Active unresolved / outdated unresolved threads | Current significance |
+|---|---|---:|---|
+| [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 0 (15 resolved) | Metadata observation/return wiring; no private-byte retention. |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 0 | Foundation only; no live producer/selector/dashboard integration. Active finding: retired set keys must not be reused after hard deletion. |
+| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 3 / 0 | Introduction/tombstone consistency, fail-closed registry errors, and trustworthy legacy provenance remain open. |
+| [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 0 / 1 | Exact-head Tests [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314): 816 passed, 76.01%; schema and DB-leakage audits passed on 001–033. |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 0 / 1 | One outdated review thread; no merge. |
+| [#59 roadmap/checklist refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `023a55e00a6e20d33965ebfbe6311c5d9dea8075` | 1 / 2 | This documentation overlay updates the exact-head state; one active checklist thread remains for independent review. |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `f69fae45ddd33aafc7d08abb077da50eedd99341` | 10 / 7 | Final quiet-hours guard and missing-row serialization added; exact-head run [41739953061](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41739953061) is in progress. Parent run [41739571279](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41739571279) failed after 634 passed due to an untyped `timestamptz` expression in policy upsert; explicit casts were added in f69fae4. |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 | Exact-head run [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) succeeded on 001–033 only; it does not validate combined feature migrations. |
+| [#62 deployment/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 4 / 3 | Exact-head run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073): 864 passed, 76.01%, schema audit and DB-leakage audit passed on 001–033. Four active review threads remain, including the real #60 deployment integration conflict. |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | 0 / 1 | Observability-only change; one outdated thread. |
+
+### Migration allocation and deployment reconciliation
+
+Current branch allocation is sequential, not yet integrated:
+
+1. #48 — 034 `private_media_artifact_source_identity`
+2. #50 — 035 `identity_registry_default_backfill`
+3. #49 — 036 `outbound_message_library`, 037 `outbound_message_set_key_registry`
+4. #60 — 038–040 contact consent and sender identity/contact evidence
+
+The former 034 collision has been reallocated, but each feature branch still targets main independently. PR #61's guard will reject dependent branches that omit predecessors. No candidate has run fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, combined schema audit, and zero-leakage validation.
+
+Deployment changes remain non-cumulative: #60 has explicit Compose environment allowlists and a restricted API runtime DB role, but lacks #62's database-target, seed-policy, libpq, and contiguous-sequence preflights. #62 has those preflights, but its Compose still mounts broad `.env.production` into API/WAHA/migrate and does not provision #60's restricted runtime role. A single candidate must preserve all preflight checks before DDL, grant owner credentials only to migrate, pass only the restricted runtime URL to API, and pass only explicit WAHA variables to WAHA.
+
+### P0 safety delta and remaining blockers
+
+- On #60, the worker now calls a shared contact delivery-window guard after final consent revalidation and the pending-STOP boundary, immediately before transport. It applies to exact one-use approvals and exact ScheduledAction bindings. The guard and OWNER policy upsert/disable share the exact-chat transaction advisory lock; active policy rows are locked with `FOR UPDATE`, closing the first-INSERT/missing-row race.
+- The first exact-head run for that change exposed the policy upsert timestamp typing error. Commit f69fae4 adds explicit `timestamptz` casts; run 41739953061 is still in progress. Do not mark this change verified until that exact-head run completes.
+- Still open on #60: final approval/policy expiry revalidation after all blocking locks; Contact-wide alias rate/backlog/duplicate limits; media-aware canonical duplicate digest; explicit OWNER acceptance of the STOP reservation/linearization point; missing stable transport-message-ID ingress fail-closed behavior; append-only consent TRUNCATE/runtime-role privilege proof and role-membership hardening.
+- PR #50 still needs the human decision whether generic introductions may assert project/Datacube AU facts after registry tombstones, and a trustworthy legacy-default provenance rule. The `updated_at = created_at` heuristic cannot reconstruct rows already touched by pre-upgrade reads. Registry read failures must not fall back to stale identity assertions.
+- PR #49 remains only a library foundation; do not integrate it into a producer before P0 and migration reconciliation. PR #48 remains metadata-only; private-media retention stays OFF.
+
+### Release readiness
+
+**NOT TEST READY. Stage A is not authorized.** No integrated migration candidate, exact-head full suite, combined schema/leakage/runtime-role proof, unresolved-review clearance, or controlled WhatsApp test exists. The controlled test plan is not yet approved for execution. No production DB mutation, production WAHA reconnection, real WhatsApp send, private-media retention activation, or destructive cleanup occurred. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Exact-head CI follow-up — 2026-11-03 22:24 WAT
 
 This follow-up supersedes the 22:17 WAT statement that PR #60's latest run was still in progress.
