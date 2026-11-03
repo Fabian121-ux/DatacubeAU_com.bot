@@ -1703,3 +1703,65 @@ No branch currently proves the combined 001–040 chain. #60's workflow applies 
 - #62 has six unresolved deployment/migration review threads; #57 and #59 each have one. A green CI result does not resolve a review thread or substitute for an independent reviewer.
 
 No merge, self-approval, production database mutation, production WAHA reconnection, or real WhatsApp action occurred. Release remains **NOT TEST READY**.
+
+## Fresh engineering delta — 2026-11-03 16:20 WAT
+
+This snapshot supersedes the 11:21 WAT overlay. I re-fetched the default-branch ref/history, all ten open PRs and their exact heads, inline review threads and review submissions, the latest 100 visible Tests runs, main and PR #60 workflow YAML, migration trees for #48/#49/#50/#60, and main/#60/#62 deployment configuration.
+
+### Main and CI
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last commit 2026-09-08 11:09:59 UTC. The main migration directory ends at 033.
+- Latest Tests run on exact main remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. This is historical main evidence.
+- Latest overall Tests run remains [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589), **cancelled** on PR #60's earlier head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`. Its job marked `test_runtime_role_cannot_mutate_or_disable_consent_history` failed at 86%, then hung during a later async-generator fixture setup and was cancelled at the 20-minute limit. The log did not preserve the original assertion traceback, final pytest summary, or coverage.
+- Current #60 head `1f1c85a3a56924d098085a54f9cd90a5d26a2be2` changes the workflow to `pytest -vv -x --tb=long -o faulthandler_timeout=30` to expose the first failure. Its commit deliberately includes `[skip ci]`; **there is no exact-head run**. Do not call the branch green.
+- Main `.github/workflows/tests.yml` still applies a lexical migration glob and runs the 57% coverage floor; it has no #61 contiguous-sequence preflight or #55 schema/post-test leakage audit. Main `deploy/scripts/run-migrations.sh` still reapplies every seed SQL file, including local fixtures. Main `docker-compose.yml` still mounts `.env.production` into the API and WAHA services.
+
+### All ten open PRs — exact current heads
+
+Counts are unresolved inline threads / total inline threads. No open PR currently has an `APPROVED` review submission; all recorded submissions are comments, not approvals.
+
+| PR | Exact head | Latest exact-head Tests evidence | Unresolved / total |
+|---|---|---|---:|
+| [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | 0 / 15 |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | 1 / 80 |
+| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8a4b8d` | [41202063757 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757), 828 passed / 76.52% | 3 / 11 |
+| [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `3d35793ef72cfcfe1e188bc51df6d4e538679f7b` | [41026581000 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41026581000) | 0 / 0 |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | 1 / 1 |
+| [#59 roadmap/checklist refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `160cfb62fe498a92b9cbf4f2b7b8f329ff3c0730` before this documentation update | No exact-head run; docs-only commits use `[skip ci]` | 3 / 3 |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `1f1c85a3a56924d098085a54f9cd90a5d26a2be2` | No exact-head run; prior 41400297589 cancelled | 17 / 17 |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | 0 / 0 |
+| [#62 deployment/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073), 864 passed / 76.01% | 7 / 7 |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429), 803 passed / 76.08% | 1 / 1 |
+
+These are branch-local results only. #48 having zero unresolved inline threads does not resolve its dependency on the combined worker/migration candidate. #49 remains a library foundation with no live selector, producer integration, or dashboard. #50's current open decisions are still the introduction's project claims and reliable provenance for legacy defaults.
+
+### Migration and deployment reconciliation
+
+The numbering collision is resolved in branch naming, not yet in an integrated release candidate:
+
+1. #48 — 034 `private_media_artifact_source_identity`
+2. #50 — 035 `identity_registry_default_backfill`
+3. #49 — 036 `outbound_message_library`, 037 `outbound_message_set_key_registry`
+4. #60 — 038–040 contact consent and sender-identity/contact evidence
+
+No current branch or run proves fresh migrations 001–040 plus installed 033→040 upgrade, second-run no-op/checksum verification, combined schema audit, and zero leakage. Historical 001–037 integration evidence does not cover 038–040.
+
+Deployment work is also split across incompatible branch snapshots: #60 now uses explicit Compose environment allowlists and a distinct restricted API runtime DB role, but its migration runner does not yet contain #62's database-target/local-seed/contiguous-sequence preflights. #62 contains those deployment guards but its current Compose still mounts `.env.production` into API/WAHA/migrate and does not provision #60's restricted runtime role. These changes must be reconciled into one candidate; neither PR's branch-local CI proves the combined deployment.
+
+### Current P0 blockers on #60
+
+The exact-head source/review recheck still identifies independent send-safety gaps:
+
+- Exact one-use approval returns before the shared quiet-hours check; the ScheduledAction fast path in `background_workers._delivery_authorized()` also bypasses contact quiet hours.
+- Approval/policy expiry is not revalidated at the final transport boundary after later safety-reservation and STOP/mapping locks. Contact consent expiry is also compared against a timestamp captured before mapping/Contact/consent locks, with no fresh expiry check after the worker's later waits.
+- Contact rate/backlog and duplicate suppression remain alias-local rather than keyed by stable Contact identity. The duplicate fingerprint omits media locator/kind/MIME/filename, allowing identical uncaptained media to evade duplicate suppression and treating different media with the same caption as duplicates.
+- The STOP reservation boundary needs explicit owner acceptance: a STOP committed after the final reservation veto cannot recall an already-reserved single transport attempt; that uncertain attempt must never be retried and all later rows must remain denied.
+- The current exact head has 17 unresolved review threads. The most recent runtime-role integration run failed without a captured traceback; the isolated disposable-Postgres test must be diagnosed before another full suite.
+
+Do not wire the message library into producers, run external-contact tests, merge, or treat #60 as P0-complete on this evidence. Next safe implementation priority is to isolate the runtime-role failure, then close the time-bound authority/quiet-hours/Contact-wide duplicate and frequency fences with deterministic two-session PostgreSQL/mock-WAHA regressions.
+
+### Governance and readiness
+
+- The current integration returns HTTP 403 for classic branch-protection details; the repository rulesets endpoint returns an empty list. Classic protection therefore cannot be verified in this run; do not rely on the earlier `protected=false` snapshot.
+- No independent APPROVED review is present on any of the ten open PRs. Do not self-approve, merge, or bypass human review.
+- Controlled-test readiness remains **NOT TEST READY**. No production DB operation, production WAHA reconnection, real WhatsApp send, private-media retention activation, or destructive cleanup was performed.
