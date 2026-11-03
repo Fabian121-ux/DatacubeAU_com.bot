@@ -1,3 +1,59 @@
+## Fresh engineering delta — 2026-11-03 22:17 WAT
+
+This snapshot supersedes the 21:34 WAT overlay below. It is a source-state update, not a release approval.
+
+### Main, workflow, and governance
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last main commit 2026-09-08 11:09:59 UTC); main currently reports `protected=false`.
+- Latest Tests run associated with exact main remains [34219252390 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) from 2026-09-08. Treat it as historical only.
+- Main `.github/workflows/tests.yml` still applies the lexical migration glob and runs pytest at the 57% coverage floor. The main workflow does not yet include #55's post-test leakage audit or #61's migration-sequence gate.
+- Latest overall Tests run is [41721001922](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41721001922), **in progress** on exact PR #60 head `fb9693014579283566358f30d80fcc2cc5581795`. No result is claimed.
+- PR #55's exact-head run [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) succeeded on `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c`: **816 passed, 1 warning, 76.01% coverage**; migrations 001–033, ORM schema audit, and post-test leakage audit passed.
+
+### Current open PR inventory
+
+Counts below distinguish active current-diff threads from outdated threads. All open PR review submissions are COMMENTED; none is APPROVED.
+
+| PR | Exact head | Latest exact-head Tests | Unresolved threads (active / outdated / total) |
+|---|---|---|---:|
+| #48 PrivateMediaArtifact wiring | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | 0 / 0 / 15 |
+| #49 Outbound Message Library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | 1 / 0 / 80 |
+| #50 Identity Registry lifecycle/backfill | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | [41202063757 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) | 3 / 0 / 11 |
+| #55 DB-leakage CI gate | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) | 0 / 1 / 1 |
+| #57 local-seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | 0 / 1 / 1 |
+| #59 roadmap/checklist | Current docs branch; this update is documentation-only and will use `[skip ci]` | No exact-head Tests expected | 1 / 2 / 3 |
+| #60 contact-consent P0 | `fb9693014579283566358f30d80fcc2cc5581795` | [41721001922 in progress](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41721001922) | 10 / 7 / 17 |
+| #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | 0 / 0 / 0 |
+| #62 deployment/seed preflight | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | [41073226073 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) | 4 / 3 / 7 |
+| #63 conversation observability | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) | 0 / 1 / 1 |
+
+### P0 and architecture status
+
+- **New #60 correction:** commits [b552521](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/b552521814943f5da551aad6174be12e75b6a30b) and [fb96930](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/fb9693014579283566358f30d80fcc2cc5581795) move the active exact-chat Contact policy lock and quiet-hours validation ahead of the one-use OWNER approval lookup. Exact approval still authorizes outside quiet hours; active quiet hours or malformed configuration now deny it. Regressions cover active and invalid quiet-hours denial plus approval success outside the window. Exact-head CI is still in progress.
+- Remaining #60 P0 findings: ScheduledAction's authority-specific path still needs the same quiet-hours check; per-contact backlog/rate/duplicate limits must be contact-wide across mapped aliases; approval/policy expiry must be revalidated after the final locks; duplicate suppression must bind media locator/kind/transport metadata; and STOP receipt versus WAHA-entry linearization still needs an OWNER decision.
+- #60's consent worker is not yet cumulative with #48's exact OWNER view-once source lock and success-only return audit. Keep uncertain WAHA outcomes quarantined; never blind-retry.
+- #50 still has three active review threads, including introduction-copy scope and legacy identity provenance. Do not infer provenance from timestamps; unverifiable legacy rows should remain unknown unless immutable evidence or explicit OWNER attestation exists.
+- #49 remains a content-library foundation only; no live producer selection or dashboard integration is authorized before P0 and migration integration are complete.
+
+### Migration and deployment reconciliation
+
+- Branch-local migration allocation is now contiguous: main 001–033; #48=034; #50=035; #49=036–037; #60=038–040. The old duplicate-034 filename collision is reconciled **only across branches**.
+- No single candidate has passed a combined fresh 001–040 install, installed 033→040 upgrade, second-run checksum/no-op check, ORM schema audit, zero-leakage audit, and runtime-role privilege matrix. #55 and #60 branch runs exercise different migration subsets; do not combine their results into an integrated claim.
+- #60's runtime-role/service environment boundary and #62's pre-DDL target/seed/sequence preflights are not cumulative. #62's current Compose still injects the entire `.env.production` file into Postgres, API, WAHA, and migrate. Postgres should receive only `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`; API should use the restricted runtime DB credential; WAHA should receive only WAHA-specific settings; migrate alone should receive migration-owner credentials. Neither PR is safe to merge independently.
+- #55's schema-qualified raw-table counting fix is present and exact-head CI passed, but its review thread remains unresolved/outdated for independent review. #57 and #61 deployment/migration guards remain branch-local.
+
+### Release disposition
+
+**NOT TEST READY. Stage A is not authorized.** Private-media byte retention remains OFF. No production DB mutation, production WAHA reconnection, real WhatsApp send, or private-media retention activation occurred. No PR was approved or merged.
+
+Human decisions still required: STOP/dispatch linearization; whether terminal opt-out is irreversible or allows a separately defined OWNER re-consent path; introduction-copy scope; and policy for unverifiable legacy identity provenance.
+
+Highest-value next step: finish the remaining #60 P0 fences, obtain the STOP contract decision, then integrate #48/#60 worker behavior and #60/#62/#55/#57/#61 deployment controls into one independently reviewed candidate. Prove the complete 001–040 fresh/upgrade/no-op/schema/leakage/runtime-role matrix on disposable PostgreSQL.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh engineering delta — 2026-11-03 21:34 WAT
 
 This update supersedes the PR #55 row in the 20:40 snapshot below; it does not change the release disposition.
