@@ -65,6 +65,9 @@ jobs:
             psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -f "$migration"
           done
 
+      - name: Verify database schema matches ORM
+        run: python bot_core/scripts/schema_audit.py
+
       - name: Verify tests directory exists
         run: |
           if [ ! -d tests ]; then
@@ -81,3 +84,6 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-fail-under=57
+
+      - name: Verify database leakage is zero
+        run: python scripts/audit_zina_test_db_leakage.py
