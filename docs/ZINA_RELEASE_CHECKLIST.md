@@ -1156,3 +1156,37 @@ The previous 2026-10-29 snapshot is superseded by the following exact current st
 - [ ] Main-branch governance review; branch endpoint currently reports `protected=false`, rulesets are empty, and classic protection details are not accessible through this integration.
 
 Controlled test readiness remains **NOT TEST READY**. Do not perform owner self-DM or external-contact tests until the integrated release gates and independent reviews are complete. Private-media retention remains OFF. No real WAHA sends, production database mutations, or production WAHA reconnection during unattended engineering.
+
+## Fresh engineering delta — 2026-11-03 16:20 WAT
+
+This is the current release gate and supersedes earlier checklist snapshots.
+
+### Current verified state
+
+- Main is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, migrations 001–033. Exact-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08 only.
+- Latest overall Tests run [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589) was **cancelled** on older #60 head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`; the runtime-role integration test failed at 86% but its assertion traceback and final summary were not captured. Current #60 head `1f1c85a3a56924d098085a54f9cd90a5d26a2be2` has no exact-head CI because its diagnostic-only workflow change uses `[skip ci]`.
+- The ten open PR heads and review counts are recorded in the roadmap's 2026-11-03 16:20 WAT verification overlay. None has an APPROVED review submission.
+
+### Release gates — current, not historical
+
+- [ ] One candidate contains the ordered migrations 001–040: #48=034, #50=035, #49=036–037, #60=038–040.
+- [ ] Fresh PostgreSQL 16 install of 001–040 passes; installed database upgrade 033→040 passes.
+- [ ] Second migration-runner invocation is a no-op with checksum verification; schema audit passes after both fresh and upgrade paths.
+- [ ] Exact-candidate full pytest/coverage passes and the P0 adversarial matrix passes on that same candidate.
+- [ ] Combined-candidate DB-leakage audit reports zero rows, including Contact and all raw cleanup tables.
+- [ ] #60 runtime-role integration test is isolated and green; prove API role cannot UPDATE/DELETE/TRUNCATE/ALTER/DISABLE TRIGGER/SET ROLE or mutate sequence state.
+- [ ] #60's authority is rechecked after all blocking locks at the final pre-transport boundary: one-use approval expiry, policy expiry, contact-consent expiry, quiet hours (including approval and ScheduledAction paths), terminal opt-out, exact current mapping, contact-wide frequency/backlog, and media-aware duplicate identity.
+- [ ] Explicit OWNER acceptance of the STOP reservation boundary is recorded; uncertain WAHA outcomes are never blindly retried.
+- [ ] #60 and #62 deployment changes are reconciled: restricted runtime API role plus #62's target validation, migration sequence preflight, and local-seed opt-in; no broad `.env.production` injection into API/WAHA.
+- [ ] Independent human reviews resolve blocking threads. Zero unresolved inline threads alone is not approval; no current PR has an APPROVED review.
+- [ ] Classic branch protection is verified through an authorized repository-admin view; current connector request returns 403 and rulesets list is empty.
+- [ ] Mobile dashboard CRUD/disable and required observability/command-governance gates remain complete before controlled testing.
+
+### Human decisions still required
+
+1. Accept or revise the documented STOP linearization/reservation rule: a STOP arriving after the final reservation veto cannot recall an already-reserved one-time transport attempt, but must prevent retries and all subsequent sends.
+2. Confirm the product policy that a terminal opt-out is Contact-wide across current mapped aliases and cannot be overridden by a new grant; any erasure/re-import workflow must preserve the veto or explicitly define a lawful replacement policy.
+3. Resolve the #50 introduction scope: remove project claims from the generic introduction, or make project/Datacube AU facts obey Identity Registry lifecycle.
+4. Choose a trustworthy provenance/backfill rule for legacy Identity Registry defaults; `updated_at = created_at` cannot reliably identify rows previously touched by old deployments.
+
+Controlled test readiness remains **NOT TEST READY**. Do not start OWNER self-DM or external-contact stages until the integrated migration, exact-head test, leakage, P0, deployment, and independent-review gates above are all satisfied. Private-media retention remains OFF. REAL WAHA ACTIONS: NONE.
