@@ -471,6 +471,42 @@ async def test_expired_consent_and_wrong_exact_chat_fail_closed(db_session, test
     assert mismatched.reason == "exact durable contact/chat mapping is missing"
 
 
+@pytest.mark.asyncio
+async def test_consent_expiry_is_checked_after_mapping_and_consent_locks(
+    db_session, test_contact, monkeypatch
+):
+    queue = await _queue_with_source(db_session, test_contact, test_contact.whatsapp_id)
+    service = ContactMessagingConsentService(db_session)
+    await service.grant_for_chat(
+        exact_chat_id=test_contact.whatsapp_id,
+        evidence_ref="owner-attested-before-lock-wait",
+        owner_identity="OWNER",
+    )
+    row = (
+        await db_session.execute(
+            select(ContactMessagingConsent).where(
+                ContactMessagingConsent.contact_id == test_contact.id,
+                ContactMessagingConsent.exact_chat_id == test_contact.whatsapp_id,
+            )
+        )
+    ).scalar_one()
+    before_wait = utcnow()
+    row.expires_at = before_wait + timedelta(seconds=1)
+    await db_session.flush()
+
+    # The first clock read is before the mapping/Contact/consent locks. The second
+    # models those locks completing after the TTL has elapsed.
+    clock_values = iter((before_wait, before_wait + timedelta(seconds=2)))
+    monkeypatch.setattr(
+        "app.services.contact_messaging_consent_service.utcnow",
+        lambda: next(clock_values),
+    )
+    decision = await service.authorize_outbound_queue_message(queue)
+
+    assert decision.allowed is False
+    assert decision.reason == "contact consent has expired"
+
+
 @pytest.mark.parametrize(
     "message,expected",
     [

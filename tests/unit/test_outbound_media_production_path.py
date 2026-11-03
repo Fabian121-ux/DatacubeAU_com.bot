@@ -30,7 +30,7 @@ from app.core.reply_planner import PlannedReply
 from app.core.router import InboundRouter
 from app.models.enums import DecisionType
 from app.models.scheduled_action import ScheduledAction
-from app.models.schema import Contact, OutboundMessage
+from app.models.schema import Contact, ContactMessagingConsent, OutboundMessage
 from app.services.scheduled_action_service import ScheduledActionService
 from app.utils.time import utcnow
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
@@ -521,6 +521,69 @@ async def test_worker_blocks_scheduled_action_after_contact_mapping_changes(db_s
     assert client.calls == []
     assert row.status == "deferred"
     assert "current contact/chat mapping does not match recipient" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_consent_expiry_after_final_locks_before_waha(db_session, monkeypatch):
+    """A consent TTL that passes while final dispatch locks are held must veto WAHA."""
+    target_chat_id = "2348000000051@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Consent expiry at final dispatch",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Consent must still be current at transport entry"),
+        chat_id=target_chat_id,
+        message_id="PROD-CONSENT-EXPIRY-FINAL-FENCE",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-final-lock-wait",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+
+    async def expire_consent_after_final_locks(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        consent_row = (
+            await session.execute(
+                select(ContactMessagingConsent).where(
+                    ContactMessagingConsent.contact_id == contact.id,
+                    ContactMessagingConsent.exact_chat_id == exact_chat_id,
+                )
+            )
+        ).scalar_one()
+        consent_row.expires_at = utcnow() - timedelta(seconds=1)
+        await session.flush()
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        expire_consent_after_final_locks,
+    )
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final contact consent denied: contact consent has expired" in (row.error_message or "")
 
 
 @pytest.mark.asyncio

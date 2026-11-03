@@ -322,11 +322,42 @@ class ContactMessagingConsentService:
                 .where(ContactMessagingConsent.contact_id == contact_id)
                 .where(ContactMessagingConsent.exact_chat_id == exact_chat_id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if row is None:
             raise RuntimeError("contact consent row could not be locked")
         return row
+
+    @staticmethod
+    def _consent_decision_for_row(
+        row: ContactMessagingConsent | None,
+        contact_id: int,
+        instant: datetime,
+    ) -> ConsentDecision:
+        if row is None:
+            return ConsentDecision(False, "contact consent is unknown", contact_id)
+        if row.status == "opted_out":
+            return ConsentDecision(False, "contact has opted out", contact_id, int(row.id))
+        if row.status == "revoked":
+            return ConsentDecision(False, "contact consent has been revoked", contact_id, int(row.id))
+        if row.status != "consented":
+            return ConsentDecision(False, "contact consent is unknown", contact_id, int(row.id))
+        if (
+            row.provenance not in {"owner_attested", "owner_reconsent"}
+            or not row.evidence_ref
+            or row.granted_at is None
+            or row.expires_at is None
+        ):
+            return ConsentDecision(
+                False,
+                "contact consent lacks required provenance or expiry",
+                contact_id,
+                int(row.id),
+            )
+        if row.expires_at <= instant:
+            return ConsentDecision(False, "contact consent has expired", contact_id, int(row.id))
+        return ConsentDecision(True, "exact contact/chat consent is current", contact_id, int(row.id))
 
     async def _resolve_contact_id(self, message) -> int | None:
         metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
@@ -376,7 +407,7 @@ class ContactMessagingConsentService:
         *,
         now: datetime | None = None,
     ) -> ConsentDecision:
-        instant = now or utcnow()
+        creation_instant = now or utcnow()
         exact_chat_id = str(getattr(message, "chat_id", "") or "")
         if not self._is_direct_chat(exact_chat_id):
             return ConsentDecision(False, "recipient is not an exact direct-message chat")
@@ -418,23 +449,35 @@ class ContactMessagingConsentService:
         if await self._has_terminal_opt_out_for_contact(contact_id, aliases):
             return ConsentDecision(False, "contact has opted out", contact_id)
 
-        row = await self._lock_or_create(contact_id, exact_chat_id, instant)
-        if row.status == "opted_out":
-            return ConsentDecision(False, "contact has opted out", contact_id, int(row.id))
-        if row.status == "revoked":
-            return ConsentDecision(False, "contact consent has been revoked", contact_id, int(row.id))
-        if row.status != "consented":
-            return ConsentDecision(False, "contact consent is unknown", contact_id, int(row.id))
-        if (
-            row.provenance not in {"owner_attested", "owner_reconsent"}
-            or not row.evidence_ref
-            or row.granted_at is None
-            or row.expires_at is None
-        ):
-            return ConsentDecision(False, "contact consent lacks required provenance or expiry", contact_id, int(row.id))
-        if row.expires_at <= instant:
-            return ConsentDecision(False, "contact consent has expired", contact_id, int(row.id))
-        return ConsentDecision(True, "exact contact/chat consent is current", contact_id, int(row.id))
+        row = await self._lock_or_create(contact_id, exact_chat_id, creation_instant)
+        # The mapping, Contact, and consent locks are now held. Evaluate expiry only
+        # after those potentially blocking reads, never against the pre-lock timestamp.
+        return self._consent_decision_for_row(row, contact_id, utcnow())
+
+    async def revalidate_locked_outbound_queue_message_consent(
+        self,
+        contact_id: int | None,
+        exact_chat_id: str,
+    ) -> ConsentDecision:
+        """Recheck a locked consent row at the final pre-transport boundary.
+
+        The worker calls this only after it has acquired the exact-chat mapping,
+        Contact/consent, safety-reservation, and pending-STOP boundary locks. The
+        row is refreshed under FOR UPDATE and the clock is read after that query,
+        so a consent TTL that elapsed while any later fence waited cannot authorize
+        the subsequent WAHA attempt.
+        """
+        if not isinstance(contact_id, int) or contact_id <= 0 or not self._is_direct_chat(exact_chat_id):
+            return ConsentDecision(False, "exact contact/chat consent identity is invalid")
+        result = await self.session.execute(
+            select(ContactMessagingConsent)
+            .where(ContactMessagingConsent.contact_id == contact_id)
+            .where(ContactMessagingConsent.exact_chat_id == exact_chat_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        row = result.scalar_one_or_none()
+        return self._consent_decision_for_row(row, contact_id, utcnow())
 
     async def _resolve_owner_chat(self, exact_chat_id: str) -> Contact:
         if not self._is_direct_chat(exact_chat_id):

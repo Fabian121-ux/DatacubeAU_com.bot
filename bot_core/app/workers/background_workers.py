@@ -219,7 +219,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             if not _is_owner_chat_id(message.chat_id):
                 consent = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
                     message,
-                    now=utcnow(),
                 )
                 if not consent.allowed:
                     await _mark_delivery_blocked(
@@ -275,6 +274,24 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                         session,
                         message,
                         reason="pending inbound opt-out intent; external delivery denied",
+                    )
+                    await session.commit()
+                    continue
+
+                # Consent may expire while the worker waits for the final safety and
+                # STOP-boundary locks. Refresh it and read the clock after those locks,
+                # immediately before the single transport attempt.
+                final_consent = await ContactMessagingConsentService(
+                    session
+                ).revalidate_locked_outbound_queue_message_consent(
+                    consent.contact_id,
+                    message.chat_id,
+                )
+                if not final_consent.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final contact consent denied: {final_consent.reason}",
                     )
                     await session.commit()
                     continue
