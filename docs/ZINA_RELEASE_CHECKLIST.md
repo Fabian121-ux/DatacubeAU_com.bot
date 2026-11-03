@@ -1,3 +1,16 @@
+## Fresh release-gate delta — 2026-11-03 22:17 WAT
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; exact-main Tests [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) is historical (2026-09-08). Main reports `protected=false`.
+- Latest overall Tests run [41721001922](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41721001922) is **in progress** on #60 head `fb9693014579283566358f30d80fcc2cc5581795`; no result is claimed.
+- #55 exact-head run [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) passed **816 tests / 1 warning / 76.01% coverage**; migrations 001–033, ORM schema audit, and DB-leakage audit passed. This is not integrated 001–040 proof.
+- #60 now checks active exact-chat quiet hours before exact one-use OWNER approval. The new regression run is pending; ScheduledAction quiet-hours, alias-wide limits, final authority expiry, media duplicate identity, and STOP linearization remain open.
+- Branch-local migration allocation is #48=034, #50=035, #49=036–037, #60=038–040. No integrated fresh 001–040 / installed 033→040 / checksum-no-op / schema / leakage / runtime-role proof exists.
+- #60/#62 deployment controls are not cumulative; #62 still injects broad `.env.production` into Postgres/API/WAHA/migrate. Keep both draft/open.
+- Review state: no open PR has an APPROVED review; #60 has 10 active / 7 outdated unresolved threads, #62 4 / 3, #50 3 active, #49 1 active.
+- **NOT TEST READY. Stage A not authorized.** Private-media retention OFF. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh engineering delta — 2026-11-03 21:34 WAT
 
 - **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest exact-main Tests run [34219252390 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) from 2026-09-08; branch currently reports `protected=false`.
