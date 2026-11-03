@@ -1,3 +1,20 @@
+## Fresh engineering delta — 2026-11-03 08:24 WAT
+
+This delta supersedes only the PR #60 CI-diagnostic state in the 07:20 WAT snapshot below. Re-fetched `main`, all ten open PR heads, exact-head Tests associations, workflow YAML, migration allocation, and the PR #60 Actions job log before making the following change.
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; no new main commit was returned.
+- PRs #48/#49/#50/#55/#57/#59/#61/#62/#63 remain at the heads recorded in the 07:20 snapshot. PR #60 now points to `1f1c85a3a56924d098085a54f9cd90a5d26a2be2`, a diagnostic-only workflow commit on its existing branch.
+- The PR #60 workflow now runs `pytest -vv -x --tb=long -o faulthandler_timeout=30`. `-x --tb=long` should print the first failing assertion before pytest starts a later async fixture; the shorter faulthandler interval gives a quicker trace if a test itself hangs.
+- The commit message contains `[skip ci]` deliberately, so no Actions run was triggered. This is **not tested**. The latest run remains [41400297589](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41400297589), cancelled on parent head `bcc34cdcd012e2735d5f51d899ff7a2274c018f9`; its runtime-role integration test was marked FAILED at 86%, but the artifact contains no assertion traceback, final suite count, or coverage result.
+- No application source, migration, deployment configuration, database, or WAHA path changed in this diagnostic commit. The contact-consent P0 review findings and #48/#60 worker integration blocker remain open.
+- Migration allocation is unchanged: main 001–033; #48 034; #50 035; #49 036–037; #60 038–040. No exact candidate has proven fresh 001–040, installed 033→040 upgrade, second-run checksum/no-op behavior, schema audit, and zero DB leakage together.
+
+**Next step:** after Actions capacity is confirmed, run the isolated `test_runtime_role_cannot_mutate_or_disable_consent_history` first on the disposable CI PostgreSQL database; capture its traceback, fix the actual assertion/cleanup defect, then run the full suite and integrated migration/leakage matrix. Keep #60 draft/open and do not merge it or #62 independently.
+
+**NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh live verification delta — 2026-11-03 07:20 WAT
 
 This delta supersedes only the cross-branch integration detail below; the 06:23 snapshot remains the source for the full PR inventory. Rechecked exact current PR heads, exact-head Tests associations, open review threads, main workflow YAML, deployment Compose files, migration tree, and the latest cancelled PR #60 job log. The PR #59 pre-update head was `106963b3165e2b6b61f72bc5c889f494d5bc91c5`. This is a documentation-only commit marked `[skip ci]`; no new Actions run, test, migration, schema audit, or DB-leakage audit is claimed.
