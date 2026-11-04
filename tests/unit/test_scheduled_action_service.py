@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.scheduled_action import ScheduledAction
 from app.models.schema import AuditLog, Contact, OutboundMessage
 from app.services.scheduled_action_service import ScheduledActionService
 from app.utils.time import utcnow
+
+
+@asynccontextmanager
+async def _independent_sessions():
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_pre_ping=True)
+    try:
+        yield async_sessionmaker(bind=engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -144,21 +159,21 @@ async def test_owner_cancel_lock_wins_over_scheduler_release(db_session):
     )
     await db_session.commit()
 
-    sessions = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
-    async with sessions() as owner_session, sessions() as scheduler_session:
-        cancelled = await ScheduledActionService(owner_session).cancel(item["id"])
-        assert cancelled["status"] == "cancelled"
+    async with _independent_sessions() as sessions:
+        async with sessions() as owner_session, sessions() as scheduler_session:
+            cancelled = await ScheduledActionService(owner_session).cancel(item["id"])
+            assert cancelled["status"] == "cancelled"
 
-        # release_due uses SKIP LOCKED: while the OWNER mutation owns the row,
-        # the scheduler must not create an outbound row from the stale scheduled state.
-        assert await ScheduledActionService(scheduler_session).release_due() == 0
-        await scheduler_session.commit()
-        await owner_session.commit()
+            # release_due uses SKIP LOCKED: while the OWNER mutation owns the row,
+            # the scheduler must not create an outbound row from the stale scheduled state.
+            assert await ScheduledActionService(scheduler_session).release_due() == 0
+            await scheduler_session.commit()
+            await owner_session.commit()
 
-    async with sessions() as verify_session:
-        current = await verify_session.get(ScheduledAction, item["id"])
-        assert current.status == "cancelled"
-        assert current.outbound_queue_id is None
+        async with sessions() as verify_session:
+            current = await verify_session.get(ScheduledAction, item["id"])
+            assert current.status == "cancelled"
+            assert current.outbound_queue_id is None
 
 
 @pytest.mark.asyncio
@@ -175,30 +190,30 @@ async def test_scheduler_release_lock_wins_and_owner_cannot_overwrite_queued_sta
     )
     await db_session.commit()
 
-    sessions = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
-    async with sessions() as scheduler_session, sessions() as owner_session:
-        owner_service = ScheduledActionService(owner_session)
-        # Deliberately cache the pre-release state. The locked mutation loader must
-        # refresh this identity-map object after it waits for the scheduler transaction.
-        stale = await owner_service.get(item["id"])
-        assert stale.status == "scheduled"
+    async with _independent_sessions() as sessions:
+        async with sessions() as scheduler_session, sessions() as owner_session:
+            owner_service = ScheduledActionService(owner_session)
+            # Deliberately cache the pre-release state. The locked mutation loader must
+            # refresh this identity-map object after it waits for the scheduler transaction.
+            stale = await owner_service.get(item["id"])
+            assert stale.status == "scheduled"
 
-        assert await ScheduledActionService(scheduler_session).release_due() == 1
-        cancel_task = asyncio.create_task(owner_service.cancel(item["id"]))
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(cancel_task), timeout=0.05)
+            assert await ScheduledActionService(scheduler_session).release_due() == 1
+            cancel_task = asyncio.create_task(owner_service.cancel(item["id"]))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(cancel_task), timeout=0.1)
 
-        await scheduler_session.commit()
-        with pytest.raises(ValueError, match="cannot cancel action in status queued"):
-            await cancel_task
-        await owner_session.rollback()
+            await scheduler_session.commit()
+            with pytest.raises(ValueError, match="cannot cancel action in status queued"):
+                await cancel_task
+            await owner_session.rollback()
 
-    async with sessions() as verify_session:
-        current = await verify_session.get(ScheduledAction, item["id"])
-        assert current.status == "queued"
-        assert current.outbound_queue_id is not None
-        outbound = await verify_session.get(OutboundMessage, current.outbound_queue_id)
-        assert outbound.status == "pending"
+        async with sessions() as verify_session:
+            current = await verify_session.get(ScheduledAction, item["id"])
+            assert current.status == "queued"
+            assert current.outbound_queue_id is not None
+            outbound = await verify_session.get(OutboundMessage, current.outbound_queue_id)
+            assert outbound.status == "pending"
 
 
 async def _released_action_and_outbound(db_session, *, suffix: str):
