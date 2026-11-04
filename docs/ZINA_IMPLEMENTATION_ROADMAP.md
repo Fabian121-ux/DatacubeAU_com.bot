@@ -1,6 +1,6 @@
 ## Fresh engineering verification overlay — 2026-11-04 16:21 UTC
 
-This overlay supersedes the 14:19 UTC snapshot below. It is a source-state record, not merge or release authorization.
+This overlay supersedes the 14:23 UTC snapshot below. It is a source-state record, not merge or release authorization.
 
 ### Main, CI, and governance
 
