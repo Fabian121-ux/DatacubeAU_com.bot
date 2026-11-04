@@ -32,7 +32,7 @@ This overlay supersedes the 2026-11-04 06:23 WAT snapshot below. It is not relea
 
 ### Release decision
 
-<badge>NOT TEST READY</badge> Stage A is not authorized. Do not connect/reconnect production WAHA, send real messages, mutate production DB, activate private-media retention, or perform destructive cleanup. Controlled sequence remains owner self-DM text → commands → media/view-once → one explicitly approved external contact, but execution requires a later explicit authorization after all gates pass.
+**NOT TEST READY.** Stage A is not authorized. Do not connect/reconnect production WAHA, send real messages, mutate production DB, activate private-media retention, or perform destructive cleanup. Controlled sequence remains owner self-DM text → commands → media/view-once → one explicitly approved external contact, but execution requires a later explicit authorization after all gates pass.
 
 **REAL WAHA ACTIONS: NONE.**
 
