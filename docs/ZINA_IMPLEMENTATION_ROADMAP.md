@@ -1,3 +1,8 @@
+## Governance correction — 2026-11-04
+
+Fresh follow-up to the 18:24 UTC overlay: the live `GET /branches/main` response reports `protected=false`, and the repository rulesets listing is empty. The separate classic branch-protection endpoint returns 403 through the current connection, but the branch object itself reports main as **not protected**. Treat this as an actual governance risk: do not merge or push implementation to main; require independent human review and explicit authorization regardless of the repository setting.
+
+---
 ## Fresh engineering verification overlay — 2026-11-04 18:24 UTC
 
 This supersedes the 16:21 UTC snapshot below. It is source-state evidence, not merge or release authorization.
