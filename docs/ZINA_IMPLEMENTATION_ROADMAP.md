@@ -1,3 +1,62 @@
+## Fresh engineering verification — 2026-11-05 00:23 WAT (2026-11-04 23:23 UTC)
+
+This supersedes the 22:15 WAT snapshot below. It records fresh GitHub state and one additional deployment-isolation review finding. It is not a code fix, approval, merge, or release authorization.
+
+### Main, workflow, and current repository state
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC); the fresh branch and commit queries found no later main commit. Main still contains migrations **001–033** only.
+- Main's `.github/workflows/tests.yml` still applies the lexical `bot_core/migrations/*.sql` glob and runs pytest with a 57% coverage floor. The migration-sequence preflight from #61 and schema/DB-leakage audit from #55 are not on main.
+- The live `main` branch object reports `protected=false`. Do not push or merge implementation to main; independent human review and explicit authorization remain mandatory.
+- The latest overall Tests run is [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978), successful on exact PR #60 head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`: **955 passed, 1 warning, 76.53% coverage**. Its disposable PostgreSQL step applied 001–033 and 038–040 only. It did not apply 034–037, validate integrated 001–040, prove installed 033→040 upgrade/second-run checksum no-op, or run the integrated schema/leakage audits.
+- The latest docs PR #59 head is `a3eeb67fbe6f11bca7959d3e2fd8b5b0046d57d5`; no Tests run is associated with that exact head. Parent run [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) passed 797 tests at 76.01% on its parent SHA and applied 001–033 only.
+
+### Open PR inventory — exact heads and current unresolved inline-thread counts
+
+| PR | Exact head | Unresolved threads | Latest exact-head Tests evidence |
+|---|---|---:|---|
+| [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 total | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 total | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success |
+| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 3 / 11 total | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success |
+| [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 total (outdated) | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 total (outdated) | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success |
+| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `a3eeb67fbe6f11bca7959d3e2fd8b5b0046d57d5` | 3 / 3 total | No exact-head run; docs commits use `[skip ci]` |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9a1865cad05114770fe4c8ffeae3b12eed8b34ca` | 19 / 19 total (10 current-diff, 9 outdated) | Exact-head [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) success |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success |
+| [#62 deployment/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 7 / 7 total (4 current-diff, 3 outdated) | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1 total (outdated) | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success |
+
+### P0 — exact approval can be replayed after an ambiguous send
+
+- Rechecked source on #60's exact head. The worker calls `consume_approval()` only in the WAHA-success branch. An ambiguous `WahaClientError` instead marks the queue row deferred/uncertain while leaving its approval `approved`.
+- `OwnerOutboundApprovalService.requeue()` accepts an approved approval when its queue row is deferred/failed. OWNER requeue can therefore make a message eligible for a second WAHA attempt even though the first attempt may already have been accepted.
+- Source-grounded finding: [PR #60 review discussion](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4472932656).
+- Required: establish one deadlock-free queue→approval lock order for worker and OWNER mutations; reserve/consume the exact approval after every final fence and before transport using exact queue ID, inbound ID, recipient, payload digest, and database-side `expires_at > clock_timestamp()`; keep it consumed on success, ambiguous failure, and interrupted-send recovery; make requeue reject durable uncertain-delivery evidence. Add a PostgreSQL/mock-WAHA regression proving ambiguous send → consumed approval → denied requeue → zero second transport calls.
+- The #60 ScheduledAction worker-side `FOR UPDATE` improvement is present on the exact head and its two-session regression passed in 41846567978. It does not close approval replay/expiry or policy-expiry.
+- Contact-policy authority still needs revalidation by original policy ID after all blocking locks using `clock_timestamp()`; an expired/missing/disabled authority policy must deny, not become an allowed absence of a quiet-hours restriction. Exact approval reservation must likewise happen at the final boundary.
+- OWNER decision still required on STOP linearization: a STOP committed before durable dispatch reservation blocks; after reservation it blocks later sends but cannot reliably retract the one network attempt already reserved/entering transport.
+- Integrate #48's exact view-once source lock and success-only return audit with the same final worker. Private-media byte retention remains OFF.
+
+### Deployment / migration integration
+
+- Branch-local migration allocation is sequential: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. The historical 034 collision is resolved by allocation only; main still ends at 033 and no integrated 001–040 candidate has passed fresh/upgrade/no-op/checksum/schema/leakage validation.
+- #60's Compose candidate uses service-specific allowlists: Postgres receives bootstrap DB variables, API receives the restricted runtime DB URL, WAHA receives transport-only settings, and migrate receives owner/runtime-role bootstrap settings.
+- #62's migration runner/workflow carries local-seed, target/libpq, migration-sequence, schema-audit, and DB-leakage checks, but its exact-head Compose still mounts the entire `.env.production` into Postgres, API, WAHA, and migrate. Thus neither deployment candidate subsumes the other.
+- New source-grounded P1 review comment filed on #62: the Postgres service itself still receives all of `.env.production`, although it needs only `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. The finding requests a three-variable allowlist plus a rendered-Compose regression proving no `DATABASE_URL*`, runtime-role, WAHA, admin, or provider secrets enter the database container: [PR #62 comment](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62#issuecomment-6645003499).
+- Consolidate #60 and #62 before either merge: preserve all #62 preflights before any DDL/psql call, provision the restricted runtime role after migrations, and keep owner credentials only in migrate, runtime credentials only in API, WAHA settings only in WAHA, and bootstrap variables only in Postgres. Prove fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, schema audit, zero leakage, and runtime-role privilege/ownership/membership tests on disposable PostgreSQL.
+
+### Identity Registry and Message Library
+
+- #50 still has three unresolved threads. The shared introduction currently asserts project/Datacube AU facts while its lifecycle guard checks only assistant/owner identity; recommended scope is an identity-only introduction, with project facts answered through Identity Registry. Legacy rows whose provenance cannot be proven should remain `legacy_unknown`; `updated_at = created_at` cannot recover rows touched by pre-upgrade reads. The human decision is whether unknown legacy provenance is acceptable or OWNER attestation is required.
+- #49 has one unresolved thread about permanent set-key retirement after hard deletion. It remains a content-library foundation only: no live producer/selection/dashboard integration until P0 and migration reconciliation pass, and it never grants send authority.
+
+### Verification limits and release decision
+
+- This execution environment has `pytest` and GitHub access but no local `psql` or Docker executable. No local pytest, PostgreSQL migration, schema audit, or DB-leakage run was performed.
+- No Actions run was triggered by this documentation update. Existing run links above are fetched GitHub evidence, not tests executed by this run.
+- **NOT TEST READY.** No controlled-test stage is authorized. No production DB mutation, WAHA reconnection, real WhatsApp send, private-media retention activation, destructive cleanup, approval, or merge occurred. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh P0 safety verification — 2026-11-04 22:15 WAT
 
 This supersedes the 18:24 UTC verification overlay below. It records a newly confirmed replay path on the unchanged exact PR #60 head; it is not a code fix, approval, or release authorization.
