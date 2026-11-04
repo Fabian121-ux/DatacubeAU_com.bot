@@ -1,4 +1,4 @@
-## Fresh engineering verification overlay — 2026-11-04 14:23 UTC
+## Fresh engineering verification overlay — 2026-11-04 16:21 UTC
 
 This overlay supersedes the 14:19 UTC snapshot below. It is a source-state record, not merge or release authorization.
 
@@ -39,6 +39,12 @@ Counts below are unresolved inline threads, with active/outdated split; the fina
 2. **Exact one-use OWNER approval is not reserved at the final fence.** Current approval consumption occurs after WAHA success. Make reservation/consumption atomic after consent, safety, STOP, and delivery-window waits, binding exact queue/inbound/recipient/content and DB-side expiry. First reconcile the lock-order inversion: worker owns queue→approval, while OWNER approval mutation currently locks approval→queue. Do not add an approval row lock in the worker until one deadlock-free order is established. An uncertain WAHA outcome must stay terminal/quarantined and never replay.
 3. **STOP linearization requires OWNER acceptance.** A STOP committed before durable dispatch reservation must block. A STOP after reservation blocks later sends, but cannot reliably retract the one network attempt already reserved/entering transport. Repeated reads cannot close this network boundary; Fabian must accept this contract or require a redesigned reservation/transport state machine.
 4. **View-once worker integration remains cumulative.** #48's exact source lock and success-only return audit must be carried into the one delivery worker; a queue-created return must not mark the artifact returned before WAHA acceptance. Retention stays OFF.
+
+### Additional P1 source review — current approval-consumption lock cycle
+
+- After the 14:23 snapshot, a fresh exact-head review of #60 (`9a1865cad05114770fe4c8ffeae3b12eed8b34ca`) identified a lock-order hazard on the existing post-send success path. The worker holds `outbound_queue` through WAHA, then updates `outbound_approvals` in `consume_approval()`. OWNER approval mutations take the per-approval advisory lock and then `_load_exact(lock=True)` locks both approval and queue (`FOR UPDATE OF a, q`). An overlapping OWNER edit/reject can therefore hold approval while waiting for the worker's queue lock, while the worker waits to update approval after WAHA has accepted the message.
+- If PostgreSQL aborts the worker transaction after the external side effect, the already-accepted send can be left as a stale `sending` row and later quarantined as uncertain; the five-minute quarantine prevents replay, but approval consumption/sent audit are not durably reconciled.
+- Actionable review note posted on #60: [P1 approval-consumption lock-cycle finding](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6635969882). Required next step: establish one lock order across worker and OWNER approval mutations, then add a two-session PostgreSQL/mock-WAHA regression that pauses after transport acceptance and races an OWNER edit/reject. No code or test was changed/run for this finding.
 
 ### Migration and deployment reconciliation
 
