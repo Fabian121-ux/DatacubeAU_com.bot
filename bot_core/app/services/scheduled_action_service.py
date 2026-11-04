@@ -94,8 +94,27 @@ class ScheduledActionService:
             raise ValueError("scheduled action not found")
         return row
 
+    async def _get_for_update(self, action_id: int) -> ScheduledAction:
+        """Load the current action state under a row lock before an OWNER mutation.
+
+        populate_existing is essential when this AsyncSession already has a stale
+        ScheduledAction in its identity map: after waiting for the lock, the status
+        check must use the committed state written by the scheduler/worker.
+        """
+        row = (
+            await self.session.execute(
+                select(ScheduledAction)
+                .where(ScheduledAction.id == action_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if not row:
+            raise ValueError("scheduled action not found")
+        return row
+
     async def cancel(self, action_id: int) -> dict[str, Any]:
-        row = await self.get(action_id)
+        row = await self._get_for_update(action_id)
         if row.status not in ACTIVE_STATUSES:
             raise ValueError(f"cannot cancel action in status {row.status}")
         row.status = "cancelled"
@@ -107,7 +126,7 @@ class ScheduledActionService:
         return self.serialize(row)
 
     async def pause(self, action_id: int) -> dict[str, Any]:
-        row = await self.get(action_id)
+        row = await self._get_for_update(action_id)
         if row.status != "scheduled":
             raise ValueError(f"cannot pause action in status {row.status}")
         row.status = "paused"
@@ -117,7 +136,7 @@ class ScheduledActionService:
         return self.serialize(row)
 
     async def resume(self, action_id: int) -> dict[str, Any]:
-        row = await self.get(action_id)
+        row = await self._get_for_update(action_id)
         if row.status != "paused":
             raise ValueError(f"cannot resume action in status {row.status}")
         row.status = "scheduled"
@@ -130,7 +149,7 @@ class ScheduledActionService:
     async def reschedule(self, action_id: int, *, scheduled_for: datetime, timezone: str | None = None) -> dict[str, Any]:
         if scheduled_for.tzinfo is None or scheduled_for.utcoffset() is None:
             raise ValueError("scheduled_for must include a timezone offset")
-        row = await self.get(action_id)
+        row = await self._get_for_update(action_id)
         if row.status not in ACTIVE_STATUSES:
             raise ValueError(f"cannot reschedule action in status {row.status}")
         row.scheduled_for = scheduled_for
@@ -144,7 +163,7 @@ class ScheduledActionService:
         return self.serialize(row)
 
     async def run_now(self, action_id: int) -> dict[str, Any]:
-        row = await self.get(action_id)
+        row = await self._get_for_update(action_id)
         if row.status not in ACTIVE_STATUSES:
             raise ValueError(f"cannot run action in status {row.status}")
         row.scheduled_for = utcnow()
