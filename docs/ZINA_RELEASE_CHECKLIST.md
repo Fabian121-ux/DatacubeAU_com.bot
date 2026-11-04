@@ -1314,3 +1314,43 @@ This is the current release gate and supersedes earlier checklist snapshots.
 4. Choose a trustworthy provenance/backfill rule for legacy Identity Registry defaults; `updated_at = created_at` cannot reliably identify rows previously touched by old deployments.
 
 Controlled test readiness remains **NOT TEST READY**. Do not start OWNER self-DM or external-contact stages until the integrated migration, exact-head test, leakage, P0, deployment, and independent-review gates above are all satisfied. Private-media retention remains OFF. REAL WAHA ACTIONS: NONE.
+
+
+## Fresh exact-state release gate — 2026-11-04 07:28 WAT
+
+This is the current release decision, superseding older verification overlays. The full source evidence and per-PR inventory are in the matching 2026-11-04 07:28 WAT section of `docs/ZINA_IMPLEMENTATION_ROADMAP.md`.
+
+### Current state
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08. Main branch metadata currently reports `protected=false`.
+- Latest overall Tests run [41741201463](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41741201463) passed on exact #60 head `3496ff19b72609553ba51daebfdf0f0472298908`: **952 passed, 1 warning, 76.51% coverage**. It applies 001–033 plus 038–040 only. It does not validate 034–037, integrated 001–040, installed 033→040 upgrade, no-op/checksums, combined schema audit, or leakage.
+- Current open PR heads and exact-head run records were re-read on 2026-11-04; ten PRs remain open, with no APPROVED review. Current unresolved review counts are recorded in the matching roadmap overlay.
+- Branch-local migration allocation is ordered #48=034, #50=035, #49=036–037, #60=038–040. This is not integrated migration proof.
+
+### Blocking release gates
+
+- [ ] One candidate integrates #48/#50/#49/#60 in migration order and applies 001–040 cleanly from an empty PostgreSQL 16 database.
+- [ ] The same candidate upgrades a representative installed 033 database through 040, verifies second-run no-op/checksums, and passes schema audit.
+- [ ] The same candidate passes full pytest/coverage and the adversarial P0 matrix.
+- [ ] The same candidate passes post-test zero-leakage audit, including Contact and raw tables.
+- [ ] #48 and #60 worker changes are reconciled without losing exact view-once source locking/success-only return audit or the contact-consent/STOP/quiet-hours final fence.
+- [ ] #60 revalidates the original exact approval/contact-policy authority after all final locks and immediately before transport; one-use reservation is atomic and uncertainty is quarantined without retry.
+- [ ] #60 serializes ScheduledAction cancel/pause/reschedule/resume/run-now against the worker's final action-row reservation using a documented queue→action lock order and two-session mock-WAHA tests.
+- [ ] OWNER explicitly accepts or revises the STOP reservation boundary; terminal opt-out/re-consent semantics are documented and tested.
+- [ ] #60 and #62 are consolidated: migration-owner URL only in migrate; restricted runtime URL only in API; WAHA gets only WAHA variables; Postgres gets only bootstrap variables; target validation, seed opt-in, and migration-sequence preflights run before first DDL/psql.
+- [ ] #55 schema/leakage gate and #61 contiguous migration validator run on the integrated candidate.
+- [ ] Blocking review threads are independently resolved; no author self-approval or autonomous merge.
+- [ ] Main required independent-review/CI governance is enabled and verified before merge.
+- [ ] Identity Registry introduction and legacy-default provenance decisions in #50 are resolved independently.
+- [ ] #49 permanent set-key retirement finding is independently verified; message library remains unintegrated into live producers and cannot grant send authority.
+
+### OWNER decisions still required
+
+1. Accept the STOP linearization contract: a STOP after the durable final dispatch reservation cannot recall that one already-reserved attempt, but it blocks subsequent sends and uncertain attempts are never replayed; otherwise require a redesigned atomic reservation protocol.
+2. Confirm that terminal opt-out is Contact-wide across all current mapped WhatsApp aliases and cannot be overridden by a routine grant.
+3. Decide whether generic introductions may mention project/Datacube AU facts when the corresponding Identity Registry entries are disabled/deleted; if not, use a neutral generic introduction.
+4. Choose a reliable, auditable provenance/backfill primitive for legacy defaults; `updated_at = created_at` is not a valid historical seed detector.
+
+Controlled testing remains **NOT TEST READY**. Do not start owner self-DM or external-contact stages until every integrated mechanical, P0, deployment, and independent-review gate above passes. Private-media retention remains OFF. **REAL WAHA ACTIONS: NONE.**
+
+Environment note for this verification: no local `psql` or Docker executable was available, so no local PostgreSQL-backed test or migration run was performed. This docs-only update did not trigger Actions.
