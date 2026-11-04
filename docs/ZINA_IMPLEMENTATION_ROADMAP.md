@@ -1,3 +1,60 @@
+## Fresh engineering verification overlay — 2026-11-04 18:24 UTC
+
+This supersedes the 16:21 UTC snapshot below. It is source-state evidence, not merge or release authorization.
+
+### Main, CI, workflow, and governance
+
+- `main` is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC). The exact-main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08; treat it as historical, not current release evidence.
+- Main contains SQL migrations **001–033 only**. Its `.github/workflows/tests.yml` still lexically applies `bot_core/migrations/*.sql` and runs pytest with a 57% coverage floor; PR #61's contiguous-sequence preflight and PR #55's post-test schema/DB-leakage audit are not on main.
+- Main `docker-compose.yml` still mounts `.env.production` wholesale into API, WAHA, and migration services. PR #60 has a restricted runtime DB role and service-specific environment allowlists; PR #62 has target/seed/libpq/sequence preflights but still has broad env-file injection. These are separate branches and must be reconciled in one cumulative deployment candidate.
+- Rulesets returned empty and the branch-protection endpoint returned 403 in the prior verification; current protection state remains **unverified**. Do not infer it from the old baseline.
+- All ten open PRs were re-fetched. Review submissions remain `COMMENTED` (or absent); **no open PR has an APPROVED review submission**. Green CI and author comments are not independent approval.
+
+### Open PRs — exact current heads and review-thread state
+
+Counts are unresolved inline threads, shown as active / outdated (total historical threads).
+
+| PR | Exact head | Unresolved | Latest exact-head Tests evidence |
+|---|---|---:|---|
+| [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 0 (15) | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 0 (80) | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success |
+| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 3 / 0 (11) | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success |
+| [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 0 / 1 (1) | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 0 / 1 (1) | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success |
+| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `8b14340c98c658f7175fbe58135c645cf4ebbaef` before this docs-only update | 1 / 2 (3) | No run for this exact head; parent [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) succeeded |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9a1865cad05114770fe4c8ffeae3b12eed8b34ca` | 10 / 9 (19) | Exact-head [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) success |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 (0) | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success |
+| [#62 deployment/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 4 / 3 (7) | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | 0 / 1 (1) | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success |
+
+- PR #60 exact-head run [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) completed 2026-11-04 14:23 UTC: **955 passed, 1 warning, 76.53% coverage**. Its disposable DB applied 001–033 and 038–040 only. It did not apply 034–037, prove integrated 001–040, exercise installed 033→040 upgrade/second-run checksum no-op, or run the integrated ORM schema and DB-leakage audits.
+- PR #59's latest exact-head commit is documentation-only and has no associated run. Parent run [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) passed 797 tests at 76.01%, applying 001–033 only. This overlay is also documentation-only and marked `[skip ci]`; it does not claim tests.
+
+### P0 outbound/ingress findings — release gate remains blocked
+
+- **Verified improvement on #60:** commit [9a1865c](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/9a1865cad05114770fe4c8ffeae3b12eed8b34ca) adds `FOR UPDATE` + `populate_existing=True` to the exact ScheduledAction binding read after the outbound-queue lock. The action lock is held through the single transport attempt and durable outcome commit; OWNER mutations retain queue → action ordering. The exact-head two-session PostgreSQL/mock-WAHA regression passed in run 41846567978.
+- **Newly re-confirmed P0 — contact-policy expiry can become permission.** On exact #60 head `9a1865c`, `authorize()` selects a policy using a timestamp captured before the policy-row lock wait. Later, after consent/safety/STOP fences, `check_contact_delivery_window()` filters expired policies out and treats no row as an allowed absence of a quiet-hours restriction. If the original authority was that contact policy, expiry can therefore be reinterpreted as permission. The exact-head source finding was filed at [review comment](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4470922938) at 17:26 UTC. Preserve the original authority type and policy ID; revalidate enabled/disabled/expiry/category with PostgreSQL `clock_timestamp()` after all blocking locks; if the policy supplied authority and is now missing, disabled, or expired, deny. Add a two-session expiry-during-final-fence regression with zero mock-WAHA calls.
+- **P0 — exact one-use OWNER approval is not reserved at the final boundary.** Current consumption follows WAHA success. An approval may expire or be revoked while later consent/safety/STOP/window locks wait. Reserve/revalidate the exact approval after those fences, binding queue ID, inbound ID, recipient, payload digest, and DB-side expiry. First establish a deadlock-free global order: the worker holds queue → approval, while OWNER approval mutations currently lock approval → queue. Do not merely add `FOR UPDATE` to the worker approval read.
+- **P1 — post-acceptance approval lock cycle:** the worker keeps the queue lock through WAHA and then updates the approval, while OWNER approval mutation takes approval before queue. A concurrent edit/reject can deadlock after WAHA accepts, leaving a stale `sending` row and losing the durable sent/approval reconciliation. The source-grounded finding is [here](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6635969882). Require one lock order and a two-session mock-WAHA regression that blocks at post-acceptance reconciliation.
+- **OWNER decision — STOP linearization:** a STOP receipt committed before the final dispatch-reservation boundary must block. A STOP committed after reservation blocks later sends but cannot reliably retract the one network attempt already reserved/entering transport. This is an explicit in-flight-attempt contract, not a race removable by another read. Fabian must accept this boundary or require a redesigned reservation/state machine before controlled testing.
+- Consent expiry and the ScheduledAction row-lock improvements have exact-head regression evidence in run 41846567978. This does not clear the policy-expiry or approval-reservation findings, nor the STOP decision.
+- Integrate PR #48's exact view-once source lock and success-only return audit into the same final worker before considering the cumulative P0 path complete. PR #48 remains metadata-only; private-media byte retention stays OFF.
+
+### Migration, deployment, and product integration
+
+- Branch-local migration allocation is now sequential: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. The historical 034 collision is resolved by allocation, but main still ends at 033 and no integrated candidate has proven the full chain.
+- Required disposable PostgreSQL proof: fresh 001–040; installed 033→040 upgrade with representative existing rows; second-run checksum/no-op; combined ORM schema audit; zero DB leakage; and runtime-role privilege/ownership/membership verification. No production DB mutation is authorized.
+- #60's runtime-role and per-service environment boundary is not yet combined with #62's pre-DDL database-target, local-seed, libpq, and sequence preflights. #62's current Compose still injects broad `.env.production` into API/WAHA/migrate. Build one cumulative deployment candidate; do not merge either branch independently and assume composition.
+- #50 still has three active unresolved threads. Recommended architecture: keep the generic introduction identity-only rather than claiming project/Datacube AU facts unless every such fact is registry-governed; treat uncertain pre-upgrade defaults as `legacy_unknown` unless immutable evidence or explicit OWNER attestation proves provenance. Do not infer historical provenance from `updated_at = created_at`.
+- #49 remains a content-library foundation only: no live producer/selection/dashboard integration until P0 and migration reconciliation pass. The library defines what may be said, never whether a send is authorized.
+
+### Release decision
+
+**NOT TEST READY.** No controlled-test stage is authorized. Do not connect/reconnect production WAHA, send real WhatsApp messages, mutate production DB, activate private-media retention, or perform destructive cleanup. The future controlled sequence remains OWNER self-DM text → commands → media/view-once → one explicitly approved external contact, only after every release gate and explicit authorization pass.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
 ## Fresh engineering verification overlay — 2026-11-04 16:21 UTC
 
 This overlay supersedes the 14:23 UTC snapshot below. It is a source-state record, not merge or release authorization.
