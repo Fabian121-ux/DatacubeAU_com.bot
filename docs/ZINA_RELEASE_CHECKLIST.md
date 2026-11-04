@@ -1,3 +1,23 @@
+## Fresh release-gate verification overlay — 2026-11-04 14:19 WAT
+
+This supersedes the 10:31 WAT overlay below. It is evidence only, not release authorization.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08). The main workflow still applies migrations 001–033 and runs pytest at the 57% floor; sequence preflight (#61) and DB-leakage audit (#55) are not on main.
+- Latest visible Tests run is [41741201463](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41741201463), green on PR #60 parent `3496ff1` (952 passed, 76.51%). It applies 001–033 + 038–040 only. Current #60 head `77f229c` has no exact-head run; no local tests/migrations were run for it.
+- Open PR heads/review threads were re-fetched: #48 `3acacbfe` (15 unresolved), #49 `bcd0033e` (80), #50 `0a2b38c0` (11), #55 `b5cb5ff` (1), #57 `d831ce4` (1), #59 `5749189c` (3 before this docs update), #60 `77f229c` (19 after the new inline review), #61 `8a1c1dbf` (0), #62 `a8d032de` (7), #63 `13fad868` (1). No independent APPROVED review is present.
+- Migration allocation is sequential but unintegrated: #48=034, #50=035, #49=036–037, #60=038–040. No fresh 001–040 / installed 033→040 / second-run no-op / combined schema and leakage proof exists.
+- Deployment integration is blocked: #60's runtime-role/service env boundary is not combined with #62's pre-DDL database-target, seed, libpq and sequence preflights; #62 still exposes broad `.env.production` to API/WAHA/migrate.
+- New exact-head #60 P0 review: policy expiry can be converted to permission because the final quiet-hours query treats an expired/missing policy as an allowed absence, even when that policy supplied authority. Revalidate the same policy authority and expiry with PostgreSQL `clock_timestamp()` after all locks; deny if expired. Inline review is filed on [PR #60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60).
+- Other #60 P0 blockers remain: exact approval one-use reservation and deadlock-free queue→approval lock order; worker-side ScheduledAction `FOR UPDATE` after queue lock; explicit OWNER STOP linearization decision; cumulative #48 view-once source lock + success-only return audit. Consent expiry, missing source ID, contact-wide STOP history and runtime role have parent-head test evidence, not current-head proof.
+- #50 still needs the identity-only introduction decision and a conservative legacy provenance rule; do not infer pre-upgrade provenance from `updated_at = created_at`.
+- Branch protection could not be rechecked through the current GitHub connection (403). No main write was attempted.
+
+**NOT TEST READY.** No controlled stage is authorized. Retention stays OFF. No production DB mutation, WAHA reconnection, real WhatsApp send, or destructive cleanup occurred.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release-gate verification overlay — 2026-11-04 10:31 WAT
 
 This overlay supersedes the 2026-11-04 06:23 WAT snapshot below. It is not release authorization.
