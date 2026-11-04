@@ -1,3 +1,60 @@
+## Fresh engineering verification overlay — 2026-11-04 14:19 WAT
+
+This source-state overlay supersedes the 10:31 WAT verification below. It is not release authorization.
+
+### Fresh repository and CI state
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; its merge commit is dated 2026-09-08 11:09:59 UTC. No newer main commit was returned by the repository commit listing.
+- The latest visible Tests run in the repository is [41741201463](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41741201463), successful on PR #60 parent `3496ff19b72609553ba51daebfdf0f0472298908`: 952 passed, 1 warning, 76.51% coverage. It applied 001–033 and 038–040 only; it did not apply 034–037 or run the integrated schema/leakage gates.
+- Current PR #60 head is `77f229c1a67e6049ea54e2a0803255c915ad3a15`. There is no Actions run associated with this exact head (the new commits use `[skip ci]`). The 952-pass result is parent-only evidence; no local tests or migrations were run for the current head.
+- Main's Tests workflow still applies the lexical migration glob and runs pytest at the 57% floor. PR #61's sequence preflight and PR #55's post-test leakage audit are not on main.
+- The branch-protection endpoint could not be rechecked through the current GitHub connection (403); no assumption about current protection is made and no main write was attempted.
+
+### Current open PRs — exact heads and unresolved inline-thread counts
+
+| PR | Exact head | Unresolved threads | State / significance |
+|---|---|---:|---|
+| [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 15 | Metadata observation/return only; no private-byte retention. |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 80 | Content-library foundation only; no live producer/selector/dashboard integration. |
+| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 11 | Introduction-copy scope and legacy provenance still require resolution. |
+| [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 | Exact-head run [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) succeeded; schema/leakage audit applies to 001–033. |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 | Open; one unresolved thread. |
+| [#59 roadmap/checklist refresh](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | updated by this documentation commit | 3 | Documentation-only; still requires independent review. |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `77f229c1a67e6049ea54e2a0803255c915ad3a15` | 19 | Draft/open; exact-head CI absent; P0 authority races remain. |
+| [#61 migration-sequence gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 | Exact-head run [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) succeeded on 001–033 only. |
+| [#62 deployment/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 7 | Draft/open; exact-head run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) succeeded on 001–033, but Compose still conflicts with #60's restricted-role boundary. |
+| [#63 conversation observability](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 | Exact-head run [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) succeeded; one unresolved thread. |
+
+No open PR has an independent APPROVED review submission. Passing CI and author comments are not approval.
+
+### Migration and deployment reconciliation
+
+Branch-local allocation is now sequential: #48=034, #50=035, #49=036–037, #60=038–040. The former 034 collision is resolved in branch allocation, but no cumulative candidate contains and validates 001–040. Main remains at 001–033.
+
+The deployment changes are still non-cumulative: #60 has a restricted non-owner API DB role and service-specific Compose environment allowlists, but lacks #62's pre-DDL target/seed/libpq/sequence preflights. #62 has those preflights but still injects broad `.env.production` into API/WAHA/migrate and does not provision #60's runtime role. Do not merge either branch first and assume the other composes safely.
+
+### P0 final-dispatch findings — NOT PASSED
+
+1. **New contact-policy expiry bypass, filed on exact #60 head.** `authorize()` captures its timestamp before the policy `FOR UPDATE` wait and selects a policy with `expires_at > :instant`. After the worker's later consent/safety/STOP waits, `check_contact_delivery_window()` excludes an expired policy and treats `row is None` as an allowed absence of quiet-hours policy. For a policy-authorized row, expiry can therefore become permission. An exact-head inline review was filed on [PR #60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60): preserve the authority source/policy ID and revalidate enabled/disabled/expiry/category predicates at the final boundary using PostgreSQL `clock_timestamp()`; expired policy authority must deny. Add a deterministic PostgreSQL/mock-WAHA regression with zero calls.
+2. **Exact one-use OWNER approval remains unreserved at the final boundary.** Reserve atomically after every blocking fence with exact queue/inbound/recipient/content binding and DB-side expiry. First make worker and OWNER mutation row-lock order consistent: worker already owns queue→approval, while OWNER mutation currently locks approval before updating queue. Do not add a worker approval `FOR UPDATE` without fixing this inversion. An uncertain WAHA result must leave the approval terminal and the queue quarantined; never replay.
+3. **ScheduledAction worker-side lock remains missing.** PR #60 now row-locks OWNER cancel/pause/resume/reschedule/run-now mutations, but `_is_exact_scheduled_action_binding()` still reads the action without `FOR UPDATE`. Add the worker's exact action lock after the queue lock, preserve queue→action ordering, and test cancel-wins (zero WAHA calls) and worker-reservation-wins with two independent PostgreSQL sessions.
+4. **STOP linearization needs OWNER decision.** A STOP committed before the final durable dispatch reservation must block. A STOP after reservation must block later attempts, but cannot reliably retract the already-reserved single network attempt. Fabian must explicitly accept this in-flight-attempt contract or require a redesigned reservation/transport state machine.
+5. Preserve #48's exact view-once source lock and success-only return audit when integrating the worker. Retention stays OFF.
+
+### Identity Registry and content-library decisions
+
+- #50's current `introduction_reply()` still says it helps with projects and Datacube AU while its lifecycle guard checks only Zina/Fabian. The review recommendation is to make the generic introduction identity-only and leave project claims to the Identity Registry.
+- Migration 035 still uses `updated_at = created_at` as historical provenance evidence. That cannot recover pre-upgrade rows already touched by old read-side timestamp updates. Safest bounded rule: leave ambiguous legacy rows as `legacy_unknown` (NULL provenance/type) unless immutable evidence or an explicit OWNER-attested action proves their origin; keep provenance stamping for new rows. Do not add another timestamp heuristic.
+- #49 remains a reusable-content domain, not send authority; do not integrate producer/selection until P0 and migration reconciliation are complete. #48 remains metadata-only; private-media retention remains OFF.
+
+### Release readiness
+
+**NOT TEST READY. Stage A is not authorized.** No integrated fresh 001–040 chain, installed 033→040 upgrade, second-run checksum/no-op, combined schema/leakage/runtime-role proof, exact-head full suite, independent review clearance, or controlled WhatsApp test is established.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh engineering verification overlay — 2026-11-04 10:31 WAT
 
 This overlay supersedes the 2026-11-04 06:23 WAT snapshot below. It is a source-state record, not a release approval.
