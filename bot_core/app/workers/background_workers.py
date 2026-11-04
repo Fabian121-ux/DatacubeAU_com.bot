@@ -478,6 +478,11 @@ async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, 
             .where(ScheduledAction.status == "queued")
             .where(ScheduledAction.is_enabled.is_(True))
             .limit(1)
+            # The caller already owns the outbound_queue row lock. Lock the exact
+            # action second and refresh any identity-map copy so OWNER state changes
+            # serialize with this final reservation through transport + outcome commit.
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if row is None:

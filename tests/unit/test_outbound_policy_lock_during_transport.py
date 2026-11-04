@@ -8,9 +8,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.schema import Contact, Message, OutboundMessage
+from app.models.scheduled_action import ScheduledAction
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_safety_limit_service import OutboundSafetyDecision, OutboundSafetyLimitService
+from app.services.scheduled_action_service import ScheduledActionService
 from app.services.owner_contact_automation_policy_service import OwnerContactAutomationPolicyService
 from app.utils.time import utcnow
 from app.workers import background_workers
@@ -488,3 +490,113 @@ async def test_owner_policy_insert_serializes_with_final_window_check_when_row_i
         assert final_decision.allowed is False
         assert final_decision.reason == "contact policy quiet hours active"
         await verify_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_worker_holds_scheduled_action_lock_through_single_transport_attempt(
+    db_session, test_contact, monkeypatch
+):
+    """An OWNER cancel must wait for the reserved scheduled send's durable outcome."""
+    now = utcnow()
+    exact_chat_id = "2348000000091@c.us"
+    body = "scheduled action lock remains held through one send"
+    test_contact.whatsapp_id = exact_chat_id
+    test_contact.chat_id = exact_chat_id
+
+    queue = OutboundMessage(
+        chat_id=exact_chat_id,
+        message_text=body,
+        formatting_json={},
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.flush()
+
+    action = ScheduledAction(
+        action_type="whatsapp.send_message",
+        target_contact_id=test_contact.id,
+        target_chat_id=exact_chat_id,
+        payload_json={"text": body},
+        timezone="UTC",
+        scheduled_for=now - timedelta(minutes=1),
+        status="queued",
+        is_enabled=True,
+        retry_count=0,
+        max_retries=3,
+        outbound_queue_id=queue.id,
+        idempotency_key="worker-reservation-holds-action-lock",
+        metadata_json={},
+        executed_at=now,
+        updated_at=now,
+    )
+    db_session.add(action)
+    await db_session.flush()
+    queue.formatting_json = {"scheduled_action_id": action.id}
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=exact_chat_id,
+        evidence_ref="owner-attested-scheduled-worker-lock",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    sessions = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    monkeypatch.setattr(background_workers, "SessionLocal", sessions)
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+
+    async def allow_safety(self, message, *, now=None, contact_id=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(
+        background_workers.OutboundSafetyLimitService,
+        "authorize",
+        allow_safety,
+    )
+
+    client = _BlockingWahaClient()
+    worker_task = asyncio.create_task(background_workers._deliver_due_outbound_messages(client))
+    owner_task = None
+    mutation_waited_for_worker = False
+    processed = 0
+
+    try:
+        await asyncio.wait_for(client.entered_send.wait(), timeout=5)
+
+        async with sessions() as owner_session:
+            owner_service = ScheduledActionService(owner_session)
+            # Cache the queued state before the worker commits its completed state.
+            cached = await owner_service.get(action.id)
+            assert cached.status == "queued"
+
+            owner_task = asyncio.create_task(owner_service.cancel(action.id))
+            await asyncio.sleep(0.05)
+            mutation_waited_for_worker = not owner_task.done()
+
+            # Release the only mock transport attempt. The worker must reconcile the
+            # action to completed and commit before the waiting OWNER mutation reads it.
+            client.release_send.set()
+            processed = await asyncio.wait_for(worker_task, timeout=5)
+            with pytest.raises(ValueError, match="cannot cancel action in status completed"):
+                await asyncio.wait_for(owner_task, timeout=5)
+            await owner_session.rollback()
+    finally:
+        client.release_send.set()
+        if not worker_task.done():
+            await asyncio.wait_for(worker_task, timeout=5)
+        if owner_task is not None and not owner_task.done():
+            await asyncio.wait_for(owner_task, timeout=5)
+
+    assert mutation_waited_for_worker, (
+        "OWNER mutation did not wait for the worker's final ScheduledAction reservation"
+    )
+    assert processed == 1
+    assert client.calls == [(exact_chat_id, body)]
+
+    await db_session.refresh(queue)
+    await db_session.refresh(action)
+    assert queue.status == "sent"
+    assert action.status == "completed"
+    assert action.is_enabled is False
