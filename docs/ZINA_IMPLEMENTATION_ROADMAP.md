@@ -1,3 +1,37 @@
+## Fresh P0 safety verification — 2026-11-04 22:15 WAT
+
+This supersedes the 18:24 UTC verification overlay below. It records a newly confirmed replay path on the unchanged exact PR #60 head; it is not a code fix, approval, or release authorization.
+
+### Exact state rechecked
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; main still contains migrations 001–033 only. The main Tests workflow still applies the lexical migration glob and enforces the 57% coverage floor; the sequence preflight (#61) and schema/DB-leakage audit (#55) are not on main.
+- PR #60 remains at exact head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`. Exact-head Tests run [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) succeeded on 2026-11-04: **955 passed, 1 warning, 76.53% coverage**. Its disposable database applied 001–033 and 038–040 only. It did not apply 034–037, validate integrated 001–040, prove installed 033→040 upgrade/second-run checksum no-op, or run the integrated schema and DB-leakage gates.
+- All ten open PR heads and review threads were re-queried. Unresolved threads (active / outdated): #48 0 (0/0), #49 1 (1/0), #50 3 (3/0), #55 1 (0/1), #57 1 (0/1), #59 3 (1/2), #60 19 (10/9), #61 0, #62 7 (4/3), #63 1 (0/1). No open PR has an APPROVED review submission.
+- Branch-local migration allocation remains sequential: #48=034, #50=035, #49=036–037, #60=038–040. The historical 034 collision is resolved by allocation only; main and the integrated 001–040 chain are not validated.
+- #60's restricted API runtime role/service-specific environment boundary and #62's migration-target/seed/libpq/sequence preflights remain separate, conflicting deployment candidates. They require one cumulative candidate; do not merge either independently.
+
+### Newly confirmed P0 — OWNER requeue can replay an uncertain send
+
+On exact #60 head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`, the worker consumes an exact approval only in the WAHA-success branch. An ambiguous `WahaClientError` instead marks the queue row `deferred` with an uncertain-delivery reason while leaving the approval `approved`. `OwnerOutboundApprovalService.requeue()` accepts an approved approval when the queue is `deferred` or `failed`, so the OWNER requeue command can move an uncertain row back to `pending` and authorize a second WAHA attempt. This is a concrete manual replay path, not merely an automatic retry concern.
+
+- Source-grounded review finding: [PR #60 discussion](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4472932656).
+- Required correction: first establish one deadlock-free queue→approval lock order across the worker and OWNER mutation service; do not add an approval row lock while OWNER mutations still take approval→queue.
+- After every final consent, safety, STOP, and delivery-window fence, atomically consume/reserve the same approval with a database-side `expires_at > clock_timestamp()` predicate and exact approval ID, queue ID, inbound ID, recipient, and content digest. Reservation failure must block before transport.
+- Keep the approval consumed on success, ambiguous transport failure, or interrupted-send recovery. Make `requeue()` explicitly reject durable uncertain-delivery evidence even if a stale approval is present.
+- Add a PostgreSQL/mock-WAHA regression: one ambiguous send leaves the approval consumed and queue quarantined; OWNER requeue is denied; a second worker pass performs zero additional mock-WAHA calls. Also retain pre-expiry exactly-once and expiry-during-final-lock-wait tests.
+
+### Other P0 gates still open
+
+- Contact-policy authority can expire while later final fences wait; the final quiet-hours lookup currently treats an expired/missing policy as absence of a restriction. Preserve and revalidate the original authority source/policy ID after all locks using a fresh database clock; an expired authority policy must deny.
+- Exact one-use approval expiry/revocation must be checked at the actual final reservation boundary, not only before consent/safety/STOP locks.
+- Fabian must explicitly accept or revise the STOP linearization contract: a STOP committed before durable dispatch reservation blocks; a STOP after reservation blocks later sends but cannot reliably retract the one network attempt already entering transport.
+- Reconcile #48's exact view-once source lock and success-only return audit with the same final worker. Private-media byte retention remains OFF.
+- The #60/#62 deployment changes and the full 001–040 migration chain still require one reviewed integration candidate and disposable PostgreSQL fresh/upgrade/no-op/schema/leakage proof.
+
+**Release decision: NOT TEST READY.** No controlled-test stage is authorized. No code was changed in this verification, no tests or migrations were run by this documentation update, no production DB operation occurred, and **REAL WAHA ACTIONS: NONE**.
+
+---
+
 ## Governance correction — 2026-11-04
 
 Fresh follow-up to the 18:24 UTC overlay: the live `GET /branches/main` response reports `protected=false`, and the repository rulesets listing is empty. The separate classic branch-protection endpoint returns 403 through the current connection, but the branch object itself reports main as **not protected**. Treat this as an actual governance risk: do not merge or push implementation to main; require independent human review and explicit authorization regardless of the repository setting.

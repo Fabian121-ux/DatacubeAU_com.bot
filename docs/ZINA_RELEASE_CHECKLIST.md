@@ -1,3 +1,20 @@
+## Fresh P0 release-gate delta — 2026-11-04 22:15 WAT
+
+This supersedes the 18:24 UTC verification snapshot below. It records a newly confirmed exact-approval replay path on PR #60; no source fix or release authorization is implied.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only. Main's Tests workflow still applies the lexical migration glob and has a 57% coverage floor.
+- PR #60 exact head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca` passed Tests run [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978): 955 passed, 1 warning, 76.53%. That run applied 001–033 plus 038–040 only; it does not prove integrated 001–040, installed 033→040 upgrade/re-run checksum no-op, schema audit, or DB-leakage audit.
+- New P0: after an ambiguous WAHA error, the worker leaves the approval `approved` while the queue becomes `deferred`; OWNER `requeue()` accepts that state and can replay a message that WAHA may already have accepted. See [PR #60 review finding](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4472932656).
+- Required before controlled testing: unify queue→approval lock ordering; consume the exact approval atomically after all final fences and before transport using exact queue/inbound/recipient/content binding and `clock_timestamp()`; keep it consumed on uncertain/interrupted outcomes; reject requeue for uncertain evidence; prove ambiguous-send → consumed approval → denied requeue → zero second mock-WAHA calls.
+- Also unresolved: original contact-policy expiry must fail closed after final lock waits; exact approval expiry/revocation must be revalidated at the final reservation; OWNER must accept/revise the STOP-after-reservation in-flight-attempt contract; #48 view-once source locking/success-only return audit must be integrated with the same worker.
+- Branch-local migration allocation is sequential (#48=034, #50=035, #49=036–037, #60=038–040), but no single candidate has proved fresh 001–040 plus installed 033→040 upgrade, second-run checksum/no-op, schema audit, and zero leakage.
+- #60 runtime-role/service-environment changes and #62 target/seed/libpq/sequence preflights are not cumulative. Build and independently review one deployment candidate.
+- Review inventory rechecked: #48 0 unresolved; #49 1; #50 3; #55 1 outdated; #57 1 outdated; #59 3; #60 19 (10 active/9 outdated); #61 0; #62 7 (4 active/3 outdated); #63 1 outdated. No open PR has an APPROVED review submission.
+
+**NOT TEST READY.** No controlled WhatsApp stage is authorized. This documentation-only update did not run tests/migrations or mutate a database. Private-media retention stays OFF. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Governance correction — 2026-11-04
 
 Fresh follow-up to the 18:24 UTC overlay: the live `GET /branches/main` response reports `protected=false`, and the repository rulesets listing is empty. The separate classic branch-protection endpoint returns 403 through the current connection, but the branch object itself reports main as **not protected**. Treat this as an actual governance risk: do not merge or push implementation to main; require independent human review and explicit authorization regardless of the repository setting.
