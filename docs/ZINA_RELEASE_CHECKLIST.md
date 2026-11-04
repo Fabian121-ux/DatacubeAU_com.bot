@@ -1,3 +1,39 @@
+## Fresh release-gate verification overlay — 2026-11-04 14:23 UTC
+
+This supersedes the 14:19 UTC snapshot below. It is evidence only, not release authorization.
+
+### Mechanical evidence
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last main commit is 2026-09-08. Main workflow remains lexical migrations + pytest at 57%; migration-sequence preflight (#61) and DB-leakage audit (#55) are not on main.
+- Latest Tests run [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) passed on exact #60 head `9a1865c`: **955 passed, 1 warning, 76.53% coverage**. It applied 001–033 and 038–040 only; no 034–037, integrated 001–040, installed 033→040/no-op/checksum proof, schema audit, or DB-leakage audit.
+- Latest prior green run [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) passed on #59 head `bf6e497`: 797 passed, 76.01%; migrations 001–033 only.
+- All ten open PRs were re-fetched. Unresolved inline threads (active / outdated): #48 0 (0/0; 15 total), #49 1 (1/0; 80 total), #50 3 (3/0; 11 total), #55 1 (0/1), #57 1 (0/1), #59 3 (1/2), #60 19 (10/9), #61 0, #62 7 (4/3), #63 1 (0/1). No PR has an APPROVED review submission.
+- GitHub rulesets returned an empty list; the branch-protection endpoint returned 403. Do not claim current main branch protection either way.
+
+### P0 delta and remaining blockers
+
+- #60 commit [9a1865c](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/9a1865cad05114770fe4c8ffeae3b12eed8b34ca) adds worker-side exact ScheduledAction `FOR UPDATE` + `populate_existing=True` after the queue lock and a two-session PostgreSQL/mock-WAHA regression. Exact-head run 41846567978 passed it.
+- Still blocking: contact-policy expiry revalidation at the final fence; exact one-use OWNER approval reservation after all blocking checks with a deadlock-free queue/approval lock order; explicit OWNER acceptance of the STOP post-reservation in-flight attempt contract; and cumulative #48 exact-source view-once locking/success-only return audit in the single worker.
+- No real WAHA send, production reconnect, or production DB operation was performed.
+
+### Migration/deployment gate — NOT PASSED
+
+- Branch-local allocation is sequential: #48=034, #50=035, #49=036–037, #60=038–040. The former 034 collision is resolved in allocation, but main still has 001–033 and no integrated candidate has proved fresh 001–040 plus installed 033→040 upgrade/no-op/checksum.
+- #60's restricted runtime role/service environment allowlists are not combined with #62's pre-DDL target, seed, libpq, and sequence preflights. #62 still mounts broad `.env.production` into API/WAHA/migrate. One candidate must preserve every preflight before DDL, pass owner credentials only to migrate, restricted runtime URL only to API, and explicit WAHA settings only to WAHA.
+- #55's schema/leakage evidence and #62's schema/leakage evidence cover only 001–033, not the combined feature chain.
+
+### Identity/content decisions
+
+- #50: keep the generic introduction identity-only (recommended) or gate every project/Datacube AU fact it names; preserve uncertain pre-upgrade defaults as `legacy_unknown` unless immutable evidence or explicit OWNER attestation proves provenance. Do not use `updated_at = created_at` as historical proof.
+- #49 is only the content-library foundation; no live selection/producer/dashboard integration until P0 and migration gates pass.
+- #48 remains metadata-only. Private-media retention remains OFF.
+
+**NOT TEST READY.** No controlled test stage is authorized. The integrated migration, deployment, P0 authority, independent-review, and mobile CRUD/observability gates remain open.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release-gate verification overlay — 2026-11-04 14:19 WAT
 
 This supersedes the 10:31 WAT overlay below. It is evidence only, not release authorization.
