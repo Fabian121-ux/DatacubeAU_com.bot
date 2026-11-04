@@ -1,3 +1,43 @@
+## Fresh release-gate verification overlay — 2026-11-04 10:31 WAT
+
+This overlay supersedes the 2026-11-04 06:23 WAT snapshot below. It is not release authorization.
+
+### Mechanical evidence
+
+- Main: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last commit 2026-09-08. Exact-main Tests [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08 only. Treat as historical.
+- Main workflow still runs lexical migration glob + pytest at 57%; PR #61's contiguous migration preflight and PR #55's schema/leakage gates are not on main.
+- Latest prior green P0 run: #60 parent `3496ff19b72609553ba51daebfdf0f0472298908`, run [41741201463](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41741201463): 952 passed, 1 warning, 76.51%. It applied 001–033 and 038–040 only; it did not include 034–037 or run schema/leakage audits.
+- New #60 head [615dd70](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/615dd70ce07f291ef05ead3a5db419b2e4bbc381) adds row-locked OWNER ScheduledAction mutations and two two-session PostgreSQL regressions. The commit uses `[skip ci]`; there is no exact-head run, and no test/migration/audit result is claimed for it.
+- No open PR has an APPROVED review. All ten open PRs remain unmerged; #60 and #62 remain draft.
+
+### Integrated migration/deployment gate — NOT PASSED
+
+- Main has migrations 001–033. Feature branches allocate #48=034, #50=035, #49=036–037, #60=038–040.
+- No integrated candidate has passed fresh 001–040, installed 033→040 upgrade with existing rows, second-run checksum/no-op, combined ORM schema audit, zero-leakage audit, and runtime-role privilege/ownership verification.
+- #60's restricted runtime role and service env allowlists are not combined with #62's database-target/seed/libpq/sequence preflights. #62 still mounts broad `.env.production` into API/WAHA/migrate. Neither merge order is safe.
+
+### P0 final-dispatch gate — NOT PASSED
+
+- #60 still needs atomic one-use OWNER approval reservation/revalidation after all blocking locks, with exact queue/recipient/content binding and expiry evaluated at the final fence. Preserve one lock order; uncertain transport outcome must not permit replay.
+- OWNER decision is required for STOP after the durable dispatch-reservation boundary: pre-reservation STOP blocks; post-reservation STOP blocks later sends but cannot guarantee cancellation of the already-reserved attempt.
+- #60's ScheduledAction race fix is committed: OWNER mutations now lock/refresh the action row before status validation, while the worker retains queue→action ordering. Exact-head tests are still pending.
+- Integrate #48's exact-source view-once worker lock and success-only return audit into the same worker. Retention remains OFF.
+- Contact consent, opt-out, quiet hours, frequency, expiry, media-bound authorization, and worker fence must remain cumulative; no real WAHA calls in engineering.
+
+### Product/review gate — NOT PASSED
+
+- #48 metadata-only; #49 library foundation only; #50 identity/provenance review decisions unresolved; #55/#61/#62 CI/deployment hardening not merged; #63 observability not merged.
+- Mobile CRUD/observability, fully integrated single-domain authorities, and controlled-test sign-off remain incomplete.
+- Independent review remains required; passing branch CI or this checklist overlay is not approval.
+
+### Release decision
+
+<badge>NOT TEST READY</badge> Stage A is not authorized. Do not connect/reconnect production WAHA, send real messages, mutate production DB, activate private-media retention, or perform destructive cleanup. Controlled sequence remains owner self-DM text → commands → media/view-once → one explicitly approved external contact, but execution requires a later explicit authorization after all gates pass.
+
+**REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh exact-head verification overlay — 2026-11-04
 
 This source-state overlay supersedes the 2026-11-03 22:24 WAT snapshot below. It is not a release approval. Main has not moved since 2026-09-08; the feature branches are still separate PRs.
