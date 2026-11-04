@@ -1,6 +1,6 @@
 ## Fresh release-gate verification overlay — 2026-11-04 16:21 UTC
 
-This supersedes the 14:19 UTC snapshot below. It is evidence only, not release authorization.
+This supersedes the 14:23 UTC snapshot below. It is evidence only, not release authorization.
 
 ### Mechanical evidence
 
