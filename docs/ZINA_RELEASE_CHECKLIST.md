@@ -7,7 +7,7 @@ This overlay supersedes the 2026-11-04 06:23 WAT snapshot below. It is not relea
 - Main: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last commit 2026-09-08. Exact-main Tests [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08 only. Treat as historical.
 - Main workflow still runs lexical migration glob + pytest at 57%; PR #61's contiguous migration preflight and PR #55's schema/leakage gates are not on main.
 - Latest prior green P0 run: #60 parent `3496ff19b72609553ba51daebfdf0f0472298908`, run [41741201463](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41741201463): 952 passed, 1 warning, 76.51%. It applied 001–033 and 038–040 only; it did not include 034–037 or run schema/leakage audits.
-- New #60 head [615dd70](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/615dd70ce07f291ef05ead3a5db419b2e4bbc381) adds row-locked OWNER ScheduledAction mutations and two two-session PostgreSQL regressions. The commit uses `[skip ci]`; there is no exact-head run, and no test/migration/audit result is claimed for it.
+- New #60 head [77f229c](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/77f229c1a67e6049ea54e2a0803255c915ad3a15) adds row-locked OWNER ScheduledAction mutations and two two-session PostgreSQL regressions. The commit uses `[skip ci]`; there is no exact-head run, and no test/migration/audit result is claimed for it.
 - No open PR has an APPROVED review. All ten open PRs remain unmerged; #60 and #62 remain draft.
 
 ### Integrated migration/deployment gate — NOT PASSED
