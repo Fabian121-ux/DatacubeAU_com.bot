@@ -1,4 +1,4 @@
-## Fresh release-gate verification overlay — 2026-11-04 14:23 UTC
+## Fresh release-gate verification overlay — 2026-11-04 16:21 UTC
 
 This supersedes the 14:19 UTC snapshot below. It is evidence only, not release authorization.
 
@@ -16,6 +16,7 @@ This supersedes the 14:19 UTC snapshot below. It is evidence only, not release a
 - Still blocking: contact-policy expiry revalidation at the final fence; exact one-use OWNER approval reservation after all blocking checks with a deadlock-free queue/approval lock order; explicit OWNER acceptance of the STOP post-reservation in-flight attempt contract; and cumulative #48 exact-source view-once locking/success-only return audit in the single worker.
 - No real WAHA send, production reconnect, or production DB operation was performed.
 
+- Additional P1 found on exact #60 head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`: the worker holds the queue row through WAHA and then updates the approval row in `consume_approval()`, while OWNER approval mutations take the approval advisory/row lock before locking the queue. An overlapping OWNER edit/reject can deadlock after WAHA accepts the send, leaving only a stale `sending` row for later uncertainty quarantine. The five-minute quarantine prevents automatic replay but does not preserve the sent/approval audit outcome. See [source-grounded review comment](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6635969882). A single queue/approval lock order and a two-session post-acceptance race regression are required; no code/test was changed/run for this finding.
 ### Migration/deployment gate — NOT PASSED
 
 - Branch-local allocation is sequential: #48=034, #50=035, #49=036–037, #60=038–040. The former 034 collision is resolved in allocation, but main still has 001–033 and no integrated candidate has proved fresh 001–040 plus installed 033→040 upgrade/no-op/checksum.
