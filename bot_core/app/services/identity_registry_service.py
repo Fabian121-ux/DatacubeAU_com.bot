@@ -55,9 +55,29 @@ class IdentityRegistryService:
             # "built") and silently resurrect the fact through a different door.
             return None
 
+        owner_unavailable = "fabian" in deleted_keys
+        if owner_unavailable and target_keys & {
+            "services",
+            "datacube_au",
+            "zinax",
+            "moxiz_gateway",
+            "projects",
+            "skills",
+        }:
+            # These default records carry OWNER attribution. A project/service query
+            # must not bypass the OWNER tombstone merely because it names only the
+            # project and not Fabian.
+            return None
+
         special = self._special_answer(normalized, entries, deleted_keys)
         if special:
             return special
+
+        if owner_unavailable:
+            # The remaining scored fallback can return a different default row whose
+            # answer still names or attributes work to the OWNER. Only the explicit
+            # assistant-only special answers above remain available in this state.
+            return None
 
         best_entry = None
         best_score = 0.0

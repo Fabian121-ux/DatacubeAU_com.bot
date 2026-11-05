@@ -432,3 +432,28 @@ async def test_unavailable_default_keys_includes_disabled_not_only_deleted(db_se
     await service.delete("fabian")
     unavailable = await service.unavailable_default_keys()
     assert {"zina", "fabian"} <= unavailable
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what is datacube",
+        "what is zinax",
+        "what is moxiz",
+        "what are projects",
+        "what services does Fabian offer",
+    ],
+)
+async def test_answer_fails_closed_for_owner_attributed_facts_when_owner_unavailable(db_session, query):
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    owner = await service.get_by_key("fabian")
+    assert owner is not None
+    owner.is_enabled = False
+    await db_session.flush()
+
+    assert "fabian" in await service.unavailable_default_keys()
+    assert await service.answer(query) is None

@@ -380,3 +380,42 @@ async def test_identity_reply_shortcuts_omit_unavailable_owner_identity(
         else "Zina was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
     )
     assert await BotConfigService(db_session).identity_reply(phrase) == expected
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what is datacube",
+        "what is zinax",
+        "what is moxiz",
+        "what are projects",
+    ],
+)
+async def test_identity_reply_project_facts_honor_unavailable_owner(
+    db_session, lifecycle, query
+):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        owner = await registry.get_by_key("fabian")
+        assert owner is not None
+        owner.is_enabled = False
+        await db_session.flush()
+
+    assert await BotConfigService(db_session).identity_reply(query) == (
+        BotConfigService._DELETED_FALLBACK_MESSAGE
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_identity_reply_suppresses_owner_attribution_when_owner_unavailable():
+    for query in ("what is datacube", "what is zinax", "what is moxiz", "what is zina"):
+        assert BotConfigService._project_identity_reply(
+            query, "Fabian", {"fabian"}
+        ) == BotConfigService._DELETED_FALLBACK_MESSAGE

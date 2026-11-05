@@ -303,7 +303,7 @@ class BotConfigService:
     ) -> str | None:
         unavailable_keys = unavailable_keys or set()
         if "datacube" in normalized:
-            if "datacube_au" in unavailable_keys:
+            if "datacube_au" in unavailable_keys or "fabian" in unavailable_keys:
                 return cls._DELETED_FALLBACK_MESSAGE
             if "owner" in normalized or "owns" in normalized or "founder" in normalized or "founded" in normalized:
                 return f"Datacube AU is owned by {owner_name}."
@@ -317,15 +317,15 @@ class BotConfigService:
                 f"Founder:\n{owner_name}"
             )
         if "zinax" in normalized:
-            if "zinax" in unavailable_keys:
+            if "zinax" in unavailable_keys or "fabian" in unavailable_keys:
                 return cls._DELETED_FALLBACK_MESSAGE
             return "*ZinaX*\n\nA project in Fabian's AI assistant and automation ecosystem."
         if "moxiz" in normalized:
-            if "moxiz_gateway" in unavailable_keys:
+            if "moxiz_gateway" in unavailable_keys or "fabian" in unavailable_keys:
                 return cls._DELETED_FALLBACK_MESSAGE
             return "*Moxiz Gateway*\n\nA gateway project in Fabian's broader automation ecosystem."
         if "zina" in normalized:
-            if "zina" in unavailable_keys:
+            if "zina" in unavailable_keys or "fabian" in unavailable_keys:
                 return cls._DELETED_FALLBACK_MESSAGE
             return (
                 "*Zina*\n\n"
