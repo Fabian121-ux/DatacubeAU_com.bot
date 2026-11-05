@@ -78,7 +78,7 @@ async def test_approve_requeues_only_exact_deferred_row_after_owner_approval(mon
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
@@ -103,7 +103,7 @@ async def test_approve_fails_closed_on_wrong_target_without_granting_authority(m
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
@@ -126,7 +126,7 @@ async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatc
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
@@ -155,7 +155,7 @@ async def test_requeue_refuses_sent_or_unapproved_rows(monkeypatch):
     async def _noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_audit", _noop)
 
     async def _sent(*args, **kwargs):
@@ -187,7 +187,7 @@ async def test_reject_never_turns_row_sendable(monkeypatch):
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
