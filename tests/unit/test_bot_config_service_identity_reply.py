@@ -386,16 +386,16 @@ async def test_identity_reply_shortcuts_omit_unavailable_owner_identity(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
 @pytest.mark.parametrize(
-    "query",
+    ("query", "expected_fragment"),
     [
-        "what is datacube",
-        "what is zinax",
-        "what is moxiz",
-        "what are projects",
+        ("what is datacube", "Datacube AU"),
+        ("what is zinax", "ZinaX"),
+        ("what is moxiz", "Moxiz Gateway"),
+        ("what are projects", "project portfolio"),
     ],
 )
 async def test_identity_reply_project_facts_honor_unavailable_owner(
-    db_session, lifecycle, query
+    db_session, lifecycle, query, expected_fragment
 ):
     registry = IdentityRegistryService(db_session)
     await registry.ensure_defaults_from_profile(PROFILE)
@@ -408,9 +408,9 @@ async def test_identity_reply_project_facts_honor_unavailable_owner(
         owner.is_enabled = False
         await db_session.flush()
 
-    assert await BotConfigService(db_session).identity_reply(query) == (
-        BotConfigService._DELETED_FALLBACK_MESSAGE
-    )
+    result = await BotConfigService(db_session).identity_reply(query)
+    assert expected_fragment.casefold() in result.casefold()
+    assert "fabian" not in result.casefold()
 
 
 @pytest.mark.asyncio

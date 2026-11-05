@@ -437,16 +437,17 @@ async def test_unavailable_default_keys_includes_disabled_not_only_deleted(db_se
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "query",
+    ("query", "expected_fragment"),
     [
-        "what is datacube",
-        "what is zinax",
-        "what is moxiz",
-        "what are projects",
-        "what services does Fabian offer",
+        ("what is datacube", "Datacube AU"),
+        ("what is zinax", "ZinaX"),
+        ("what is moxiz", "Moxiz Gateway"),
+        ("what are projects", "project portfolio"),
     ],
 )
-async def test_answer_fails_closed_for_owner_attributed_facts_when_owner_unavailable(db_session, query):
+async def test_answer_returns_owner_neutral_project_facts_when_owner_unavailable(
+    db_session, query, expected_fragment
+):
     service = IdentityRegistryService(db_session)
     await service.ensure_defaults_from_profile(PROFILE)
 
@@ -455,5 +456,20 @@ async def test_answer_fails_closed_for_owner_attributed_facts_when_owner_unavail
     owner.is_enabled = False
     await db_session.flush()
 
-    assert "fabian" in await service.unavailable_default_keys()
-    assert await service.answer(query) is None
+    result = await service.answer(query)
+    assert result is not None
+    assert expected_fragment.casefold() in result.casefold()
+    assert "fabian" not in result.casefold()
+
+
+@pytest.mark.asyncio
+async def test_answer_denies_explicit_owner_project_query_when_owner_unavailable(db_session):
+    service = IdentityRegistryService(db_session)
+    await service.ensure_defaults_from_profile(PROFILE)
+
+    owner = await service.get_by_key("fabian")
+    assert owner is not None
+    owner.is_enabled = False
+    await db_session.flush()
+
+    assert await service.answer("what are Fabian's projects") is None

@@ -56,27 +56,30 @@ class IdentityRegistryService:
             return None
 
         owner_unavailable = "fabian" in deleted_keys
-        if owner_unavailable and target_keys & {
+        owner_dependent_keys = {
             "services",
             "datacube_au",
             "zinax",
             "moxiz_gateway",
             "projects",
             "skills",
-        }:
-            # These default records carry OWNER attribution. A project/service query
-            # must not bypass the OWNER tombstone merely because it names only the
-            # project and not Fabian.
-            return None
+        }
+        if owner_unavailable and target_keys & owner_dependent_keys:
+            # A project-only query may still be answered, but never with OWNER
+            # attribution from the stored row. An explicit query about Fabian was
+            # already rejected by the unavailable-key check above.
+            return self._owner_neutral_default_answer(target_keys)
 
         special = self._special_answer(normalized, entries, deleted_keys)
         if special:
             return special
 
         if owner_unavailable:
-            # The remaining scored fallback can return a different default row whose
-            # answer still names or attributes work to the OWNER. Only the explicit
-            # assistant-only special answers above remain available in this state.
+            # Do not let an unqualified scored match reintroduce OWNER attribution.
+            # A generic project question can use the neutral aggregate; other
+            # ambiguous matches fail closed.
+            if "project" in normalized and "fabian" not in normalized:
+                return self._owner_neutral_default_answer({"projects"})
             return None
 
         best_entry = None
@@ -403,6 +406,28 @@ class IdentityRegistryService:
                 )
             )
         await self.session.flush()
+
+    @staticmethod
+    def _owner_neutral_default_answer(target_keys: set[str] | frozenset[str]) -> str | None:
+        """Describe active default capabilities without asserting OWNER identity."""
+        answers = {
+            "services": "Available services include AI-assisted systems, automation tools, and productivity-focused solutions.",
+            "datacube_au": "Datacube AU is an AI-powered educational intelligence platform focused on document intelligence, exam preparation, knowledge retrieval, and personalized learning.",
+            "zinax": "ZinaX is an AI assistant and automation project.",
+            "moxiz_gateway": "Moxiz Gateway is a gateway project.",
+            "projects": "The active project portfolio includes Datacube AU, ZinaX, and Moxiz Gateway.",
+            "skills": "Relevant capabilities include AI systems, Python, FastAPI, TypeScript, Docker, cybersecurity, and workflow automation.",
+        }
+        ordered_keys = (
+            "services",
+            "datacube_au",
+            "zinax",
+            "moxiz_gateway",
+            "projects",
+            "skills",
+        )
+        selected = [answers[key] for key in ordered_keys if key in target_keys]
+        return "\n\n".join(selected) if selected else None
 
     @classmethod
     def score_entry(cls, normalized_query: str, entry: IdentityRegistryEntry) -> float:
