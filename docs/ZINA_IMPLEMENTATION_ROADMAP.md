@@ -2770,3 +2770,60 @@ The latest exact-head run does not include a combined 001–040 chain, installed
 - The review comment is review-only. No application code, tests, migrations, Actions run, production database, deployment, or WAHA operation was changed or triggered by this finding.
 
 The release gate remains **NOT TEST READY**. **REAL WAHA ACTIONS: NONE.**
+
+
+## Fresh exact-state verification — 2026-11-05 (post PR #60 P0 replay guard)
+
+This overlay supersedes the 2026-11-05 10:35 WAT snapshot above. It was checked against the current GitHub branch heads and Actions records; older roadmap checkboxes are not treated as proof of current code.
+
+### Main and CI
+
+- `main` is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (latest commit 2026-09-08 11:09:59Z). The latest verified main-branch Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on that exact SHA on 2026-09-08. No later main commit or main-branch Tests run was found.
+- Latest overall Tests run is [42019032673](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42019032673), successful on PR #60 exact head `4b36f8af3389a9270aefde4654f1e7b0a9270b3c`: **956 passed, 1 warning, 76.57% coverage**. The workflow applied migrations **001–033 and 038–040 only**.
+- PR #50 exact head `e543a704729cc69a859ea61e4e1afb0196d23fdb` has [Tests run 41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413) successful: **841 passed, 1 warning, 76.50% coverage**; it applied **001–033 and 035 only**.
+- The main Tests workflow still runs a plain sorted SQL-file loop and pytest with a 57% coverage floor. It does not itself prove contiguous migration numbering, an installed-database upgrade, schema audit, or post-test DB-leakage audit.
+
+### Current open PR inventory
+
+| PR | Exact head | Unresolved review threads / total |
+|---|---|---:|
+| #63 | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1 |
+| #62 | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 8 / 8 |
+| #61 | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 |
+| #60 | `4b36f8af3389a9270aefde4654f1e7b0a9270b3c` | 19 / 19 |
+| #59 | `7e897e337fdd9399649703a2daccb89cf90edb9c` | 4 / 4 |
+| #57 | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 |
+| #55 | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 |
+| #50 | `e543a704729cc69a859ea61e4e1afb0196d23fdb` | 5 / 13 |
+| #49 | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 |
+| #48 | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 |
+
+No open PR has an `APPROVED` review submission. Review-thread counts include outdated threads where the API reports them unresolved; they are not a merge-readiness score.
+
+The repository still reports `main` as unprotected. Configure and independently verify required reviews and CI before any merge. No autonomous self-approval or merge is permitted.
+
+### Fresh PR #60 P0 implementation delta
+
+Commit [4b36f8a](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/4b36f8af3389a9270aefde4654f1e7b0a9270b3c) closes one concrete replay path: an OWNER could previously requeue a deferred row after an ambiguous WAHA outcome while its exact approval remained approved. The current branch now:
+- persists a one-way `delivery_outcome_uncertain` marker on uncertain queue rows;
+- rejects marked rows at the shared worker authorization boundary (including OWNER self-DM) and at `OutboundAuthorizationService.context_from_queue_message()`;
+- refuses OWNER requeue when that marker exists;
+- tests an approved external row, one mocked ambiguous send, denied requeue, and a forced status reset that still cannot pass the worker fence.
+
+The regression passed in exact-head run 42019032673. The evidence reply is recorded on the existing P0 review thread; the thread remains unresolved for independent review.
+
+The earlier 10:35 snapshot said the ScheduledAction cancellation race remained. That specific implementation gap has since been addressed on #60: the worker's exact action binding now uses `FOR UPDATE` with `populate_existing`, and OWNER cancel/pause/resume/reschedule/run-now all use `_get_for_update()`. The two-session regression is present in the branch-local test suite. The thread still requires independent review.
+
+### Remaining P0 and integration blockers
+
+1. **Original authority expiry is still open.** The initial `_delivery_authorized()` check can precede consent/safety/STOP/window lock waits. `check_contact_delivery_window()` filters expired policies out and treats no active row as no quiet-hours restriction; it does not revalidate the policy that supplied send authority. Exact approvals are consumed only after WAHA success. Required: one atomic final reservation of the same approval bound to queue ID, inbound ID, recipient, exact payload digest, and `expires_at > clock_timestamp()`; revalidate/lock the original contact policy after all other final fences. Preserve a consistent queue→approval lock order and two-session expiry tests.
+2. **STOP linearization requires OWNER acceptance.** The current contract treats the final pending-STOP check/reservation as the in-flight boundary: a STOP committed before it blocks; a STOP arriving after it cannot recall the already-reserved network attempt, but blocks subsequent sends. Record explicit OWNER acceptance or redesign the reservation protocol.
+3. **Post-acceptance lock order remains under review.** Worker queue→approval and OWNER approval→queue paths need a consistent lock order and a two-session regression for the post-WAHA success/consumption path.
+4. **Contact mapping, runtime-role test safety, consent-event privilege, and cross-PR deployment findings remain independently reviewable.** Do not infer resolution from a green suite alone.
+5. **#60/#62 deployment work is still split.** #60 has service-specific environment allowlists and a restricted runtime API role, but lacks #62's target/seed/contiguous-migration preflights. #62 has those preflights but still mounts broad `.env.production` into API/WAHA/migrate. #55's schema-qualified leakage-audit fix and #61's sequence validator must be retained in the same reviewed candidate; #57 seed safety overlaps the same runner.
+
+### Migration and release evidence
+
+Feature allocation remains #48=034, #50=035, #49=036–037, #60=038–040. The two recent green runs above intentionally validate only their branch-local migration subsets; neither proves a fresh contiguous **001–040** chain or an installed **033→040** upgrade. No single candidate has yet demonstrated second-run no-op/checksums, combined schema audit, and zero DB leakage. #48/#60 worker integration must preserve view-once source locking and success-only return audit alongside contact consent, STOP, quiet-hours, and uncertainty fences.
+
+Controlled-test readiness remains **NOT TEST READY**. Private-media retention remains OFF. No local `psql` or Docker executable was available in this execution environment; the cited validation is GitHub Actions evidence only. **REAL WAHA ACTIONS: NONE.**

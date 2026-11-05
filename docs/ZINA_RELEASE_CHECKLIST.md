@@ -1914,3 +1914,56 @@ Environment note for this verification: no local `psql` or Docker executable was
 - The review comment is review-only. No application code, tests, migrations, Actions run, production database, deployment, or WAHA operation was changed or triggered by this finding.
 
 The release gate remains **NOT TEST READY**. **REAL WAHA ACTIONS: NONE.**
+
+
+## Fresh exact-head release gate — 2026-11-05 (post PR #60 P0 replay guard)
+
+This release snapshot supersedes the 2026-11-04 and 2026-11-05 10:35 overlays above.
+
+- Main: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. Main remains unprotected.
+- Latest overall Tests run [42019032673](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42019032673) succeeded on exact #60 head `4b36f8af3389a9270aefde4654f1e7b0a9270b3c`: 956 passed, 1 warning, 76.57%; migrations 001–033 + 038–040 only. PR #50 run [41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413) succeeded on `e543a704729cc69a859ea61e4e1afb0196d23fdb`: 841 passed, 1 warning, 76.50%; migrations 001–033 + 035 only.
+- Current open heads and unresolved review counts:
+
+| PR | Exact head | Unresolved review threads / total |
+|---|---|---:|
+| #63 | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1 |
+| #62 | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 8 / 8 |
+| #61 | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 |
+| #60 | `4b36f8af3389a9270aefde4654f1e7b0a9270b3c` | 19 / 19 |
+| #59 | `7e897e337fdd9399649703a2daccb89cf90edb9c` | 4 / 4 |
+| #57 | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 |
+| #55 | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 |
+| #50 | `e543a704729cc69a859ea61e4e1afb0196d23fdb` | 5 / 13 |
+| #49 | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 |
+| #48 | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 |
+
+No open PR has an `APPROVED` review submission. Review-thread counts include outdated threads where the API reports them unresolved; they are not a merge-readiness score.
+
+### Updated P0 evidence
+
+- [x] PR #60 branch-local fix: ambiguous WAHA outcomes now leave a durable one-way marker; OWNER requeue and the final worker fence reject replay even if queue status is reset. Exact regression and full workflow passed on run 42019032673.
+- [x] PR #60 branch-local ScheduledAction locking: worker exact binding and OWNER state mutations use row locks under the documented queue→action order; branch-local two-session regression is included.
+- [ ] Exact approval/contact-policy expiry must be revalidated/reserved atomically after all final locks, before WAHA; the current quiet-hours helper is not sufficient authority revalidation.
+- [ ] OWNER must accept or revise the STOP linearization contract.
+- [ ] Resolve post-WAHA approval/queue lock ordering with two-session coverage.
+- [ ] Independently review remaining contact mapping, runtime-role, consent-history privilege, and uncertain-delivery threads.
+
+### Required integrated deployment and migration proof
+
+- [ ] Consolidate #48/#50/#49/#60 in migration order 034–040 and run a fresh PostgreSQL 16 install for 001–040.
+- [ ] Upgrade a representative installed 033 database through 040; verify second-run no-op/checksums and schema audit.
+- [ ] Integrate #60 restricted runtime API role/service-specific Compose allowlists with #62 target validation, seed opt-in and contiguous-sequence preflight. API must receive runtime-only DB credentials; migrate alone receives owner credentials; WAHA receives only transport settings.
+- [ ] Retain #55's schema-qualified raw-table leakage audit and #61's contiguous migration validator in the same candidate; reconcile #57 seed-safety runner changes.
+- [ ] Run the P0 adversarial matrix, full pytest/coverage, combined schema audit, and zero-leakage audit on the exact integrated candidate.
+- [ ] Independently resolve all blocking review threads; no open PR currently has an APPROVED review submission.
+- [ ] Enable and verify main branch protection/required independent review before merge.
+- [ ] Resolve #50's project/OWNER fallback lifecycle and legacy-default provenance decision; resolve #49's permanent set-key retirement review; do not integrate the message library into live producers before P0 is complete.
+
+### Human decisions
+
+1. Accept the STOP reservation contract or request a redesigned atomic protocol.
+2. Confirm whether terminal opt-out is Contact-wide across current mapped aliases and cannot be overridden by routine grant.
+3. Choose a reliable legacy Identity Registry provenance rule; timestamp equality cannot reliably reconstruct rows previously touched by old reads.
+4. Confirm the generic introduction remains assistant/owner-only; project facts stay in their individual registry entries.
+
+Controlled testing remains **NOT TEST READY**. Do not begin OWNER self-DM or external-contact tests until every integrated P0, migration, deployment, leakage, observability, and independent-review gate passes. Private-media retention remains OFF. **REAL WAHA ACTIONS: NONE.**
