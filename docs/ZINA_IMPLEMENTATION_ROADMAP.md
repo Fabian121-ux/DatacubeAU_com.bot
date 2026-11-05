@@ -1,3 +1,15 @@
+## Follow-up verification correction — 2026-11-05 19:48 UTC
+
+A further exact-source check found one additional deployment-gate defect on current PR #62 head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`:
+
+- `scripts/audit_zina_test_db_leakage.py` schema-qualifies the raw-table existence probe to `public`, but its subsequent `COUNT(*)` is still unqualified. With `search_path=shadow,public`, a same-named shadow table can be counted while leaked rows in `public` are missed.
+- PR #55's branch already contains the correct form — count `public."<quoted table>"` — and `test_raw_table_audit_counts_public_rows_when_search_path_has_shadow_table`.
+- #62's green run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) predates that regression and does not validate this path. The finding remains an unresolved #62 review thread; a fresh source-grounded reply was added there. Port #55's schema-qualified counter and shadow-schema regression into the integrated deployment candidate before relying on its leakage gate.
+
+This is a review/documentation correction only. No new test, migration, schema/leakage audit, deployment, or production DB operation was performed.
+
+---
+
 ## Fresh verification delta — 2026-11-05 19:44 UTC
 
 This snapshot supersedes earlier overlays for the current GitHub state. It is a source/review/CI inspection plus documentation refresh only; it does not certify release readiness.
