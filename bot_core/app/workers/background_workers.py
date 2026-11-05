@@ -353,7 +353,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     reason=f"WAHA delivery outcome uncertain; automatic replay blocked: {exc}",
                 )
             else:
-                message.status = "sent
+                message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
                 await ScheduledActionService(session).reconcile_outbound_delivery(message)
