@@ -1,3 +1,52 @@
+## Fresh engineering delta — 2026-11-05 (post-#50 exact-head verification)
+
+This snapshot supersedes the 2026-11-05 05:20 WAT overlay below. It rechecks main, all ten open PR heads and review threads, the current migration allocation, workflow configuration, and the latest #50 exact-head test run.
+
+### Main, CI and Identity Registry change
+
+- Main remains 5aadd725ed9da08a5eb84eb42b64f0f45f231c79 (last commit 2026-09-08 11:09:59Z); protected=false. Main's latest exact-head Tests run is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. Main contains migrations 001–033 only.
+- PR #50 now points to e543a704729cc69a859ea61e4e1afb0196d23fdb. Exact-head [Tests run 41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413) succeeded: **841 passed, 1 warning, 76.50% coverage** (57% gate). The run applied migrations 001–033 and 035 only; it does not prove the integrated 001–040 chain, installed 033→040 upgrade, second-run no-op/checksums, schema audit, or DB-leakage audit.
+- The #50 identity fallback now preserves Zina's answer when Fabian's registry entry is disabled/tombstoned without repeating Fabian's name: name questions return “I am Zina, an AI assistant”; purpose questions return a Zina-attributed purpose without the OWNER name. If Zina itself is unavailable, the non-assertive fallback remains. Both IdentityRegistryService's special-answer path and BotConfigService's outer fallback follow the same rule. Eight PostgreSQL-session regressions cover four phrases × deleted/disabled OWNER.
+- Two intermediate exact-head CI attempts were red (runs [41980298371](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41980298371) and [41980825703](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41980825703)); the first overblocked Zina's independent identity, and the second exposed a wording mismatch between the registry and outer fallback. Both were corrected before the successful exact-head run above.
+- PR #50 still has **4 unresolved / 12 total** review threads. Migration 035's updated_at = created_at historical-provenance inference remains an explicit human decision; the existing tests cannot reconstruct pre-033 read history that already advanced timestamps. Do not treat branch-local green CI as independent review or merge approval.
+
+### All open PR heads and review state
+
+| PR | Current head | Review threads unresolved / total | Latest relevant exact-head Tests evidence |
+|---|---|---:|---|
+| #48 PrivateMediaArtifact | 3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca | 0 / 15 | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success |
+| #49 Outbound Message Library | bcd0033e024b177561b8afd41589afe1897ba4de | 1 / 80 | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success |
+| #50 Identity Registry | e543a704729cc69a859ea61e4e1afb0196d23fdb | 4 / 12 | [41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413) success |
+| #55 DB leakage gate | b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c | 1 / 1 | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success |
+| #57 deployment seed safety | d831ce4e3dd7e56f38d8563dc63abc44f8c37bba | 1 / 1 | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success |
+| #59 verification docs | d2d274db6171bdfb3d50cf400d5104728d46309d before this docs refresh | 3 / 3 | [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) is for parent SHA bf6e4975d304744147d0306123176004f4d605ce, not the current docs head |
+| #60 contact-consent P0 | 9a1865cad05114770fe4c8ffeae3b12eed8b34ca | 19 / 19 | [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) success |
+| #61 migration sequence gate | 8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f | 0 / 0 | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success |
+| #62 deployment preflight integration | a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc | 7 / 7 | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success |
+| #63 router/conversation audit | 13fad868affe01d6069f4288481f8cd8dd341c62 | 1 / 1 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success |
+
+These are branch-local results. A green result on a branch with an incomplete migration subset is not integrated migration evidence.
+
+### Migration allocation and deployment boundary
+
+- Current feature migration numbers are unique across the open branches: #48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040. The historical 034 collision has been reconciled by renumbering #49 to 036–037. Main still has only 001–033; **no open branch contains the complete 001–040 chain**.
+- Main .github/workflows/tests.yml uses ubuntu-latest and disposable PostgreSQL 16, then applies for migration in bot_core/migrations/*.sql without a contiguous-sequence preflight before running pytest with a 57% coverage floor. Thus a branch-local run can pass while skipping missing predecessor migrations. PR #61 adds the sequence gate; #62 carries the migration/target/seed preflights.
+- #60 has the restricted non-owner API runtime role and service-specific environment allowlists, but lacks #62's DB-target/seed/libpq/contiguous-sequence preflights. #62 has those preflights plus schema/leakage checks, but still passes broad .env.production to API/WAHA/migrate and does not provision/use #60's restricted runtime role. **Neither branch is safe to merge independently or in an arbitrary order.** One integrated candidate must preserve preflight-before-DDL, owner URLs only in migrate, runtime URL only in API, explicit WAHA-only environment, and post-migration runtime-role provisioning.
+- Required integration proof: fresh 001–040; installed 033→040 upgrade; second-run no-op/checksum; ORM schema audit; zero DB leakage; runtime-role privilege tests; rendered Compose service-environment isolation.
+
+### P0 outbound and media blockers
+
+- PR #60 still has unresolved P0s. On exact head 9a1865c, the worker consumes the one-use approval only in the WAHA-success branch. An ambiguous WAHA error marks the queue row deferred/uncertain while leaving approval approved; OWNER requeue() currently accepts an approved approval when the queue is deferred or failed, so the same approval can manually replay a possibly delivered request. Reserve/consume the exact approval before the single attempt after all final fences, keep it consumed on uncertainty, and reject requeue when durable delivery evidence is uncertain. Preserve one queue→approval lock order across worker and OWNER mutations.
+- A contact-policy-authorized row can retain an earlier authorization while the policy expires during later fence waits; the final delivery-window query drops expired rows and currently treats no active row as “no quiet-hours restriction.” Preserve the original policy ID/source and deny if it is now missing/disabled/expired at the final database-clock check.
+- STOP linearization remains a product/OWNER decision: a STOP committed before the durable dispatch reservation must block; a STOP arriving after reservation cannot promise cancellation of an already-entering network request and must govern subsequent sends. Do not invent this policy.
+- PR #48's view-once return path still needs to be integrated with #60's worker/authority boundary: .vvopen records returned_to_owner_at at queue creation rather than confirmed transport acceptance, and a pending return needs exact source chat/message/command binding plus a source-deletion fence immediately before dispatch. Keep retention OFF.
+- PR #49 remains only the Outbound Message Library foundation; no live producer/selection/dashboard integration until P0 safety and migration reconciliation are complete.
+
+### Readiness and controls
+
+- Current stage: **NOT TEST READY**. Exact-head unit coverage, P0 adversarial matrix, full 001–040 fresh/upgrade/no-op migration proof, schema/leakage audit, cross-branch integration, independent review, mobile CRUD/observability, and mock-WAHA staged tests are not all satisfied.
+- No PR was merged, no review thread was resolved, no production DB was accessed or mutated, no production WAHA was reconnected, and no real WhatsApp send was attempted.
+
 ## Fresh engineering delta — 2026-11-05 05:20 WAT (04:20 UTC)
 
 This supersedes the 04:17 WAT snapshot below. It rechecks the live main ref, all ten open PR heads/review threads, exact-head Tests associations, current migration inventories, and the #60/#62 deployment candidates.
