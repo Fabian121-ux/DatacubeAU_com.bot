@@ -1,3 +1,5 @@
+> **Product-phase freshness warning (2026-11-05):** The detailed phase-by-phase status tables retained below were last comprehensively audited against source on 2026-09-08. This run refreshed the main/PR/CI/migration/P0/deployment snapshot above, but did not re-audit every product domain and dashboard path. Treat older DONE/PARTIAL/MISSING labels in those detailed tables as historical until each domain is rechecked against current code; do not use the 2026-09-08 checklist checkboxes as current release evidence.
+
 ## Fresh exact-state verification — 2026-11-05 21:17 UTC
 
 This snapshot supersedes the earlier 19:48 UTC overlay below. It is a GitHub source/review/Actions inspection plus documentation update only. It does **not** certify release readiness.
