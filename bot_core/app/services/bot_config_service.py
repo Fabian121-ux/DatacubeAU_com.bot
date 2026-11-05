@@ -222,10 +222,9 @@ class BotConfigService:
         if {"zina", "fabian"} & unavailable_keys:
             return self._DELETED_FALLBACK_MESSAGE
 
-        return (
-            f"Hi. I'm {profile['assistant_name']}, {profile['owner_name']}'s AI assistant. "
-            f"I help answer questions about {profile['owner_name']}, his projects, and Datacube AU."
-        )
+        # Keep this shared greeting to the assistant/owner relationship. Project
+        # facts remain exclusively owned by their individual Identity Registry entries.
+        return f"Hi. I'm {profile['assistant_name']}, {profile['owner_name']}'s AI assistant."
 
     #: Returned in place of any hardcoded fallback below whose fact the OWNER has
     #: deleted or disabled in the Identity Registry -- matches the phrasing
@@ -274,7 +273,9 @@ class BotConfigService:
                 return self._DELETED_FALLBACK_MESSAGE
             return profile["owner_bio"] or f"{owner_name} is the owner and creator I assist."
         if "projects" in normalized and "fabian" in normalized:
-            if "projects" in unavailable_keys:
+            # The aggregate answer names Fabian as well as his projects. Both
+            # registry facts must be active before this fallback can speak for them.
+            if {"projects", "fabian"} & unavailable_keys:
                 return self._DELETED_FALLBACK_MESSAGE
             return (
                 "Fabian's core projects are:\n\n"
@@ -286,7 +287,9 @@ class BotConfigService:
         project_answer = self._project_identity_reply(normalized, owner_name, unavailable_keys)
         if project_answer:
             return project_answer
-        if "zina" in unavailable_keys:
+        # This catch-all names both the assistant and the OWNER; do not
+        # reintroduce either identity after its registry entry is unavailable.
+        if {"zina", "fabian"} & unavailable_keys:
             return self._DELETED_FALLBACK_MESSAGE
         return f"I am {assistant_name}, {owner_name}'s AI assistant."
 

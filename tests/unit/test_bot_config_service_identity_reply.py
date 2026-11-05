@@ -216,8 +216,7 @@ async def test_introduction_reply_honors_deleted_or_disabled_default_identity(
     bot_config = BotConfigService(db_session)
 
     assert await bot_config.introduction_reply() == (
-        "Hi. I'm Zina, Fabian's AI assistant. "
-        "I help answer questions about Fabian, his projects, and Datacube AU."
+        "Hi. I'm Zina, Fabian's AI assistant."
     )
 
     if lifecycle == "deleted":
@@ -241,8 +240,7 @@ async def test_introduction_reply_ignores_unrelated_disabled_default(db_session)
     await db_session.flush()
 
     assert await BotConfigService(db_session).introduction_reply() == (
-        "Hi. I'm Zina, Fabian's AI assistant. "
-        "I help answer questions about Fabian, his projects, and Datacube AU."
+        "Hi. I'm Zina, Fabian's AI assistant."
     )
 
 
@@ -292,3 +290,61 @@ async def test_introduction_reply_fails_closed_when_registry_read_raises(db_sess
 
     result = await BotConfigService(db_session).introduction_reply()
     assert result == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+async def test_identity_reply_aggregate_projects_honors_unavailable_fabian(
+    db_session, lifecycle
+):
+    """The aggregate project fallback names Fabian, so his registry lifecycle applies."""
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        entry = await registry.get_by_key("fabian")
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    assert await BotConfigService(db_session).identity_reply(
+        "what are Fabian's projects"
+    ) == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+async def test_identity_reply_generic_fallback_honors_unavailable_fabian(
+    db_session, lifecycle, monkeypatch
+):
+    """The generic identity catch-all must not name an unavailable OWNER."""
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        entry = await registry.get_by_key("fabian")
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    async def no_registry_match(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(IdentityRegistryService, "answer", no_registry_match)
+    assert await BotConfigService(db_session).identity_reply(
+        "an unmatched identity question"
+    ) == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_introduction_reply_does_not_duplicate_project_identity_facts(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+
+    introduction = await BotConfigService(db_session).introduction_reply()
+
+    assert introduction == "Hi. I'm Zina, Fabian's AI assistant."
+    assert "project" not in introduction.casefold()
+    assert "datacube" not in introduction.casefold()
