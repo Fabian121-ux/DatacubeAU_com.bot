@@ -1,0 +1,421 @@
+"""Regression for two Codex review findings on PR #50 itself.
+
+**Round 2 finding**: `IdentityRegistryService.answer()`/`_special_answer()` were fixed
+to stop resurrecting a deleted default via their own hardcoded fallback, but
+`BotConfigService.identity_reply()` -- the actual production entry point
+`reply_planner.py` calls -- has its own, separate, older hardcoded fallback that
+fires whenever the registry returns a falsy answer. That fallback did not know about
+tombstones at all, so deleting a default identity fact had zero observable effect on
+the real WhatsApp reply path even after the registry fix.
+
+**Round 3 finding**: even after the round-2 fix, `IdentityRegistryService.answer()`
+itself could still leak a deleted fact through its own scored-fallback layer: once
+`_special_answer()` returned `None` for an explicitly-targeted deleted key (e.g.
+"datacube_au" for a "what is datacube" query), `answer()` fell through to scoring,
+where the still-active "projects" entry -- whose own answer text separately lists
+every project by name -- could win and re-state the "deleted" fact. Because that
+happened *before* `identity_reply()` ever got a falsy registry result, its own
+deleted-key checks (round 2's fix) never even ran. Fixed by
+`IdentityRegistryService._explicit_target_key()`: `answer()` now refuses outright,
+before scoring, whenever a query unambiguously targets one specific default key that
+is unavailable.
+
+**Round 4 finding**: the round-3 fix only covered `_special_answer`'s own pre-canned
+phrases (e.g. "who *are you*"). A bare named-entity query like "who is zina?" or
+"what is zina" matches none of those phrases but is just as identity-routed in
+practice, and leaked through the same "projects entry lists every name" door. Fixed
+by also treating a bare "zina"/"fabian" mention as targeting that key.
+
+These tests exercise `identity_reply()` directly, since that is the actual
+production path the round-2 reviewer pointed out the original tests were missing.
+With the round-3/4 fixes, all of these are now true end-to-end tests (no mocking):
+the registry layer itself no longer leaks for any of them.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.services.bot_config_service import BotConfigService
+from app.services.identity_registry_service import IdentityRegistryService
+
+PROFILE = {"owner_name": "Fabian", "assistant_name": "Zina"}
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_deleted_zina_end_to_end(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    assert await bot_config.identity_reply("who are you?") == "I am Zina, Fabian's AI assistant."
+
+    await registry.delete("zina")
+
+    assert await bot_config.identity_reply("who are you?") == BotConfigService._DELETED_FALLBACK_MESSAGE
+    # The unconditional final catch-all must also honor the deletion, not just the
+    # dedicated "who are you" phrase branch.
+    assert await bot_config.identity_reply("some unmatched message") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_deleted_zina_for_named_entity_queries_too(db_session):
+    """Regression for the round-4 finding: "who is zina?"/"what is zina" match none
+
+    of `_special_answer`'s pre-canned phrases (only "who *are you*" etc do), so they
+    need the bare-name fallback in `_explicit_target_keys`, not just the phrase list.
+    """
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    before = await bot_config.identity_reply("who is zina?")
+    assert before and before != BotConfigService._DELETED_FALLBACK_MESSAGE
+
+    await registry.delete("zina")
+    assert await bot_config.identity_reply("who is zina?") == BotConfigService._DELETED_FALLBACK_MESSAGE
+    assert await bot_config.identity_reply("what is zina") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_unrelated_delete_does_not_suppress_other_defaults(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    await registry.delete("fabian")
+
+    # Zina remains identifiable, but the answer must not repeat the unavailable OWNER identity.
+    assert await bot_config.identity_reply("who are you?") == "I am Zina, an AI assistant."
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_deleted_fabian_end_to_end(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    before = await bot_config.identity_reply("who is fabian")
+    assert before and before != BotConfigService._DELETED_FALLBACK_MESSAGE
+
+    await registry.delete("fabian")
+    assert await bot_config.identity_reply("who is fabian") == BotConfigService._DELETED_FALLBACK_MESSAGE
+    assert await bot_config.identity_reply("who created you") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_deleted_projects_end_to_end(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    before = await bot_config.identity_reply("what are fabian's projects")
+    assert "Datacube AU" in before
+
+    await registry.delete("projects")
+    assert await bot_config.identity_reply("what are fabian's projects") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_project_fallback_honors_deleted_datacube_and_zinax_end_to_end(db_session):
+    """Regression for the round-3 finding specifically: before the
+
+    `_explicit_target_key` fix, deleting "datacube_au" or "zinax" still let the
+    "projects" entry's own scored answer (which separately lists both by name) win
+    at the registry layer, so `identity_reply()` never even reached its own,
+    already-fixed deleted-key check for these two.
+    """
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    before_datacube = await bot_config.identity_reply("what is datacube")
+    assert "Datacube AU" in before_datacube
+    await registry.delete("datacube_au")
+    assert await bot_config.identity_reply("what is datacube") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+    before_zinax = await bot_config.identity_reply("tell me about zinax")
+    assert "ZinaX" in before_zinax
+    await registry.delete("zinax")
+    assert await bot_config.identity_reply("tell me about zinax") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_deleted_moxiz_end_to_end(db_session):
+    """"moxiz" has no `_special_answer` branch of its own (unlike datacube/zinax),
+
+    so it needed its own addition to `_explicit_target_key` to close the same
+    "projects" entry leak for it specifically.
+    """
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    before = await bot_config.identity_reply("what is moxiz")
+    assert "Moxiz Gateway" in before
+
+    await registry.delete("moxiz_gateway")
+    assert await bot_config.identity_reply("what is moxiz") == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_honors_a_default_revived_as_disabled(db_session):
+    """Regression for a second round-3 finding: recreating a deleted default via the
+
+    admin API with `enabled=False` clears `deleted_at` (no longer tombstoned) but
+    leaves the row inactive. `unavailable_default_keys()` must still flag it --
+    otherwise `_special_answer`/`identity_reply()` would treat "disabled" the same
+    as "never configured" and serve the hardcoded default again.
+    """
+    from app.api.admin import IdentityRegistryUpdate, upsert_identity_registry
+
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+    await registry.delete("zina")
+
+    await upsert_identity_registry(
+        IdentityRegistryUpdate(
+            registry_key="zina",
+            name="Zina",
+            description="revived but intentionally disabled",
+            answer="revived but intentionally disabled",
+            enabled=False,
+        ),
+        db=db_session,
+    )
+
+    assert await bot_config.identity_reply("who are you?") == BotConfigService._DELETED_FALLBACK_MESSAGE
+    assert "zina" in await registry.unavailable_default_keys()
+
+
+@pytest.mark.asyncio
+async def test_project_identity_reply_is_unaffected_by_a_default_call_with_no_unavailable_keys(db_session):
+    # Direct call with the default unavailable_keys=None must behave exactly as
+    # before this fix -- a regression guard on the classmethod's new optional
+    # parameter.
+    result = BotConfigService._project_identity_reply("what is datacube", "Fabian")
+    assert "Datacube AU" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registry_key", "lifecycle"),
+    [
+        ("zina", "deleted"),
+        ("zina", "disabled"),
+        ("fabian", "deleted"),
+        ("fabian", "disabled"),
+    ],
+)
+async def test_introduction_reply_honors_deleted_or_disabled_default_identity(
+    db_session, registry_key, lifecycle
+):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    bot_config = BotConfigService(db_session)
+
+    assert await bot_config.introduction_reply() == (
+        "Hi. I'm Zina, Fabian's AI assistant."
+    )
+
+    if lifecycle == "deleted":
+        await registry.delete(registry_key)
+    else:
+        entry = await registry.get_by_key(registry_key)
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    assert await bot_config.introduction_reply() == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_introduction_reply_ignores_unrelated_disabled_default(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    entry = await registry.get_by_key("projects")
+    assert entry is not None
+    entry.is_enabled = False
+    await db_session.flush()
+
+    assert await BotConfigService(db_session).introduction_reply() == (
+        "Hi. I'm Zina, Fabian's AI assistant."
+    )
+
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_fails_closed_when_registry_answer_raises(db_session, monkeypatch):
+    await IdentityRegistryService(db_session).ensure_defaults_from_profile(PROFILE)
+
+    async def raise_registry_unavailable(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(IdentityRegistryService, "answer", raise_registry_unavailable)
+
+    result = await BotConfigService(db_session).identity_reply("who are you?")
+    assert result == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_identity_reply_fails_closed_when_unavailable_keys_read_raises(db_session, monkeypatch):
+    await IdentityRegistryService(db_session).ensure_defaults_from_profile(PROFILE)
+
+    async def no_registry_answer(*_args, **_kwargs):
+        return None
+
+    async def raise_registry_unavailable(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(IdentityRegistryService, "answer", no_registry_answer)
+    monkeypatch.setattr(
+        IdentityRegistryService, "unavailable_default_keys", raise_registry_unavailable
+    )
+
+    result = await BotConfigService(db_session).identity_reply("who are you?")
+    assert result == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_introduction_reply_fails_closed_when_registry_read_raises(db_session, monkeypatch):
+    await IdentityRegistryService(db_session).ensure_defaults_from_profile(PROFILE)
+
+    async def raise_registry_unavailable(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(
+        IdentityRegistryService, "unavailable_default_keys", raise_registry_unavailable
+    )
+
+    result = await BotConfigService(db_session).introduction_reply()
+    assert result == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+async def test_identity_reply_aggregate_projects_honors_unavailable_fabian(
+    db_session, lifecycle
+):
+    """The aggregate project fallback names Fabian, so his registry lifecycle applies."""
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        entry = await registry.get_by_key("fabian")
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    assert await BotConfigService(db_session).identity_reply(
+        "what are Fabian's projects"
+    ) == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+async def test_identity_reply_generic_fallback_honors_unavailable_fabian(
+    db_session, lifecycle, monkeypatch
+):
+    """The generic identity catch-all must not name an unavailable OWNER."""
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        entry = await registry.get_by_key("fabian")
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    async def no_registry_match(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(IdentityRegistryService, "answer", no_registry_match)
+    assert await BotConfigService(db_session).identity_reply(
+        "an unmatched identity question"
+    ) == BotConfigService._DELETED_FALLBACK_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_introduction_reply_does_not_duplicate_project_identity_facts(db_session):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+
+    introduction = await BotConfigService(db_session).introduction_reply()
+
+    assert introduction == "Hi. I'm Zina, Fabian's AI assistant."
+    assert "project" not in introduction.casefold()
+    assert "datacube" not in introduction.casefold()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "who are you?",
+        "what is your name?",
+        "why do you exist?",
+        "why were you created?",
+    ],
+)
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+async def test_identity_reply_shortcuts_omit_unavailable_owner_identity(
+    db_session, phrase, lifecycle
+):
+    """Canned assistant introductions also assert the OWNER identity."""
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        entry = await registry.get_by_key("fabian")
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    expected = (
+        "I am Zina, an AI assistant."
+        if phrase in {"who are you?", "what is your name?"}
+        else "Zina was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
+    )
+    assert await BotConfigService(db_session).identity_reply(phrase) == expected
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+@pytest.mark.parametrize(
+    ("query", "expected_fragment"),
+    [
+        ("what is datacube", "Datacube AU"),
+        ("what is zinax", "ZinaX"),
+        ("what is moxiz", "Moxiz Gateway"),
+        ("what are projects", "project portfolio"),
+    ],
+)
+async def test_identity_reply_project_facts_honor_unavailable_owner(
+    db_session, lifecycle, query, expected_fragment
+):
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        owner = await registry.get_by_key("fabian")
+        assert owner is not None
+        owner.is_enabled = False
+        await db_session.flush()
+
+    result = await BotConfigService(db_session).identity_reply(query)
+    assert expected_fragment.casefold() in result.casefold()
+    assert "fabian" not in result.casefold()
+
+
+@pytest.mark.asyncio
+async def test_project_identity_reply_suppresses_owner_attribution_when_owner_unavailable():
+    for query in ("what is datacube", "what is zinax", "what is moxiz", "what is zina"):
+        assert BotConfigService._project_identity_reply(
+            query, "Fabian", {"fabian"}
+        ) == BotConfigService._DELETED_FALLBACK_MESSAGE
