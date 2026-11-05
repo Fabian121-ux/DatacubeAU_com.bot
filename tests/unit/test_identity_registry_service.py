@@ -287,7 +287,8 @@ async def test_deleted_default_is_not_resurrected_by_the_special_answer_fallback
     await service.delete("fabian")
     assert await service.answer("who is fabian") is None
 
-    assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
+    assert await service.answer("who are you?") == "I am Zina, an AI assistant."
+    assert await service.answer("why do you exist?") == "Zina was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
     await service.delete("zina")
     assert await service.answer("who are you?") is None
 
@@ -306,7 +307,7 @@ async def test_special_answer_still_serves_non_deleted_defaults_after_an_unrelat
     await service.delete("fabian")
 
     # "zina"/"zinax" were never deleted -- unrelated deletions must not suppress them.
-    assert await service.answer("who are you?") == "I am Zina, Fabian's AI assistant."
+    assert await service.answer("who are you?") == "I am Zina, an AI assistant."
     assert "ZinaX" in (await service.answer("what is zinax") or "")
 
 

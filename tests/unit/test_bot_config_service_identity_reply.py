@@ -85,8 +85,8 @@ async def test_identity_reply_unrelated_delete_does_not_suppress_other_defaults(
 
     await registry.delete("fabian")
 
-    # Deleting "fabian" must not suppress "zina"'s own, unrelated identity answer.
-    assert await bot_config.identity_reply("who are you?") == "I am Zina, Fabian's AI assistant."
+    # Zina remains identifiable, but the answer must not repeat the unavailable OWNER identity.
+    assert await bot_config.identity_reply("who are you?") == "I am Zina, an AI assistant."
 
 
 @pytest.mark.asyncio
@@ -360,7 +360,7 @@ async def test_introduction_reply_does_not_duplicate_project_identity_facts(db_s
     ],
 )
 @pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
-async def test_identity_reply_shortcuts_require_active_owner_identity(
+async def test_identity_reply_shortcuts_omit_unavailable_owner_identity(
     db_session, phrase, lifecycle
 ):
     """Canned assistant introductions also assert the OWNER identity."""
@@ -374,6 +374,9 @@ async def test_identity_reply_shortcuts_require_active_owner_identity(
         entry.is_enabled = False
         await db_session.flush()
 
-    assert await BotConfigService(db_session).identity_reply(phrase) == (
-        BotConfigService._DELETED_FALLBACK_MESSAGE
+    expected = (
+        "I am Zina, an AI assistant."
+        if phrase in {"who are you?", "what is your name?"}
+        else "I was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
     )
+    assert await BotConfigService(db_session).identity_reply(phrase) == expected

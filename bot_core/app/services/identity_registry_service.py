@@ -143,16 +143,14 @@ class IdentityRegistryService:
         lists every name" leak applies to them too.
         """
         targets: set[str] = set()
-        # Both canned answers identify the assistant as Fabian's assistant, so
-        # both lifecycle records must be active before either shortcut can answer.
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
-            targets.update({"zina", "fabian"})
+            targets.add("zina")
         if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you")) or re.search(
             r"\bwho (?:create|own) zina\b", normalized
         ):
             targets.update({"zina", "fabian"})
         if "why were you create" in normalized or "why do you exist" in normalized:
-            targets.update({"zina", "fabian"})
+            targets.add("zina")
         if "who is fabian" in normalized:
             targets.add("fabian")
         if "project" in normalized and "fabian" in normalized:
@@ -440,9 +438,13 @@ class IdentityRegistryService:
         assistant_name = assistant.name if assistant else "Zina"
 
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
+            if "zina" in deleted_keys:
+                return None
+            if "fabian" in deleted_keys:
+                return f"I am {assistant_name}, an AI assistant."
             if assistant:
                 return assistant.answer
-            return None if "zina" in deleted_keys else f"I am {assistant_name}, {owner_name}'s AI assistant."
+            return f"I am {assistant_name}, {owner_name}'s AI assistant."
         if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you", "who create zina", "who own zina")):
             if "zina" in deleted_keys or "fabian" in deleted_keys:
                 return None
@@ -450,6 +452,8 @@ class IdentityRegistryService:
         if "why were you create" in normalized or "why do you exist" in normalized:
             if "zina" in deleted_keys:
                 return None
+            if "fabian" in deleted_keys:
+                return f"{assistant_name} was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
             return (
                 f"{assistant_name} was created to help {owner_name} manage memory, project context, "
                 "knowledge retrieval, WhatsApp conversations, and controlled AI access."
