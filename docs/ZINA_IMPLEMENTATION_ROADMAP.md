@@ -2436,7 +2436,7 @@ The latest exact-head run does not include a combined 001–040 chain, installed
 
 ### Identity Registry and Outbound Message Library
 
-- #50 still has three current unresolved review threads. `introduction_reply()` now consults Identity Registry availability, but the generic introduction scope/project claims and fail-closed behavior on registry read errors require independent verification. The migration's `updated_at = created_at` eligibility heuristic remains unreliable for rows touched by pre-upgrade reads; do not keep patching timestamp edge cases. Choose an explicit provenance primitive (e.g. a dedicated immutable seed marker or an auditable migration decision) and obtain OWNER/product agreement on whether generic introductions must suppress project claims when those registry facts are disabled/deleted.
+- #50 still has four current unresolved review threads. `introduction_reply()` now consults Identity Registry availability, but the generic introduction scope/project claims and fail-closed behavior on registry read errors require independent verification. The migration's `updated_at = created_at` eligibility heuristic remains unreliable for rows touched by pre-upgrade reads; do not keep patching timestamp edge cases. Choose an explicit provenance primitive (e.g. a dedicated immutable seed marker or an auditable migration decision) and obtain OWNER/product agreement on whether generic introductions must suppress project claims when those registry facts are disabled/deleted.
 - #49 has one current unresolved thread on permanent set-key retirement after hard deletion. The branch adds an append-only key registry and regression, but the current exact-head review thread remains open. The library is still a content-selection foundation: no live producer/selection integration or dashboard. It must remain downstream of P0 authorization and must never itself grant send authority.
 
 ### Local validation limits and readiness
@@ -2445,3 +2445,11 @@ The latest exact-head run does not include a combined 001–040 chain, installed
 - No Actions run was triggered by this documentation refresh. The exact-head results above are fetched historical/current GitHub run records, not tests run in this execution.
 - Main branch metadata reports `protected=false`; configure required independent review and CI checks before any future merge.
 - Controlled-test readiness remains **NOT TEST READY**. Private-media retention remains OFF. **REAL WAHA ACTIONS: NONE.**
+
+
+### Fresh source-review delta — 2026-11-05 00:25 WAT
+
+- Rechecked PR #50 exact head `0a2b38c0ce72b3c4a8fdd49490be504facb34bac`. Its review state is now **4 unresolved threads / 12 total** (4 current-diff, 3 outdated unresolved); this supersedes the earlier three-thread snapshot above.
+- Added a new P1 review finding at [PR #50 discussion](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50#discussion_r4475073725): the `identity_reply()` aggregate-project fallback checks only the `projects` key even though the same request explicitly targets both `projects` and `fabian`. If Fabian is disabled/tombstoned while `projects` remains active, the fallback still emits “Fabian’s core projects”. The adjacent “why do you exist” fallback also names the owner while checking only `zina`. Requested fail-closed guards and regression coverage.
+- This is review-only: no application source, tests, migration, or CI run changed. The #50 exact-head Tests evidence remains run 41202063757 on this branch (001–033 + 035 only); no integrated 001–040 proof is implied.
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`. No merge, approval, production DB operation, or WAHA action occurred. **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
