@@ -1903,3 +1903,14 @@ Environment note for this verification: no local `psql` or Docker executable was
 - New P1: `BotConfigService.identity_reply()` can reintroduce a disabled/tombstoned Fabian through its aggregate-project fallback. `IdentityRegistryService._explicit_target_keys()` targets both `projects` and `fabian`, but the fallback checks only `projects`. A related “why do you exist” fallback names the owner while checking only `zina`. Review comment: [discussion_r4475073725](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50#discussion_r4475073725).
 - No source edit, test run, migration, or CI run was performed for this finding. Keep #50 open for the requested regression and independent review; no merge or approval is implied.
 - **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+
+## Fresh review delta — 2026-11-05 10:35 WAT
+
+- PR #62 remains at exact head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`. Its inline review state is now **8 unresolved / 8 total; 5 active** after a new source-grounded P2 review on `scripts/audit_zina_test_db_leakage.py:145`.
+- The exact #62 audit checks raw-table existence with `to_regclass('public.<table>')`, but counts using unqualified `SELECT COUNT(*) FROM "<table>"`. A shadow schema earlier in `search_path` can therefore make the existence check inspect `public` while the count reads a different table and misses leaked rows.
+- PR #55's current head `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` fixes this by counting the explicitly qualified `public` table in `collect_raw_table_leaks()` and adds `test_raw_table_audit_counts_public_rows_when_search_path_has_shadow_table`. The #62 copies of the audit script and test do not contain that fix/regression. The combined candidate must retain #55's correction while keeping #62's newer URL guards, Contact inventory, schema audit, and leakage workflow step.
+- #62's exact-head Tests run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) remains **864 passed / 76.01%**, with schema and leakage audit steps reported successful; it applied migrations **001–033 only** and did not exercise the missing shadow-schema regression or the integrated 001–040 chain.
+- The review comment is review-only. No application code, tests, migrations, Actions run, production database, deployment, or WAHA operation was changed or triggered by this finding.
+
+The release gate remains **NOT TEST READY**. **REAL WAHA ACTIONS: NONE.**
