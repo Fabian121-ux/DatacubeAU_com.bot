@@ -116,7 +116,7 @@ async def test_approve_fails_closed_on_wrong_target_without_granting_authority(m
 
 @pytest.mark.asyncio
 async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatch):
-    session = _Session()
+    session = _Session(scalars=[None, 41])
     service = OwnerOutboundApprovalService(session)
     row = _row()
 
