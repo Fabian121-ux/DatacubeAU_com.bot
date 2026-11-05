@@ -267,7 +267,7 @@ class BotConfigService:
             if "zina" in unavailable_keys:
                 return self._DELETED_FALLBACK_MESSAGE
             if "fabian" in unavailable_keys:
-                return "I was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
+                return f"{assistant_name} was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
             return (
                 f"I was created to help {owner_name} manage memory, project context, knowledge retrieval, "
                 "WhatsApp conversations, and controlled AI access."

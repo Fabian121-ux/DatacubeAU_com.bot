@@ -377,6 +377,6 @@ async def test_identity_reply_shortcuts_omit_unavailable_owner_identity(
     expected = (
         "I am Zina, an AI assistant."
         if phrase in {"who are you?", "what is your name?"}
-        else "I was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
+        else "Zina was created to support memory, project context, knowledge retrieval, WhatsApp conversations, and controlled AI access."
     )
     assert await BotConfigService(db_session).identity_reply(phrase) == expected
