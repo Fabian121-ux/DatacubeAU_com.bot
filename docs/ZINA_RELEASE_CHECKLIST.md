@@ -20,11 +20,15 @@ This overlay supersedes older verification tables below wherever heads, run IDs,
 | #50 Identity Registry follow-up | e543a704729cc69a859ea61e4e1afb0196d23fdb | 5 / 13 | 4 | [41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413) success — 841 passed, 76.50% |
 | #55 DB-leakage CI gate | b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c | 1 / 1 | 0 | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success |
 | #57 deployment seed safety | d831ce4e3dd7e56f38d8563dc63abc44f8c37bba | 1 / 1 | 0 | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success |
-| #59 verification docs | acb5f3073cc9ff992dd1060f8bcf01d34c609af0 | 4 / 4 | 1 | No run on this exact head; [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) is for parent bf6e4975d304744147d0306123176004f4d605ce |
+| #59 verification docs (pre-refresh input) | 80dd9f5a59aa22dc64dee391a33d94dd7ef92b32 | 4 / 4 | 1 | No run on this input head; [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) is for parent bf6e4975d304744147d0306123176004f4d605ce |
 | #60 contact-consent P0 | 9a1865cad05114770fe4c8ffeae3b12eed8b34ca | 19 / 19 | 10 | [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) success — 955 passed, 76.53% |
 | #61 migration-sequence gate | 8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f | 0 / 0 | 0 | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success — 809 passed, 76.01% |
 | #62 deployment preflight integration | a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc | 7 / 7 | 4 | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success — 864 passed, 76.01% |
 | #63 router/conversation audit | 13fad868affe01d6069f4288481f8cd8dd341c62 | 1 / 1 | 0 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success — 803 passed, 76.08% |
+
+
+
+The pre-refresh input above is the #59 branch head immediately before this 10:21 verification update. The final checklist commit in this update advances #59 again; that resulting docs-only head has no associated Tests run because both commits use [skip ci].
 
 The latest overall Tests run is [41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413), successful on #50's exact current head. #59 has no run on its current head. No review submission on the open PRs is an independent APPROVED review.
 
