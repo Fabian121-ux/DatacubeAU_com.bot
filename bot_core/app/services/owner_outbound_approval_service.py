@@ -63,8 +63,8 @@ class OwnerOutboundApprovalService:
         owner_identity: str,
         now: datetime | None = None,
     ) -> OwnerApprovalMutationResult:
+        await self._lock_queue_then_approval(approval_id)
         instant = now or utcnow()
-        await self._lock(approval_id)
         row = await self._load_exact(approval_id, lock=True)
         validation = await self._validate_pending(row, approval_id, instant, action="approve")
         if validation is not None:
@@ -77,6 +77,7 @@ class OwnerOutboundApprovalService:
                 SET status = 'approved', approved_by = :owner_identity,
                     approved_at = :instant, updated_at = :instant
                 WHERE id = :approval_id AND status = 'pending'
+                  AND expires_at > clock_timestamp()
                 RETURNING outbound_queue_id
                 """
             ),
@@ -112,8 +113,8 @@ class OwnerOutboundApprovalService:
         )
 
     async def reject(self, approval_id: int, *, now: datetime | None = None) -> OwnerApprovalMutationResult:
+        await self._lock_queue_then_approval(approval_id)
         instant = now or utcnow()
-        await self._lock(approval_id)
         row = await self._load_exact(approval_id, lock=True)
         validation = await self._validate_pending(row, approval_id, instant, action="reject")
         if validation is not None:
@@ -125,6 +126,7 @@ class OwnerOutboundApprovalService:
                 UPDATE outbound_approvals
                 SET status = 'rejected', rejected_at = :instant, updated_at = :instant
                 WHERE id = :approval_id AND status = 'pending'
+                  AND expires_at > clock_timestamp()
                 RETURNING outbound_queue_id
                 """
             ),
@@ -159,7 +161,6 @@ class OwnerOutboundApprovalService:
         *,
         now: datetime | None = None,
     ) -> OwnerApprovalMutationResult:
-        instant = now or utcnow()
         new_text = (new_text or "").strip()
         if not new_text:
             return self._deny("edit", approval_id, "Replacement text is required.", "empty replacement text")
@@ -171,7 +172,8 @@ class OwnerOutboundApprovalService:
                 "replacement text too long",
             )
 
-        await self._lock(approval_id)
+        await self._lock_queue_then_approval(approval_id)
+        instant = now or utcnow()
         row = await self._load_exact(approval_id, lock=True)
         validation = await self._validate_pending(row, approval_id, instant, action="edit")
         if validation is not None:
@@ -203,16 +205,20 @@ class OwnerOutboundApprovalService:
                 "instant": instant,
             },
         )
-        await self.session.execute(
+        updated_approval = await self.session.execute(
             text(
                 """
                 UPDATE outbound_approvals
                 SET content_sha256 = :content_sha256, updated_at = :instant
                 WHERE id = :approval_id AND status = 'pending'
+                  AND expires_at > clock_timestamp()
+                RETURNING id
                 """
             ),
             {"approval_id": approval_id, "content_sha256": digest, "instant": instant},
         )
+        if updated_approval.scalar_one_or_none() is None:
+            return self._deny("edit", approval_id, "Approval expired before the edit could be committed.", "approval expired")
         await self._audit(row, decision="allow", reason="owner edited exact deferred draft; approval remains pending")
         return OwnerApprovalMutationResult(
             True,
@@ -223,8 +229,8 @@ class OwnerOutboundApprovalService:
         )
 
     async def requeue(self, approval_id: int, *, now: datetime | None = None) -> OwnerApprovalMutationResult:
+        await self._lock_queue_then_approval(approval_id)
         instant = now or utcnow()
-        await self._lock(approval_id)
         row = await self._load_exact(approval_id, lock=True)
         if row is None:
             return self._deny("requeue", approval_id, "Approval not found.", "approval not found")
@@ -255,17 +261,26 @@ class OwnerOutboundApprovalService:
                 "queue row not safely requeueable",
             )
 
-        await self.session.execute(
+        result = await self.session.execute(
             text(
                 """
                 UPDATE outbound_queue
                 SET status = 'pending', next_attempt_at = :instant,
                     error_message = NULL, updated_at = :instant
                 WHERE id = :queue_id AND status IN ('deferred', 'failed')
+                  AND EXISTS (
+                      SELECT 1 FROM outbound_approvals a
+                      WHERE a.id = :approval_id
+                        AND a.status = 'approved'
+                        AND a.expires_at > clock_timestamp()
+                  )
+                RETURNING id
                 """
             ),
-            {"queue_id": int(row["outbound_queue_id"]), "instant": instant},
+            {"queue_id": int(row["outbound_queue_id"]), "approval_id": approval_id, "instant": instant},
         )
+        if result.scalar_one_or_none() is None:
+            return self._deny("requeue", approval_id, "Requeue denied: approval expired or queue state changed.", "approval expired or queue state changed")
         await self._audit(row, decision="allow", reason="exact approved unconsumed row explicitly requeued by owner")
         return OwnerApprovalMutationResult(
             True,
@@ -327,7 +342,9 @@ class OwnerOutboundApprovalService:
         return None
 
     async def _load_exact(self, approval_id: int, *, lock: bool) -> dict[str, Any] | None:
-        suffix = " FOR UPDATE OF a, q" if lock else ""
+        # Mutators lock the queue first via _lock_queue_then_approval; only then
+        # lock the approval row here. This matches the worker's queue -> approval order.
+        suffix = " FOR UPDATE OF a" if lock else ""
         result = await self.session.execute(
             text(
                 """
@@ -345,6 +362,28 @@ class OwnerOutboundApprovalService:
         )
         row = result.mappings().first()
         return dict(row) if row is not None else None
+
+    async def _lock_queue_then_approval(self, approval_id: int) -> None:
+        """Acquire the shared outbound lock order before an OWNER approval mutation.
+
+        The worker already owns outbound_queue before it consumes an approval. Locking
+        the queue first here prevents a queue->approval / approval->queue deadlock and
+        ensures an OWNER requeue/edit/reject cannot race the final transport attempt.
+        """
+        result = await self.session.execute(
+            text("SELECT outbound_queue_id FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+        queue_id = result.scalar_one_or_none()
+        if queue_id is None:
+            return
+        locked_queue = await self.session.execute(
+            text("SELECT id FROM outbound_queue WHERE id = :queue_id FOR UPDATE"),
+            {"queue_id": int(queue_id)},
+        )
+        if locked_queue.scalar_one_or_none() is None:
+            return
+        await self._lock(approval_id)
 
     async def _lock(self, approval_id: int) -> None:
         await self.session.execute(

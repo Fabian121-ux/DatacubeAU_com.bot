@@ -534,17 +534,51 @@ class OutboundAuthorizationService:
             return None
         return hour * 60 + minute
 
-    async def consume_approval(self, approval_id: int, *, now: datetime | None = None) -> bool:
-        instant = now or utcnow()
+    async def consume_approval(self, approval_id: int, *, message: Any) -> bool:
+        """Consume one exact OWNER approval at the final pre-transport boundary.
+
+        Consumption reserves the approval for one transport attempt, not proof of
+        delivery. If WAHA's outcome is uncertain, the queue row remains quarantined
+        and this approval stays consumed so neither restart nor OWNER requeue can
+        replay the same authority.
+        """
+        context = self.context_from_queue_message(message)
+        if context is None:
+            return False
+
         result = await self.session.execute(
             text(
                 """
                 UPDATE outbound_approvals
-                SET status = 'consumed', consumed_at = :instant, updated_at = :instant
-                WHERE id = :approval_id AND status = 'approved' AND expires_at > :instant
+                SET status = 'consumed',
+                    consumed_at = clock_timestamp(),
+                    updated_at = clock_timestamp()
+                WHERE id = :approval_id
+                  AND outbound_queue_id = :outbound_queue_id
+                  AND inbound_message_id = :inbound_message_id
+                  AND target_chat_id = :target_chat_id
+                  AND content_sha256 = :content_sha256
+                  AND status = 'approved'
+                  AND expires_at > clock_timestamp()
+                  AND EXISTS (
+                      SELECT 1
+                      FROM outbound_queue q
+                      WHERE q.id = :outbound_queue_id
+                        AND q.status = 'sending'
+                        AND q.chat_id = :target_chat_id
+                        AND q.formatting_json->>'content_sha256' = :content_sha256
+                        AND q.formatting_json->>'delivery_policy'
+                            IN ('approval_required', 'authorized_external')
+                  )
                 RETURNING id
                 """
             ),
-            {"approval_id": approval_id, "instant": instant},
+            {
+                "approval_id": approval_id,
+                "outbound_queue_id": context.outbound_queue_id,
+                "inbound_message_id": context.inbound_message_id,
+                "target_chat_id": context.target_chat_id,
+                "content_sha256": context.content_sha256,
+            },
         )
         return result.scalar_one_or_none() is not None

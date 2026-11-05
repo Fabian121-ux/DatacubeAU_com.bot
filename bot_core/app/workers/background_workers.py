@@ -154,7 +154,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         )
         messages = (await session.execute(stmt)).scalars().all()
         due_messages: list[OutboundMessage] = []
-        approval_ids: dict[int, int] = {}
         authority = OutboundAuthorizationService(session)
         safety = OutboundSafetyLimitService(session)
         for message in messages:
@@ -168,7 +167,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     commit=False,
                 )
                 continue
-            allowed, reason, approval_id = await _delivery_authorized(session, authority, message)
+            allowed, reason, _approval_id = await _delivery_authorized(session, authority, message)
             if not allowed:
                 await _mark_delivery_blocked(session, message, reason=reason)
                 continue
@@ -177,8 +176,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 if not safety_decision.allowed:
                     await _mark_delivery_blocked(session, message, reason=safety_decision.reason)
                     continue
-            if approval_id is not None:
-                approval_ids[int(message.id)] = approval_id
             message.status = "sending"
             message.updated_at = now
             due_messages.append(message)
@@ -208,8 +205,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 )
                 await session.commit()
                 continue
-            if final_approval_id is not None:
-                approval_ids[int(message.id)] = final_approval_id
 
             # This is the final external-contact consent fence, after the queue batch has
             # been committed as "sending". The consent service materializes an UNKNOWN
@@ -315,6 +310,37 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
 
+            # Consume an exact one-use OWNER approval only after every final
+            # recipient, content, consent, STOP, safety, and delivery-window fence.
+            # The queue row is still locked; the database clock decides expiry here.
+            approval_id = final_approval_id
+            if approval_id is not None:
+                consumed = await OutboundAuthorizationService(session).consume_approval(
+                    approval_id,
+                    message=message,
+                )
+                if not consumed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason="final exact one-use OWNER approval reservation failed: approval expired, was consumed, or its queue binding changed",
+                    )
+                    await session.commit()
+                    continue
+                session.add(
+                    AuditLog(
+                        action="outbound_approval_consumed_for_dispatch",
+                        entity_type="outbound_queue",
+                        entity_id=str(message.id),
+                        details_json={
+                            "chat_id": message.chat_id,
+                            "approval_id": approval_id,
+                            "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                            "delivery_attempt_reserved": True,
+                        },
+                    )
+                )
+
             try:
                 if dispatch is not None:
                     response = await _send_authorized_media(client, message, dispatch.plan)
@@ -327,29 +353,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     reason=f"WAHA delivery outcome uncertain; automatic replay blocked: {exc}",
                 )
             else:
-                approval_id = approval_ids.get(int(message.id))
-                if approval_id is not None:
-                    consumed = await OutboundAuthorizationService(session).consume_approval(approval_id)
-                    if not consumed:
-                        session.add(
-                            AuditLog(
-                                action="outbound_approval_consumption_invariant_failed",
-                                entity_type="outbound_queue",
-                                entity_id=str(message.id),
-                                details_json={
-                                    "chat_id": message.chat_id,
-                                    "approval_id": approval_id,
-                                },
-                            )
-                        )
-                        log_event(
-                            logger,
-                            logging.ERROR,
-                            "outbound_approval_consumption_invariant_failed",
-                            queue_id=message.id,
-                            approval_id=approval_id,
-                        )
-                message.status = "sent"
+                message.status = "sent
                 message.error_message = None
                 message.updated_at = utcnow()
                 await ScheduledActionService(session).reconcile_outbound_delivery(message)

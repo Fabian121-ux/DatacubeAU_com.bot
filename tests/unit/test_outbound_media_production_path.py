@@ -619,6 +619,124 @@ async def test_worker_rechecks_consent_expiry_after_final_locks_before_waha(db_s
 
 
 @pytest.mark.asyncio
+async def test_exact_owner_approval_is_consumed_at_the_final_dispatch_boundary(db_session, monkeypatch):
+    target_chat_id = "2348000000052@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Exact approval dispatch reservation",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="One exact approved external reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-APPROVAL-CONSUME-AT-DISPATCH",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approved = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approved.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-final-approval-dispatch",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+    ).scalar_one()
+
+    assert [operation for operation, _ in client.calls] == ["send_text"]
+    assert row.status == "sent"
+    assert status == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_expired_exact_owner_approval_at_final_boundary_never_reaches_waha(db_session, monkeypatch):
+    target_chat_id = "2348000000053@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Approval expiry at final dispatch",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Approval must still be current at transport entry"),
+        chat_id=target_chat_id,
+        message_id="PROD-APPROVAL-EXPIRY-FINAL-FENCE",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approved = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approved.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-approval-expiry",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+
+    async def expire_approval_after_final_fences(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        await session.execute(
+            text(
+                """
+                UPDATE outbound_approvals
+                SET expires_at = clock_timestamp() - interval '1 second'
+                WHERE id = :approval_id
+                """
+            ),
+            {"approval_id": approval_id},
+        )
+        await session.flush()
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        expire_approval_after_final_fences,
+    )
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final exact one-use OWNER approval reservation failed" in (row.error_message or "")
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+    ).scalar_one()
+    assert status == "approved"
+
+
+@pytest.mark.asyncio
 async def test_pending_stop_on_unmapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
     """Sender identity must connect an unmapped STOP alias to the queued Contact."""
     target_chat_id = "2348000000041@c.us"
