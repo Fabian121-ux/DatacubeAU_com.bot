@@ -1,3 +1,16 @@
+## Source correction — PR #48 view-once return fence (2026-11-05)
+
+The earlier overlay below that says PR #48 still updates `returned_to_owner_at` at queue creation and lacks a final source-deletion fence is stale against exact PR #48 head `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca`.
+
+- `background_workers.py` calls `_lock_owner_view_once_source()` before the WAHA call. It requires exact `source_message_id`, `source_chat_id`, and `command_message_id`, locks the source metadata row, and refuses missing/deleted sources or a chat mismatch.
+- `_mark_owner_view_once_returned()` is called only in the successful WAHA-response branch; it is not set when the queue row is created or when the transport outcome is uncertain.
+- Exact-head regressions include `test_mutating_view_once_source_binding_after_queueing_never_reaches_waha`, `test_delete_after_enqueue_blocks_view_once_return_before_waha`, and `test_uncertain_send_is_not_blindly_retried`.
+- Therefore #48's source-binding/deletion/success-timestamp worker fence is present on its branch. Its remaining release blocker is integration of migration 034 into the ordered 001–040 candidate and independent review—not the stale worker-fence claim. Retention remains OFF.
+
+This correction is source/test review only; it does not claim a new test run, merge, or live WhatsApp action.
+
+---
+
 ## Fresh review follow-up — 2026-11-05 (after exact-head source review)
 
 This follow-up supersedes the earlier #50 thread count in the verification overlay below. It records a new source-grounded review finding; it does not imply approval, merge readiness, or a new application-code change.
