@@ -292,7 +292,7 @@ async def test_deleted_default_is_not_resurrected_by_the_special_answer_fallback
     await service.delete("zina")
     assert await service.answer("who are you?") is None
 
-    datacube_answer = "Datacube AU is an AI-powered assistant and knowledge automation project created by Fabian."
+    datacube_answer = "Datacube AU is an AI-powered educational intelligence platform focused on document intelligence, exam preparation, knowledge retrieval, and personalized learning."
     assert await service.answer("what is datacube") == datacube_answer
     await service.delete("datacube_au")
     # Must not leak the old hardcoded _special_answer literal, the real entry's own
