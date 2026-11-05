@@ -16,7 +16,7 @@ This supersedes the 22:15 WAT snapshot below. It records fresh GitHub state and 
 |---|---|---:|---|
 | [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 total | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success |
 | [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 total | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success |
-| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 3 / 11 total | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success |
+| [#50 Identity Registry fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | 4 / 12 total (4 current-diff, 3 outdated) | [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) success |
 | [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 total (outdated) | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success |
 | [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 total (outdated) | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success |
 | [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `a3eeb67fbe6f11bca7959d3e2fd8b5b0046d57d5` | 3 / 3 total | No exact-head run; docs commits use `[skip ci]` |
@@ -1589,3 +1589,11 @@ This is the current release decision, superseding older verification overlays. T
 Controlled testing remains **NOT TEST READY**. Do not start owner self-DM or external-contact stages until every integrated mechanical, P0, deployment, and independent-review gate above passes. Private-media retention remains OFF. **REAL WAHA ACTIONS: NONE.**
 
 Environment note for this verification: no local `psql` or Docker executable was available, so no local PostgreSQL-backed test or migration run was performed. This docs-only update did not trigger Actions.
+
+
+## Fresh source-review delta — 2026-11-05 00:25 WAT
+
+- PR #50 remains at exact head `0a2b38c0ce72b3c4a8fdd49490be504facb34bac`; review state is **4 unresolved / 12 total** (4 current-diff, 3 outdated unresolved), not the earlier 3 / 11 snapshot.
+- New P1: `BotConfigService.identity_reply()` can reintroduce a disabled/tombstoned Fabian through its aggregate-project fallback. `IdentityRegistryService._explicit_target_keys()` targets both `projects` and `fabian`, but the fallback checks only `projects`. A related “why do you exist” fallback names the owner while checking only `zina`. Review comment: [discussion_r4475073725](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50#discussion_r4475073725).
+- No source edit, test run, migration, or CI run was performed for this finding. Keep #50 open for the requested regression and independent review; no merge or approval is implied.
+- **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
