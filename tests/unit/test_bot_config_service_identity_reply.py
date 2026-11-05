@@ -348,3 +348,32 @@ async def test_introduction_reply_does_not_duplicate_project_identity_facts(db_s
     assert introduction == "Hi. I'm Zina, Fabian's AI assistant."
     assert "project" not in introduction.casefold()
     assert "datacube" not in introduction.casefold()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "who are you?",
+        "what is your name?",
+        "why do you exist?",
+        "why were you created?",
+    ],
+)
+@pytest.mark.parametrize("lifecycle", ["deleted", "disabled"])
+async def test_identity_reply_shortcuts_require_active_owner_identity(
+    db_session, phrase, lifecycle
+):
+    """Canned assistant introductions also assert the OWNER identity."""
+    registry = IdentityRegistryService(db_session)
+    await registry.ensure_defaults_from_profile(PROFILE)
+    if lifecycle == "deleted":
+        await registry.delete("fabian")
+    else:
+        entry = await registry.get_by_key("fabian")
+        assert entry is not None
+        entry.is_enabled = False
+        await db_session.flush()
+
+    assert await BotConfigService(db_session).identity_reply(phrase) == (
+        BotConfigService._DELETED_FALLBACK_MESSAGE
+    )

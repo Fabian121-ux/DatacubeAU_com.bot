@@ -143,14 +143,16 @@ class IdentityRegistryService:
         lists every name" leak applies to them too.
         """
         targets: set[str] = set()
+        # Both canned answers identify the assistant as Fabian's assistant, so
+        # both lifecycle records must be active before either shortcut can answer.
         if any(phrase in normalized for phrase in ("what is your name", "who are you", "what are you", "tell me about you")):
-            targets.add("zina")
+            targets.update({"zina", "fabian"})
         if any(phrase in normalized for phrase in ("who create you", "who build you", "who made you")) or re.search(
             r"\bwho (?:create|own) zina\b", normalized
         ):
             targets.update({"zina", "fabian"})
         if "why were you create" in normalized or "why do you exist" in normalized:
-            targets.add("zina")
+            targets.update({"zina", "fabian"})
         if "who is fabian" in normalized:
             targets.add("fabian")
         if "project" in normalized and "fabian" in normalized:

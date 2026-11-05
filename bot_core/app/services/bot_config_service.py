@@ -254,7 +254,7 @@ class BotConfigService:
         owner_name = profile["owner_name"] or "Fabian"
 
         if any(phrase in normalized for phrase in ("what is your name", "whats your name", "who are you", "what are you")):
-            if "zina" in unavailable_keys:
+            if {"zina", "fabian"} & unavailable_keys:
                 return self._DELETED_FALLBACK_MESSAGE
             return f"I am {assistant_name}, {owner_name}'s AI assistant."
         if any(phrase in normalized for phrase in ("who created you", "who built you", "who created zina")):
@@ -262,7 +262,7 @@ class BotConfigService:
                 return self._DELETED_FALLBACK_MESSAGE
             return f"{owner_name} created me."
         if any(phrase in normalized for phrase in ("why were you created", "why do you exist")):
-            if "zina" in unavailable_keys:
+            if {"zina", "fabian"} & unavailable_keys:
                 return self._DELETED_FALLBACK_MESSAGE
             return (
                 f"I was created to help {owner_name} manage memory, project context, knowledge retrieval, "
