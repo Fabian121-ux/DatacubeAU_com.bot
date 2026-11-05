@@ -1,3 +1,30 @@
+## Fresh engineering delta — 2026-11-05 05:20 WAT (04:20 UTC)
+
+This supersedes the 04:17 WAT snapshot below. It rechecks the live main ref, all ten open PR heads/review threads, exact-head Tests associations, current migration inventories, and the #60/#62 deployment candidates.
+
+### Main and exact-head CI
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; `protected=false`. Main's latest exact-head Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. Main still has migrations 001–033.
+- PR #50 now points to `9b4e8728f7d7682c9c2e6489a5e6499be12a2628`. Exact-head [Tests run 41967086649](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41967086649) succeeded on 2026-11-05: **833 passed, 1 warning, 76.52% coverage**. Its disposable PostgreSQL workflow applied 001–033 and 035 only. It does not prove integrated 001–040, installed 033→040 upgrade, second-run checksum/no-op, schema audit, or DB leakage.
+- #50's current code removes project claims from the shared introduction, requires both `projects` and `fabian` for the aggregate-project fallback, and requires both `zina` and `fabian` for the generic identity fallback. Five regression cases were added. Review remains **4 unresolved / 12 total**; the historical provenance/backfill decision in migration 035 is still unresolved for independent human review.
+- Other exact open PR heads remain: #48 `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca`; #49 `bcd0033e024b177561b8afd41589afe1897ba4de`; #55 `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c`; #57 `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba`; #60 `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`; #61 `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f`; #62 `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`; #63 `13fad868affe01d6069f4288481f8cd8dd341c62`. This documentation branch's pre-refresh head is `45e801bea410ab419f464c128c3c5803d196d47c`; this commit will advance #59 and has no exact-head CI result.
+- Exact-head Tests remain successful for #48 [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566), #49 [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545), #55 [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314), #57 [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406), #60 [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978), #61 [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938), #62 [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073), and #63 [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429). #59's previous run [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) is for parent SHA `bf6e4975d304744147d0306123176004f4d605ce`, not its current pre-refresh head.
+
+### Migration and deployment gates
+
+- Feature migrations are allocated without duplicate numbers across branches: #48=034, #50=035, #49=036–037, #60=038–040. No branch contains the full 001–040 chain.
+- #60 has explicit API runtime-role and service-environment allowlists, but lacks #62's DB-target/seed/libpq/contiguous-sequence preflights. #62 has those preflights plus schema/leakage gates, but still mounts broad `.env.production` into postgres/api/waha/migrate and does not use #60's restricted runtime role. Do not merge either branch independently or assume they compose.
+- Required integration proof remains: fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, ORM schema audit, zero DB leakage, runtime-role privilege checks, and rendered Compose service-environment isolation.
+
+### P0 and release status
+
+- #60's current exact head has passing branch-local CI, including the recent ScheduledAction worker reservation lock and two-session mock-WAHA regression. It still has unresolved P0 approval reservation/uncertain-requeue and policy-expiry findings. STOP semantics remain an explicit OWNER linearization decision: a STOP committed before final dispatch reservation blocks; one committed after reservation may be too late to cancel the already-entering single network attempt.
+- **NOT TEST READY.** No integrated migration/deployment candidate or independent review completion exists. Private-media retention remains OFF. No production database or real WAHA action was performed.
+
+This is a documentation-only verification overlay. It does not claim tests, migrations, schema/leakage audits, approval, merge, or release readiness for this commit.
+
+---
+
 ## Fresh engineering verification — 2026-11-05 04:17 WAT (03:17 UTC)
 
 This supersedes the 2026-11-05 03:18 WAT overlay below. I re-fetched main, all ten open PRs, their current heads and review threads, exact-head Actions run metadata, main workflow YAML, migration directories, and the #60/#62 deployment candidates. This is a source/CI review plus documentation refresh only: no application code, tests, SQL migrations, schema audit, leakage audit, production database, or WAHA operation was run in this pass.
