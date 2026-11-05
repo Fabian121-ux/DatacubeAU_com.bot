@@ -1,3 +1,70 @@
+## Fresh engineering verification — 2026-11-05 04:17 WAT (03:17 UTC)
+
+This supersedes the 2026-11-05 03:18 WAT overlay below. I re-fetched main, all ten open PRs, their current heads and review threads, exact-head Actions run metadata, main workflow YAML, migration directories, and the #60/#62 deployment candidates. This is a source/CI review plus documentation refresh only: no application code, tests, SQL migrations, schema audit, leakage audit, production database, or WAHA operation was run in this pass.
+
+### Main and CI — current source, not historical checklist status
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (2026-09-08 11:09:59 UTC); the live branch endpoint reports `protected=false`. No later main commit was found.
+- Main contains migrations **001–033 only**. The current `.github/workflows/tests.yml` triggers on PRs and pushes to main/master, applies `bot_core/migrations/*.sql` in lexical order, then runs pytest with a 57% coverage floor. It has no migration-sequence preflight, ORM schema audit, or post-test DB-leakage audit. The separate Strix workflow is manual for its operational scan; no Strix scan was run here.
+- Latest exact-main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on the exact main SHA above at 2026-09-08 11:10:02 UTC. There is no newer main-branch run.
+- Main `docker-compose.yml` still mounts the complete `.env.production` into postgres, api, waha, and migrate. Main `deploy/scripts/run-migrations.sh` has no DB-target/seed/sequence preflight and applies every seed file after migrations.
+
+### Current open PRs — exact heads and live review state
+
+The #59 head below is the snapshot input **before this documentation-only refresh**; this refresh advances that branch and is marked `[skip ci]`.
+
+| PR | Exact head at snapshot | Unresolved / total review threads |
+|---|---|---:|
+| [#48 PrivateMediaArtifact wiring](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 |
+| [#50 Identity Registry follow-up](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `0a2b38c0ce72b3c4a8fdd49490be504facb34bac` | **4 / 12** (corrects the prior 12 / 12 snapshot) |
+| [#55 DB-leakage CI gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 (outdated thread) |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 (outdated thread) |
+| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `56106d03dee399bf3990b31af10e38169dc34e56` | 3 / 3 |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `9a1865cad05114770fe4c8ffeae3b12eed8b34ca` | 19 / 19 |
+| [#61 migration-sequence integrity gate](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 |
+| [#62 deployment seed/migration preflight](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 7 / 7 |
+| [#63 conversation observability audit fix](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1 (outdated thread) |
+
+### Exact-head CI evidence and scope limits
+
+- #48: [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) succeeded on its exact head; branch contributes migration 034.
+- #49: [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) succeeded on its exact head; branch contributes migrations 036–037. It remains foundation-only, not live producer/selection/dashboard integration.
+- #50: [41202063757](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41202063757) succeeded on its exact head: 828 passed, 76.52% coverage; its migration step applied 001–033 plus 035, not the integrated chain.
+- #55: [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) succeeded on its exact head.
+- #57: [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) succeeded on its exact head; migration scope was 001–033.
+- #59: current docs head `56106d0` is a documentation-only `[skip ci]` update and has no exact-head CI result. The latest cited predecessor run [41838149298](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41838149298) passed 797 tests / 76.01% on `bf6e4975d304744147d0306123176004f4d605ce`, applying 001–033 only; it is not evidence for this docs head.
+- #60: [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) succeeded on exact head `9a1865c`: 955 passed, 1 warning, 76.53% coverage. The job contains only the migration-apply step (no sequence preflight/schema/leakage steps); the branch directory contains 001–033 plus 038–040, so it does not prove 001–040 or installed 033→040 upgrade.
+- #61: [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) succeeded on its exact head; its sequence preflight and 001–033 baseline do not include feature migrations 034–040.
+- #62: [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) succeeded on exact head `a8d032d`: 864 passed, 1 warning, 76.01%; migration-sequence preflight, 001–033, ORM schema audit, and post-test leakage audit passed. It does not include feature migrations 034–040.
+- #63: [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) succeeded on its exact head; its run validates the 001–033 baseline only.
+
+### Migration and deployment integration — still blocking
+
+- Feature migration allocation is ordered and non-colliding **across separate branches**: #48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040. No candidate branch contains all 034–040. #61's contiguous-sequence preflight will reject #60 by itself because 034–037 are absent.
+- Required integrated candidate: migrations 001–040 in order; fresh install; installed 033→040 upgrade; second run proving checksum/no-op stability; ORM schema audit; zero DB leakage; runtime-role privilege proof; and rendered Compose service-environment isolation on disposable PostgreSQL. No current run proves this matrix.
+- #60 has explicit service environment allowlists and a restricted `zina_runtime` DB role, but its runner lacks #62's DB-target validation, local-seed opt-in, libpq target sanitization, and contiguous-migration preflight; it also applies seed files unconditionally.
+- #62 has target validation, seed opt-in, libpq sanitization, migration-sequence preflight, schema audit, and leakage audit, but its Compose file still passes broad `.env.production` to postgres/api/waha/migrate and it does not provision/use #60's restricted runtime role. Merging either branch after the other as-is can regress the other branch's security controls. Consolidate both into one reviewed candidate; do not merge them independently in either order.
+
+### P0 and architectural blockers
+
+1. **One-use approval reservation / uncertain replay (#60):** worker consumption still occurs after a successful WAHA call. An ambiguous send can leave the approval `approved`; OWNER `requeue()` still permits an approved row whose queue status is `deferred` or `failed`, so the uncertain-delivery quarantine has a manual replay path. Reserve the exact approval before the single attempt, after all final fences, using a database-clock conditional transition bound to approval ID, queue ID, inbound ID, exact recipient, and exact payload digest; keep it consumed on uncertain outcomes. First unify worker and OWNER lock order as queue → approval; do not introduce an approval-row lock while OWNER code still locks approval → queue.
+2. **Policy expiry (#60):** preserve the original authority source/policy ID and revalidate that same enabled, unexpired policy after all blocking consent/STOP/safety/window locks using PostgreSQL `clock_timestamp()`. If the policy that granted authority is missing, disabled, or expired, deny; do not reinterpret it as absence of a quiet-hours restriction.
+3. **STOP linearization (#60 — human decision):** the final pending-STOP read/dispatch reservation is the practical boundary. A STOP committed before reservation blocks; a STOP arriving after reservation may be too late to cancel the already-entering single network attempt. Fabian must explicitly accept or change that contract; keep the send path fail closed until decided. Preserve the inverse-order two-session test and uncertain-send/no-retry tests.
+4. **ScheduledAction cancellation race (#60):** the current exact head adds the worker's `FOR UPDATE` lock after the queue lock and a two-session mock-WAHA regression; run 41846567978 passed. This closes that specific code path on the branch, but all #60 review threads remain unresolved and independent review is still required.
+5. **Identity Registry (#50):** registry-read exceptions now fail closed, but 4 current unresolved threads remain. Decisions/findings include whether introduction text should omit project/Datacube claims and defer to registry-owned project entries, keeping legacy provenance unknown rather than inferring it from `updated_at = created_at`, and fixing a fallback that can still assert Fabian when the `fabian` registry entry is unavailable.
+
+### Release decision
+
+**NOT TEST READY.** The main branch has no current proof for contact-specific consent, the exact approval/policy expiry fences remain open, STOP semantics require OWNER acceptance, and the 001–040 integrated fresh/upgrade/no-op/schema/leakage/runtime-role matrix is unproven. PR #49 remains foundation-only; PrivateMediaArtifact byte retention remains OFF. No controlled real-WhatsApp stage is authorized by this verification.
+
+**Work performed in this pass:** source/PR/CI/deployment review and this documentation snapshot only. No application code, tests, migrations, schema/leakage audit, production DB, or WAHA action was run. **REAL WAHA ACTIONS: NONE.**
+
+**Highest-value next engineering step:** produce one dedicated integration candidate that reconciles #48/#50/#49/#60 migrations 034–040 and combines #60 runtime-role/service allowlists with #62's target/seed/libpq/sequence preflights, while fixing the two remaining P0 authority races and recording Fabian's STOP decision before any release claim.
+
+
+---
+
 ## Fresh engineering verification — 2026-11-05 03:18 WAT (2026-11-05 02:18 UTC)
 
 This supersedes the 2026-11-05 00:23 WAT snapshot below. I re-fetched main, all ten open PRs and their review threads, exact-head Actions associations, workflow YAML, migration directories on the feature branches, main deployment files, and the current #60/#62 deployment candidates. This is a verification/documentation update only: no application code, test, migration, production database, or WAHA action was changed or run in this pass.
