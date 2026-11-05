@@ -1,3 +1,52 @@
+## Fresh exact-state verification — 2026-11-05 21:17 UTC
+
+This snapshot supersedes the earlier 19:48 UTC overlay below. It is a GitHub source/review/Actions inspection plus documentation update only. It does **not** certify release readiness.
+
+### Main, workflow and migrations
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main commit is still the 2026-09-08 merge of PR #47. The branch endpoint reports `protected=false`.
+- Main contains migrations **001–033 only**. The historical 034 collision is now resolved by branch allocation, but none of the feature migrations has landed on main.
+- Main `.github/workflows/tests.yml` still applies every available migration in lexical order and runs pytest with a 57% coverage floor. It does not itself enforce contiguous migration numbering, run the ORM schema audit, or run the post-test DB-leakage audit.
+- Main `deploy/scripts/run-migrations.sh` still reapplies every seed SQL file on each invocation, including local fixture seeds. The opt-in local-seed correction is still in open PR #57.
+
+### All ten open PRs — live exact heads, review threads and exact-head Tests associations
+
+Unresolved / total counts are from a fresh GitHub review-thread query. A green branch-local run is not proof of the integrated migration chain or independent approval.
+
+| PR | Exact head | Unresolved / total | Exact-head Tests |
+|---|---|---:|---|
+| #48 PrivateMediaArtifact observation | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success; migrations 001–034 |
+| #49 Outbound Message Library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; migrations 001–033 + 036–037 |
+| #50 Identity Registry follow-up | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | 5 / 13 | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; **855 passed, 1 warning, 76.53%**; migrations 001–033 + 035 |
+| #55 DB-leakage CI gate | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success; main migrations 001–033 plus schema/leakage audit |
+| #57 deployment seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; main migrations 001–033 |
+| #59 verification docs | `369d73358899e18a16ed72959e321205c61d81df` before this documentation commit | 4 / 4 | No run associated with this docs-only head; commits use `[skip ci]` |
+| #60 contact-consent P0 | `f24c8318aa79e0c7519b91a52d0461a2bfed9730` | 19 / 20 | [42096178533](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42096178533) success; **958 passed, 1 warning, 76.55%**; migrations 001–033 + 038–040 |
+| #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; main migrations 001–033 |
+| #62 deployment preflight integration | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 8 / 8 | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; main migrations 001–033 plus schema/leakage audit |
+| #63 router/conversation audit | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; main migrations 001–033 |
+
+The latest visible Tests run is #60 run **42096178533** on exact head `f24c831`. Its log confirms migrations 001–033 then 038–040, followed by pytest: **958 passed**, coverage **76.55%**. It did not run 034–037, the integrated 001–040 chain, installed 033→040 upgrade/re-run checksum validation, schema audit, or DB-leakage audit.
+
+### Current P0 / deployment blockers
+
+1. **P0 — contact-policy authority expiry on #60.** The worker's first authorization can grant `contact_policy` authority, but the final delivery-window helper filters expired/disabled policies out and treats a missing row as “no quiet-hours restriction.” If the original policy expires while later fences wait, the worker can reach WAHA without proving that same policy still authorizes the category. Preserve the original authority type and policy ID; re-lock and revalidate that exact policy's contact/chat, enabled state, category rules and expiry using `clock_timestamp()` after all final waits. Missing, disabled, expired, or no-longer-permitted policy must deny before transport.
+2. **P1 — policy lock-order inversion on #60.** Worker `authorize()` locks the policy row before the later delivery-window helper obtains the exact-chat advisory lock. OWNER policy upsert/disable takes advisory lock → policy row. This creates a row → advisory versus advisory → row deadlock cycle. Acquire the shared exact-chat lock before the first policy-row lock and test both two-session lock winners.
+3. **OWNER decision — STOP linearization.** A STOP committed before the final durable dispatch reservation blocks. A STOP arriving after that reservation cannot reliably cancel the already-entering single network attempt; it must veto later sends. Fabian must accept or reject this one-in-flight-attempt contract. More pre-send reads do not eliminate the network boundary.
+4. **Deployment integration — #60 and #62 cannot be merged independently.** #60 carries the restricted runtime DB role and service-specific Compose environment allowlists but lacks #62's database-target, local-seed and contiguous-migration preflights. #62 carries those preflights but still injects broad `.env.production` into API/WAHA/migrate and its raw-table leakage counter is not schema-qualified after its public-schema existence check. Port #55's `public."<table>"` counter and shadow-schema regression into the integrated candidate.
+5. **Integrated migration proof remains absent.** The allocated sequence is unique across branches: #48=034, #50=035, #49=036–037, #60=038–040. Main is still 001–033. One candidate must include all predecessors and prove fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, migration preflight, schema audit, zero DB leakage, and runtime-role privilege boundaries on disposable PostgreSQL.
+
+#50's current 5 unresolved threads still require independent review: shared introduction scope, legacy default provenance (do not infer pre-033 origin from `updated_at = created_at`), and current registry fallback/project-scope behavior. Its green 855-test run validates only 001–033 + 035, not integrated migrations.
+
+### Release state
+
+- Keep #60 draft/open; its green exact-head run does not clear the P0 authority-expiry issue, P1 lock-order cycle, STOP product decision, or 19 unresolved review threads.
+- Keep the deployment candidates open until #60/#62/#55/#57/#61 are reconciled into one environment-safe, migration-safe candidate and independently reviewed.
+- **NOT TEST READY.** No integrated 001–040 proof, no clean installed-database upgrade proof, no complete dashboard CRUD/observability gate, and no staged controlled-test evidence.
+- No production DB operation, production WAHA reconnection, real WhatsApp send, private-media retention activation, self-approval, or merge occurred. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Follow-up verification correction — 2026-11-05 19:48 UTC
 
 A further exact-source check found one additional deployment-gate defect on current PR #62 head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`:
