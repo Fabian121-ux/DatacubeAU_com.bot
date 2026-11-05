@@ -1,3 +1,17 @@
+## Latest release verification delta — 2026-11-05 18:33 UTC
+
+This update supersedes older status overlays below for the current PR #50 head and test evidence. It does not mark the product TEST READY.
+
+- Main is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08 11:09:59 UTC, migrations 001–033 only. Latest exact-main Tests: [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), success on 2026-09-08. Main's Tests workflow has a 57% coverage floor but no migration-sequence preflight, ORM schema audit, or DB-leakage audit.
+- PR #50 exact head: `2dc4225465c41a0aa47b2a762b7d37bf8e34764a`. Exact-head Tests [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529): **855 passed, 1 warning, 76.53% coverage**. Disposable PostgreSQL applied 001–033 + 035 only; no integrated 001–040, installed upgrade, checksum/no-op, schema-audit, or leakage proof is claimed.
+- #50 now returns owner-neutral descriptions for active project facts when Fabian's identity is disabled/tombstoned, while explicit OWNER identity/ownership requests remain fail-closed. Added disabled/tombstoned regressions across Datacube, ZinaX, Moxiz, and aggregate project queries. Five review threads remain unresolved; migration-035 timestamp provenance still needs a human decision.
+- Open migration allocation: #48=034, #50=035, #49=036–037, #60=038–040. The duplicate 034 numbering has been reconciled across branches, but no branch proves the integrated 001–040 chain.
+- PR #60 exact head `4b36f8af3389a9270aefde4654f1e7b0a9270b3c`; Tests [42019032673](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42019032673) succeeded: **956 passed, 1 warning, 76.57% coverage**. Its uncertain-delivery replay guard is present. Approval expiry at the final transport boundary and contact-policy expiry after fence waits remain P0 blockers; STOP linearization requires OWNER policy acceptance.
+- Deployment integration is not safe: #60 has restricted API runtime DB credentials/service allowlists but lacks #62's target/seed/libpq/sequence preflights; #62 has those preflights and schema/leakage checks but still mounts broad `.env.production` into API/WAHA/migrate and does not use the restricted runtime role. Require one integrated candidate and fresh 001–040, installed 033→040 upgrade, second-run checksum/no-op, schema audit, zero DB leakage, runtime-role privilege checks, and rendered Compose environment isolation before deployment approval.
+- **NOT TEST READY.** No production DB changes, production WAHA reconnection, real WhatsApp sends, or private-media retention activation. Controlled testing remains blocked pending P0, migration/deployment, independent-review, dashboard/observability, and mock-WAHA gates.
+
+---
+
 ## Fresh exact-state verification — 2026-11-05 10:21 WAT
 
 This overlay supersedes older verification tables below wherever heads, run IDs, or review counts differ. It is based on fresh GitHub refs, all ten open PR metadata records and review threads, exact-head workflow associations, recursive migration trees, current main workflow YAML, and deployment source. This is a source/review plus documentation update; it does not certify release readiness.
