@@ -2759,3 +2759,14 @@ The latest exact-head run does not include a combined 001–040 chain, installed
 - Added a new P1 review finding at [PR #50 discussion](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50#discussion_r4475073725): the `identity_reply()` aggregate-project fallback checks only the `projects` key even though the same request explicitly targets both `projects` and `fabian`. If Fabian is disabled/tombstoned while `projects` remains active, the fallback still emits “Fabian’s core projects”. The adjacent “why do you exist” fallback also names the owner while checking only `zina`. Requested fail-closed guards and regression coverage.
 - This is review-only: no application source, tests, migration, or CI run changed. The #50 exact-head Tests evidence remains run 41202063757 on this branch (001–033 + 035 only); no integrated 001–040 proof is implied.
 - Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`. No merge, approval, production DB operation, or WAHA action occurred. **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+
+## Fresh review delta — 2026-11-05 10:35 WAT
+
+- PR #62 remains at exact head `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc`. Its inline review state is now **8 unresolved / 8 total; 5 active** after a new source-grounded P2 review on `scripts/audit_zina_test_db_leakage.py:145`.
+- The exact #62 audit checks raw-table existence with `to_regclass('public.<table>')`, but counts using unqualified `SELECT COUNT(*) FROM "<table>"`. A shadow schema earlier in `search_path` can therefore make the existence check inspect `public` while the count reads a different table and misses leaked rows.
+- PR #55's current head `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` fixes this by counting the explicitly qualified `public` table in `collect_raw_table_leaks()` and adds `test_raw_table_audit_counts_public_rows_when_search_path_has_shadow_table`. The #62 copies of the audit script and test do not contain that fix/regression. The combined candidate must retain #55's correction while keeping #62's newer URL guards, Contact inventory, schema audit, and leakage workflow step.
+- #62's exact-head Tests run [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) remains **864 passed / 76.01%**, with schema and leakage audit steps reported successful; it applied migrations **001–033 only** and did not exercise the missing shadow-schema regression or the integrated 001–040 chain.
+- The review comment is review-only. No application code, tests, migrations, Actions run, production database, deployment, or WAHA operation was changed or triggered by this finding.
+
+The release gate remains **NOT TEST READY**. **REAL WAHA ACTIONS: NONE.**
