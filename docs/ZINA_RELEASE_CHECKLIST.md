@@ -1,3 +1,16 @@
+## Fresh review follow-up — 2026-11-05 (after exact-head source review)
+
+This follow-up supersedes the earlier #50 thread count in the verification overlay below. It records a new source-grounded review finding; it does not imply approval, merge readiness, or a new application-code change.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with migrations 001–033 only and `protected=false`. Latest exact-main Tests remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08.
+- PR #50 remains at exact head `e543a704729cc69a859ea61e4e1afb0196d23fdb`. Exact-head Tests [41981156413](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41981156413) succeeded: **841 passed, 1 warning, 76.50% coverage**. Its disposable DB applied 001–033 + 035 only; no integrated 001–040, installed 033→040 upgrade, second-run checksum/no-op, schema audit, or leakage audit is established.
+- A new **P1** review comment is open on [PR #50, `identity_registry_service.py:480`](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50#discussion_r4478109139): with `fabian` disabled/tombstoned, project-only queries can still return owner-attributed Datacube/ZinaX/Moxiz facts because target detection and project-answer fallbacks do not consistently model the OWNER dependency. The requested regression matrix covers project-only queries with the OWNER unavailable. PR #50 now has **5 unresolved / 13 total** review threads. The timestamp-based legacy provenance backfill remains a separate unresolved architectural decision.
+- PR #60 remains at exact head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`; exact-head Tests [41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) succeeded (**955 passed, 1 warning, 76.53%**), but applied 001–033 + 038–040 only. That run had no contiguous-sequence preflight, schema audit, or DB-leakage audit. The one-use approval/manual-requeue uncertainty path and expired contact-policy authority race remain P0 blockers; STOP linearization still needs OWNER acceptance.
+- Migration numbers are unique only across separate branches: #48=034, #50=035, #49=036–037, #60=038–040. No open branch contains the integrated 001–040 chain. #60 and #62 deployment controls remain complementary but incompatible as-is; neither should merge independently.
+- This follow-up contains no application-code edit, test, migration, schema/leakage audit, production DB operation, or WAHA action. **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh engineering delta — 2026-11-05 (post-#50 exact-head verification)
 
 This snapshot supersedes the 2026-11-05 05:20 WAT overlay below. It rechecks main, all ten open PR heads and review threads, the current migration allocation, workflow configuration, and the latest #50 exact-head test run.
