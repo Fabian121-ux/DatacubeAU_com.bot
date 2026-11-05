@@ -1,3 +1,19 @@
+## Latest release verification delta — 2026-11-05 19:44 UTC
+
+This supersedes prior status overlays for current state. It does not mark Zina TEST READY.
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, latest commit 2026-09-08 11:09:59 UTC; branch protection currently reports `false`. Main migrations are 001–033. Exact-main Tests [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08.
+- Current PR #60 head `f24c8318aa79e0c7519b91a52d0461a2bfed9730`; exact-head Tests [42096178533](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42096178533) succeeded: **958 passed, 1 warning, 76.55% coverage**. Its disposable migration set is 001–033 + 038–040 only.
+- #60 now consumes the exact one-use OWNER approval before transport with a database-clock expiry predicate, persists uncertain-delivery evidence, and refuses OWNER replay of uncertain rows. Final contact consent is refreshed after safety/STOP locks, and ScheduledAction is row-locked through the attempt.
+- **P0 still open:** contact-policy authority can survive expiry while later worker fences wait. The final delivery-window helper treats an absent active policy as “no quiet-hours restriction” even when that policy was the original send authority. Preserve the authority source/policy ID and revalidate that same row, category, enabled state and expiry with `clock_timestamp()` after all waits; missing/disabled/expired must deny before WAHA.
+- **P1 still open:** worker policy-row → advisory-lock ordering conflicts with OWNER policy mutation advisory-lock → policy-row ordering and can deadlock. Acquire the exact-chat mapping lock before the first worker policy row lock; test both two-session lock winners.
+- STOP linearization remains a human policy decision: a STOP committed before the durable dispatch reservation blocks; one arriving after reservation may not cancel the already-entering single request.
+- Migration allocation is unique across branches (#48=034, #50=035, #49=036–037, #60=038–040), but no integrated 001–040 candidate exists. #60 and #62 remain an incompatible deployment pair: #60 has restricted runtime DB credentials/service allowlists but lacks #62's full preflight set; #62 has preflights but still exposes broad `.env.production` to API/WAHA/migrate. Integrate with #61's continuity gate before any merge/deploy decision.
+- Current open PR review-thread counts (unresolved / total): #48 0/15, #49 1/80, #50 5/13, #55 1/1, #57 1/1, #59 4/4, #60 20/20 (11 active), #61 0/0, #62 8/8, #63 1/1. No independent APPROVED review is recorded.
+- **NOT TEST READY.** Remaining gates: final contact-policy expiry/lock-order/STOP contract; one integrated 001–040 fresh and installed-upgrade run; schema audit and zero DB leakage; restricted runtime-role and Compose-environment proof; independent review; dashboard CRUD/observability and staged controlled-test evidence. No production DB change, production WAHA reconnection, real WhatsApp send, or private-media retention activation. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Latest release verification delta — 2026-11-05 18:33 UTC
 
 This update supersedes older status overlays below for the current PR #50 head and test evidence. It does not mark the product TEST READY.
