@@ -9,6 +9,11 @@ This supersedes the 2026-11-05 00:23 WAT snapshot below. I re-fetched main, all 
 - Latest exact-main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on 2026-09-08. No newer main-branch run was found.
 - Main `docker-compose.yml` still mounts the entire `.env.production` into **postgres, api, waha, and migrate**. The current #60 branch has explicit service environment allowlists and a restricted runtime DB role; #62 still has the broad env-file configuration. Those two deployment candidates must be reconciled, not merged in either order independently.
 
+### Roadmap freshness correction against current main
+
+- The original roadmap body below was last audited on 2026-09-08 at `0034587`. Its Phase 1 table still says delete, search, provenance, and direct matching tests are missing. Those statements are now stale: PR #47 is merged in current main `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; main contains migration 033, Identity Registry source/entity_type/deleted_at fields, tombstone delete, get-by-key, search, admin GET/DELETE routes, and 14 direct service regression tests. The current #50 work is a follow-up for hardcoded-fallback/tombstone consistency and truthful legacy provenance, not the original missing-CRUD slice.
+- The original release checklist's 2026-09-08 `[x]` mechanical-gate snapshot is also historical, not current release proof. #60 has reopened P0 consent/approval/policy-expiry races, and the #60/#62 deployment-role/secret-boundary integration remains unproven. The NOT TEST READY decision below is based on current branch code and exact-head evidence, not the old checked boxes.
+
 ### Exact-head CI evidence and its limits
 
 - **#60 current head `9a1865cad05114770fe4c8ffeae3b12eed8b34ca`** — [Tests 41846567978](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41846567978) succeeded: **955 passed, 1 warning, 76.53% coverage**. The job log confirms migrations **001–033 + 038–040** only. It did not apply 034–037, run the schema audit, or run the DB-leakage audit. Its workflow is still the older workflow variant without the migration preflight. The #60 source now includes the exact ScheduledAction worker-row lock and its two-session mock-transport regression; that closes that specific race only.
