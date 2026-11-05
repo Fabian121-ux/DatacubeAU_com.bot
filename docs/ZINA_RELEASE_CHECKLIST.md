@@ -1930,7 +1930,7 @@ This release snapshot supersedes the 2026-11-04 and 2026-11-05 10:35 overlays ab
 | #62 | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 8 / 8 |
 | #61 | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 |
 | #60 | `4b36f8af3389a9270aefde4654f1e7b0a9270b3c` | 19 / 19 |
-| #59 | `7e897e337fdd9399649703a2daccb89cf90edb9c` | 4 / 4 |
+| #59 | this documentation-refresh branch (self-referential) | 4 / 4 |
 | #57 | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 |
 | #55 | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 |
 | #50 | `e543a704729cc69a859ea61e4e1afb0196d23fdb` | 5 / 13 |
@@ -1938,6 +1938,8 @@ This release snapshot supersedes the 2026-11-04 and 2026-11-05 10:35 overlays ab
 | #48 | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 |
 
 No open PR has an `APPROVED` review submission. Review-thread counts include outdated threads where the API reports them unresolved; they are not a merge-readiness score.
+
+PR #59 is the branch carrying this overlay; its current head is the commit containing this row. All other head SHAs above were re-read immediately before this docs-only update.
 
 ### Updated P0 evidence
 
