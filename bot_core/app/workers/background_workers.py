@@ -427,6 +427,8 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
     the action is still enabled and queued. Missing metadata is never itself authority.
     """
     metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if "delivery_outcome_uncertain" in metadata:
+        return False, "queue row has an uncertain prior transport outcome; replay denied", None
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
 
     if _is_owner_chat_id(message.chat_id):
@@ -546,8 +548,13 @@ async def _mark_delivery_uncertain(
     """Quarantine a row whose external send outcome cannot be proven.
 
     Replaying an uncertain row risks a duplicate real-world message. PostgreSQL keeps
-    the row and evidence for OWNER reconciliation; no retry is scheduled automatically.
+    the row and evidence for OWNER reconciliation; a durable one-way marker blocks
+    both OWNER requeue and the final worker fence from replaying this exact row.
     """
+    # This marker survives restart and is deliberately never cleared by requeue.
+    metadata = dict(message.formatting_json) if isinstance(message.formatting_json, dict) else {}
+    metadata["delivery_outcome_uncertain"] = True
+    message.formatting_json = metadata
     message.status = "deferred"
     message.error_message = reason[:2000]
     message.updated_at = utcnow()
@@ -563,6 +570,7 @@ async def _mark_delivery_uncertain(
                 "reason": message.error_message,
                 "retry_count": message.retry_count,
                 "automatic_replay": False,
+                "delivery_outcome_uncertain": True,
             },
         )
     )
@@ -575,6 +583,7 @@ async def _mark_delivery_uncertain(
         queue_id=message.id,
         chat_id=message.chat_id,
         automatic_replay=False,
+        delivery_outcome_uncertain=True,
     )
 
 

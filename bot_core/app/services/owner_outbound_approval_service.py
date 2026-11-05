@@ -232,6 +232,16 @@ class OwnerOutboundApprovalService:
         if mismatch:
             await self._audit(row, decision="deny", reason=mismatch)
             return self._deny("requeue", approval_id, "Requeue denied: durable authority no longer matches the exact queue row.", mismatch)
+        formatting = row.get("formatting_json")
+        if isinstance(formatting, dict) and "delivery_outcome_uncertain" in formatting:
+            reason = "previous WAHA delivery outcome is uncertain; this exact queue row is permanently quarantined from replay"
+            await self._audit(row, decision="deny", reason=reason)
+            return self._deny(
+                "requeue",
+                approval_id,
+                "Requeue denied: the previous WAHA delivery outcome is uncertain. Do not replay this row; reconcile delivery outside Zina first.",
+                reason,
+            )
         if row["status"] != "approved":
             return self._deny("requeue", approval_id, "Requeue requires an already-approved, unconsumed approval.", "approval not active")
         if row["expires_at"] <= instant:

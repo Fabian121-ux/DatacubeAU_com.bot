@@ -13,6 +13,7 @@ from app.models.schema import AuditLog, Contact, ContactMessagingConsent, Contac
 from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
 from app.services.outbound_authorization_service import AuthorizationDecision, OutboundAuthorizationService
+from app.services.owner_outbound_approval_service import OwnerOutboundApprovalService
 from app.services.outbound_safety_limit_service import OutboundSafetyDecision
 from app.services.scheduled_action_service import ScheduledActionService
 from app.services.waha_client import WahaClientError
@@ -307,6 +308,8 @@ async def test_delivery_uncertain_state_survives_restart_style_reload(db_session
     assert persisted is not None
     assert persisted.status == "deferred"
     assert "automatic replay blocked" in (persisted.error_message or "")
+    assert (persisted.formatting_json or {}).get("delivery_outcome_uncertain") is True
+    assert OutboundAuthorizationService.context_from_queue_message(persisted) is None
 
 
 @pytest.mark.asyncio
@@ -1078,3 +1081,90 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
         ).scalar_one()
         assert later_queue.status == "deferred"
         assert "contact consent denied" in (later_queue.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_uncertain_approved_external_send_cannot_be_requeued_or_replayed(
+    db_session, test_contact, monkeypatch
+):
+    now = utcnow()
+    chat_id = "222@c.us"
+    test_contact.whatsapp_id = chat_id
+    test_contact.chat_id = chat_id
+    await db_session.flush()
+
+    inbound = Message(
+        contact_id=test_contact.id,
+        chat_id=chat_id,
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(inbound)
+    await db_session.flush()
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-uncertain-replay-test",
+        owner_identity="OWNER",
+    )
+
+    body = "approved exact text"
+    queue = OutboundMessage(
+        chat_id=chat_id,
+        message_text=body,
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": inbound.id,
+            "contact_id": test_contact.id,
+            "content_sha256": OutboundAuthorizationService.content_hash(body),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.flush()
+
+    context = OutboundAuthorizationService.context_from_queue_message(queue)
+    assert context is not None
+    authorization = OutboundAuthorizationService(db_session)
+    approval_id = await authorization.create_pending_approval(context=context)
+    assert await authorization.approve_exact(
+        approval_id=approval_id,
+        owner_identity="OWNER",
+        target_chat_id=chat_id,
+        content_sha256=context.content_sha256,
+    )
+    await db_session.commit()
+
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    client = _UncertainClient()
+
+    processed = await background_workers._deliver_due_outbound_messages(client)
+    await db_session.refresh(queue)
+    assert processed == 1
+    assert client.calls == 1
+    assert queue.status == "deferred"
+    assert (queue.formatting_json or {}).get("delivery_outcome_uncertain") is True
+
+    # The approval remains as evidence, but neither OWNER requeue nor a queue-status
+    # reset may turn this ambiguous transport attempt into a second external send.
+    requeue = await OwnerOutboundApprovalService(db_session).requeue(approval_id)
+    assert requeue.ok is False
+    assert "uncertain" in requeue.reply_text.lower()
+    await db_session.commit()
+
+    queue.status = "pending"
+    await db_session.commit()
+    replayed = await background_workers._deliver_due_outbound_messages(client)
+    await db_session.refresh(queue)
+    assert replayed == 0
+    assert client.calls == 1
+    assert queue.status == "deferred"
+    assert "uncertain prior transport outcome" in (queue.error_message or "")

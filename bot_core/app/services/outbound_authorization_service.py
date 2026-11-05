@@ -206,6 +206,9 @@ class OutboundAuthorizationService:
     @classmethod
     def context_from_queue_message(cls, message: Any) -> AuthorizationContext | None:
         metadata = message.formatting_json if isinstance(getattr(message, "formatting_json", None), dict) else {}
+        # The marker is one-way: direct authorization callers also reject this row.
+        if "delivery_outcome_uncertain" in metadata:
+            return None
         try:
             outbound_queue_id = int(message.id)
             inbound_message_id = int(metadata["inbound_message_id"])
