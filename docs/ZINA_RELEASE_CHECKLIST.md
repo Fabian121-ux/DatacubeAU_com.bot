@@ -1,3 +1,11 @@
+## Verification delta — 2026-11-06 (after the prior snapshot)
+
+- **PR #62 advanced:** exact head is now `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0`. The raw-table leakage audit now counts only `public.<quoted_table>`, not whichever same-named table wins `search_path`; a shadow-schema PostgreSQL regression was ported from #55. Tests run [42185122997](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42185122997) was still in progress at this snapshot. Its migration-sequence preflight, migration application, and ORM schema audit had passed; pytest and the final leakage gate had not yet completed. Do not claim a pass until the exact run completes.
+- **PR #50 introduction source has advanced:** `introduction_reply()` now returns only the assistant/OWNER relationship and suppresses it when either `zina` or `fabian` is disabled/tombstoned. It no longer names projects or Datacube AU, so the earlier project-claim gap is source-addressed on head `2dc4225465c41a0aa47b2a762b7d37bf8e34764a`, pending independent review. The separate migration-035 `updated_at = created_at` legacy provenance heuristic remains unsafe for pre-033 rows whose timestamps were advanced by old reads; preserve ambiguous legacy rows as unknown unless Fabian approves a stronger provenance/attestation strategy.
+- The current docs PR head at the start of this delta was `b3ea732ea971dada9b479ce32960816e82388b7b`; this verification update is the next docs-only `[skip ci]` commit. No test or migration result is inferred from this documentation write.
+
+---
+
 ## Current release verification — 2026-11-06
 
 **Release decision: NOT TEST READY.** This overlay supersedes the older repository/CI snapshot below; historical product checkboxes and per-domain tables remain historical until a fresh full codebase audit.
