@@ -727,7 +727,7 @@ async def test_expired_exact_owner_approval_at_final_boundary_never_reaches_waha
 
     assert client.calls == []
     assert row.status == "deferred"
-    assert "final exact one-use OWNER approval reservation failed" in (row.error_message or "")
+    assert "final outbound authority recheck failed" in (row.error_message or "")
     status = (
         await db_session.execute(
             text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
