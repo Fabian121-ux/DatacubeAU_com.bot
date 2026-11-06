@@ -176,10 +176,10 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
     db_session.add(row)
     await db_session.commit()
 
-    async def _authorized(self, message):
+    async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "exact active contact policy")
+        return context, AuthorizationDecision(True, "contact_policy", "exact active contact policy", policy_id=41)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -253,13 +253,17 @@ async def test_external_contact_consent_is_required_even_when_authority_allows(
         )
     await db_session.commit()
 
-    async def _authorized(self, message):
+    async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
         # Neither a live contact policy nor a one-use approval may bypass the final
         # exact-contact consent fence. This is intentionally mocked as already allowed.
         return context, AuthorizationDecision(
-            True, authority_type, f"active {authority_type}", approval_id=approval_id
+            True,
+            authority_type,
+            f"active {authority_type}",
+            approval_id=approval_id,
+            policy_id=41 if authority_type == "contact_policy" else None,
         )
 
     async def _safe(self, message, *, now=None, contact_id=None):
@@ -460,8 +464,8 @@ async def test_contact_remap_after_queue_creation_blocks_external_dispatch(
     test_contact.chat_id = new_chat
     await db_session.commit()
 
-    async def _authorized(session, authority, message):
-        return True, "test authority permits this row", None
+    async def _authorized(session, authority, message, *, lock_chat_mapping=False):
+        return True, "test authority permits this row", None, "contact_policy", 41
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -531,10 +535,10 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
     monkeypatch.setattr(background_workers, "SessionLocal", factory)
     monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
 
-    async def _authorized(self, message):
+    async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=41)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -736,7 +740,7 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
     monkeypatch.setattr(background_workers, "SessionLocal", factory)
     monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
 
-    async def _authorized(self, message):
+    async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
         return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
@@ -900,7 +904,7 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
     monkeypatch.setattr(background_workers, "SessionLocal", factory)
     monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
 
-    async def _authorized(self, message):
+    async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
         return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
