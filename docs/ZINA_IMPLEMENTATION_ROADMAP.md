@@ -16,7 +16,7 @@ This snapshot supersedes earlier repository/PR/CI status only. The per-domain ph
 | #62 migration/seed integration | `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0` | [42185122997](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42185122997) success; 865 / 76.01% | 9 / 9 |
 | #61 contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
 | #60 contact-consent P0 | `afbafbfaa4789fd5f209ad63ff4a2cc71ea5ddc2` | [42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902) success; 961 / 76.56% | 21 / 21 |
-| #59 verification docs | `f106ba9cf112cee6ca44b450e70415cb65aa3bcf` | no exact-head run (docs-only, `[skip ci]`) | 4 / 4 |
+| #59 verification docs | docs-only `[skip ci]` update | no exact-head run | 4 / 4 |
 | #57 local seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
 | #55 DB leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
 | #50 Identity Registry lifecycle | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 13 / 13 |
