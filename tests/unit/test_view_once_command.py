@@ -326,17 +326,23 @@ async def test_queued_return_row_is_bound_and_clears_the_real_delivery_fence(db_
     row = rows[0]
 
     authority = OutboundAuthorizationService(db_session)
-    allowed, reason, _ = await background_workers._delivery_authorized(db_session, authority, row)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(db_session, authority, row)
     assert allowed, reason
     assert reason == "exact configured owner chat with bound payload"
+    assert approval_id is None
+    assert authority_type == "owner_chat"
+    assert policy_id is None
 
     # Mutating the stored locator after the stamp must invalidate the binding, exactly like
     # every other owner producer -- proving this row is bound to the canonical digest and not
     # some other ad-hoc hash.
     row.media_url = "http://waha:3000/api/files/swapped.jpg"
-    mutated_allowed, mutated_reason, _ = await background_workers._delivery_authorized(db_session, authority, row)
+    mutated_allowed, mutated_reason, mutated_approval_id, mutated_authority_type, mutated_policy_id = await background_workers._delivery_authorized(db_session, authority, row)
     assert not mutated_allowed
     assert mutated_reason == "owner queue row payload is not bound to its authorized content"
+    assert mutated_approval_id is None
+    assert mutated_authority_type is None
+    assert mutated_policy_id is None
 
 
 @pytest.mark.asyncio
