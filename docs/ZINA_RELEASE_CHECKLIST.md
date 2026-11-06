@@ -1,4 +1,4 @@
-# Current release verification overlay — 2026-11-06 19:23 WAT
+# Current release verification overlay — 2026-11-06 21:20 WAT
 
 This snapshot supersedes older release/CI/migration/deployment observations below. Historical checkboxes are not current proof. **Release decision: NOT TEST READY.**
 
@@ -16,7 +16,7 @@ This snapshot supersedes older release/CI/migration/deployment observations belo
 - [ ] **Integrated migrations:** prove fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, and migration-sequence validation in one disposable PostgreSQL candidate.
 - [ ] **Integrated deployment security:** combine #60's restricted runtime DB role/service-specific Compose allowlists with #62's target validation, local-seed policy, contiguous-migration preflight, and public-schema audit. API must receive only the restricted runtime URL; WAHA only transport settings; owner DB credentials only migration service.
 - [ ] **Test DB integrity:** preserve #55's schema-qualified post-test leakage audit and #57's local fixture seed safety; verify both against the integrated candidate.
-- [ ] **Independent review:** #60 has 21/22 unresolved threads; #62 9/9; #50 5/13; #59 4/4; #49 1/80; #63, #57, and #55 each 1/1. #48 has 0/15 unresolved threads but only COMMENTED reviews; #61 has no review submission. Branch-local green tests do not substitute for independent approval.
+- [ ] **Independent review:** #60 has 21/23 total threads (21 unresolved; one quiet-hours-clock thread was withdrawn/resolved after the shared advisory-lock order was verified); #62 9/9; #50 5/13; #59 4/4; #49 1/80; #63, #57, and #55 each 1/1. #48 has 0/15 unresolved threads but only COMMENTED reviews; #61 has no review submission. Branch-local green tests do not substitute for independent approval.
 - [ ] **Identity provenance:** #50's migration 035 still uses updated_at = created_at; older scored reads could advance updated_at on system defaults before migration 033. Preserve ambiguous historical rows as unknown/NULL unless immutable evidence or explicit OWNER attestation is approved.
 - [ ] **View-once integration:** preserve #48's exact source-message/chat/command lock and success-only return audit when its worker changes are combined with #60. Private-media retention remains OFF.
 
