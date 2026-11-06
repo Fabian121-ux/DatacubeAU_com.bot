@@ -27,7 +27,7 @@ This snapshot supersedes older release/CI/migration/deployment observations belo
 - #50 head 2dc4225465c41a0aa47b2a762b7d37bf8e34764a: [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success, 855 passed / 76.53%; migrations 001–033 + 035 only.
 - #49 head bcd0033e024b177561b8afd41589afe1897ba4de: [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success, 896 passed / 76.67%; migrations 001–033 + 036–037 only.
 - #48 head 3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca: [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success; branch-local 001–033 + 034 only.
-- These results do not prove a combined fresh/upgrade migration chain, schema audit, DB leakage, or deployment-role boundary. PR #59 is docs-only and this snapshot is committed with [skip ci]; no test run is claimed for the documentation update.
+- These results do not prove a combined fresh/upgrade migration chain, schema audit, DB leakage, or deployment-role boundary. PR #59 is docs-only; this snapshot is committed with [skip ci], so no exact-head test run is expected or claimed.
 
 ## Controlled test gate
 
