@@ -19,7 +19,7 @@ Review counts are unresolved / total inline threads; outdated threads are includ
 | #62 | Deployment seed/migration integration | 6bf7619656543829641b806b4b5488cdf8ace56e | [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) success; 866 / 76.01% | 9 / 9 |
 | #61 | Contiguous migration gate | 8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; 809 / 76.01% | 0 / 0 |
 | #60 | P0 contact-consent fence | a28cd8fae8180fa395865fbb0b75f5aa07f1dd31 | [42242248132](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42242248132) success; 965 / 76.54% | 21 / 22 |
-| #59 | Verification docs | 62f4dfeeee7be5cdf28d1821d8fadf01b85bfaad | Docs-only; no exact-head Tests run | 4 / 4 |
+| #59 | Verification docs | This docs-only snapshot commit; head advances with this update | Docs-only; no exact-head Tests run | 4 / 4 |
 | #57 | Local fixture seed safety | d831ce4e3dd7e56f38d8563dc63abc44f8c37bba | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; 811 / 76.01% | 1 / 1 |
 | #55 | CI database-leakage audit | b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
 | #50 | Identity Registry lifecycle/provenance | 2dc4225465c41a0aa47b2a762b7d37bf8e34764a | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 5 / 13 |
