@@ -743,7 +743,7 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
     async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=41)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -907,7 +907,7 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
     async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "current contact policy")
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=41)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
