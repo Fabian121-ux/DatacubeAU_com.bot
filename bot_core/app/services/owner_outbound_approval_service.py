@@ -179,11 +179,12 @@ class OwnerOutboundApprovalService:
         if validation is not None:
             return validation
 
-        digest = OutboundAuthorizationService.authority_content_hash(
+        digest = OutboundAuthorizationService.content_hash_for_fields(
             new_text,
             media_url=row.get("media_url"),
             media_type=row.get("media_type"),
             media_caption=row.get("media_caption"),
+            formatting_json=row.get("formatting_json"),
         )
         formatting = dict(row["formatting_json"] or {})
         formatting["content_sha256"] = digest
@@ -327,11 +328,12 @@ class OwnerOutboundApprovalService:
             return "queue contact identity is invalid"
         if str(row["target_chat_id"] or "").strip() != str(row["queue_chat_id"] or "").strip():
             return "approval target does not match queue target"
-        actual_hash = OutboundAuthorizationService.authority_content_hash(
+        actual_hash = OutboundAuthorizationService.content_hash_for_fields(
             str(row["message_text"] or ""),
             media_url=row.get("media_url"),
             media_type=row.get("media_type"),
             media_caption=row.get("media_caption"),
+            formatting_json=formatting,
         )
         if str(row["content_sha256"] or "").lower() != actual_hash:
             return "approval content hash does not match queue content"

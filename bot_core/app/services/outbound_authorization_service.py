@@ -113,21 +113,33 @@ class OutboundAuthorizationService:
         }
 
     @classmethod
-    def content_hash_for_message(cls, message: Any) -> str:
-        """Compute the media-aware authority digest for one concrete queue row.
+    def content_hash_for_fields(
+        cls,
+        text_value: str,
+        *,
+        media_url: str | None = None,
+        media_type: str | None = None,
+        media_caption: str | None = None,
+        formatting_json: Any = None,
+    ) -> str:
+        """Compute the canonical authority digest from persisted queue payload fields.
 
-        For a row carrying transport-affecting metadata (MIME/filename) the digest
-        additionally commits to those exact values under a versioned domain. Rows
-        without such metadata keep their historical digest byte-for-byte, so existing
-        durable text-only and locator-only approvals stay valid.
+        Both the live queue row and OWNER approval mutations must use this exact
+        function. Transport-affecting MIME/filename metadata is included when present;
+        text-only and locator-only rows retain their historical digest byte-for-byte.
         """
         base = cls.authority_content_hash(
-            str(getattr(message, "message_text", "") or ""),
-            media_url=getattr(message, "media_url", None),
-            media_type=getattr(message, "media_type", None),
-            media_caption=getattr(message, "media_caption", None),
+            str(text_value or ""),
+            media_url=media_url,
+            media_type=media_type,
+            media_caption=media_caption,
         )
-        transport = cls.transport_metadata_for_message(message)
+        metadata = formatting_json if isinstance(formatting_json, dict) else {}
+        transport = {
+            key: str(metadata.get(key) or "")
+            for key in cls._TRANSPORT_METADATA_KEYS
+            if metadata.get(key)
+        }
         if not transport:
             return base
         preimage = json.dumps(
@@ -137,6 +149,17 @@ class OutboundAuthorizationService:
             ensure_ascii=False,
         )
         return hashlib.sha256(f"{cls._TRANSPORT_BINDING_DOMAIN}{preimage}".encode("utf-8")).hexdigest()
+
+    @classmethod
+    def content_hash_for_message(cls, message: Any) -> str:
+        """Compute the canonical media-aware authority digest for one queue row."""
+        return cls.content_hash_for_fields(
+            str(getattr(message, "message_text", "") or ""),
+            media_url=getattr(message, "media_url", None),
+            media_type=getattr(message, "media_type", None),
+            media_caption=getattr(message, "media_caption", None),
+            formatting_json=getattr(message, "formatting_json", None),
+        )
 
     @classmethod
     def owner_payload_digest(cls, message: Any) -> str:
