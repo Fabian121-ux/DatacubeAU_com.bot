@@ -23,10 +23,13 @@ Thread counts are unresolved / total; outdated threads remain included. All revi
 | #57 local seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; 811 / 76.01% | 1 / 1 |
 | #55 DB leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
 | #50 Identity Registry lifecycle | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 5 / 13 |
-| #49 outbound message library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 / 76.67% | 80 / 80 |
-| #48 private-media observation wiring | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 15 / 15 |
+| #49 outbound message library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 / 76.67% | 1 / 80 |
+| #48 private-media observation wiring | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 |
 
 Every green result above is branch-local. It is not independent approval or proof of the integrated migration/deployment chain.
+
+Review-thread requery — 2026-11-06 12:45 WAT: GitHub now reports PR #48 with 0 unresolved of 15 threads and PR #49 with 1 unresolved of 80. All PR #48 threads are resolved, but its review submissions remain COMMENTED, not APPROVED; PR #49's remaining P2 retired-set-key thread is unresolved. This changes review-thread counts only; it does not authorize merge or change the integrated migration/deployment gates.
+
 
 ## Work completed in this verification
 
