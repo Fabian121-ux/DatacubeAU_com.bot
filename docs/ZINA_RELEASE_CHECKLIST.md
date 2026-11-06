@@ -1,4 +1,4 @@
-# Current verification overlay — 2026-11-06 12:35 WAT
+# Current verification overlay — 2026-11-06 13:28 WAT
 
 This snapshot supersedes repository, PR, review, CI, migration, and deployment status below. The historical per-domain product tables still reflect the 2026-09-08 audit and are not current code evidence. This is not release certification.
 
@@ -7,7 +7,7 @@ This snapshot supersedes repository, PR, review, CI, migration, and deployment s
 - `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08 11:09:59 UTC. The latest push-to-main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on that exact SHA on 2026-09-08.
 - Main contains migrations **001–033**. Main `.github/workflows/tests.yml` applies SQL files lexically, runs pytest with a 57% coverage floor, and does not include the contiguous-migration preflight, ORM schema audit, or post-test database-leakage audit now present on open PR branches.
 - The repository rulesets endpoint returned an empty list. The branch-protection endpoint returned 403 `Resource not accessible by integration`; branch-protection state therefore could not be independently confirmed in this verification.
-- Latest overall Tests run: [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706), successful on PR #62 exact head `6bf7619656543829641b806b4b5488cdf8ace56e`: **866 passed, 1 warning, 76.01% coverage**. Its migration preflight, migrations 001–033, ORM schema audit, and post-test leakage audit all passed. It does not exercise feature migrations 034–040.
+- Latest overall Tests run: [42217772870](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42217772870) is **in progress** on PR #60 exact head `fa3f47345a2ead27cd56ea4ea70f077f97a3eb73`. Its disposable PostgreSQL migration step has completed for 001–033 + 038–040; pytest has not yet produced a result. This branch-local run does not exercise 034–037, contiguous-migration preflight, ORM schema audit, or post-test DB-leakage audit.
 
 ## All ten open PRs
 
@@ -18,8 +18,8 @@ Thread counts are unresolved / total; outdated threads remain included. All revi
 | #63 observability audit | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 / 76.08% | 1 / 1 |
 | #62 migration/seed integration | `6bf7619656543829641b806b4b5488cdf8ace56e` | [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) success; 866 / 76.01% | 9 / 9 |
 | #61 contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; 809 / 76.01% | 0 / 0 |
-| #60 contact-consent P0 | `afbafbfaa4789fd5f209ad63ff4a2cc71ea5ddc2` | [42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902) success; 961 / 76.56% | 20 / 21 |
-| #59 verification docs | `febd4844fb9889ebaa65d368cfff0f6d98171291` (before this refresh) | docs-only `[skip ci]`; no exact-head run | 4 / 4 |
+| #60 contact-consent P0 | `fa3f47345a2ead27cd56ea4ea70f077f97a3eb73` | [42217772870](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42217772870) in progress; no result yet | 20 / 21 |
+| #59 verification docs | `e79a0710fece4a4cc784805c6d691aa659889840` (before this refresh) | docs-only `[skip ci]`; predecessor `6ab12d4` passed run [42211591484](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42211591484); no run on this head | 4 / 4 |
 | #57 local seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; 811 / 76.01% | 1 / 1 |
 | #55 DB leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
 | #50 Identity Registry lifecycle | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 5 / 13 |
@@ -29,6 +29,12 @@ Thread counts are unresolved / total; outdated threads remain included. All revi
 Every green result above is branch-local. It is not independent approval or proof of the integrated migration/deployment chain.
 
 Review-thread requery — 2026-11-06 12:45 WAT: GitHub now reports PR #48 with 0 unresolved of 15 threads and PR #49 with 1 unresolved of 80. All PR #48 threads are resolved, but its review submissions remain COMMENTED, not APPROVED; PR #49's remaining P2 retired-set-key thread is unresolved. This changes review-thread counts only; it does not authorize merge or change the integrated migration/deployment gates.
+
+Engineering delta — 2026-11-06 13:28 WAT:
+
+- PR #60 advanced from `afbafbf` to exact head [`fa3f473`](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/fa3f47345a2ead27cd56ea4ea70f077f97a3eb73) to fix the media approval digest mismatch. One canonical `content_hash_for_fields()` now feeds the live queue digest, OWNER approval validation, and OWNER draft editing, including `media_mime` and `media_filename`; text-only/locator-only digests remain byte-compatible. Added MIME/filename mutation and media-edit regressions. A source-grounded PR comment is recorded at [#6684810544](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#issuecomment-6684810544).
+- Exact-head Tests run [42217772870](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42217772870) is in progress. Migration application 001–033 + 038–040 passed; pytest has not completed, so no test/coverage pass is claimed.
+- PR #60 remains 20 unresolved / 21 total review threads; no open PR has an APPROVED review. The media digest finding is source-addressed on the current head but remains for independent review. No WAHA action occurred.
 
 
 ## Work completed in this verification
