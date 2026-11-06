@@ -1,42 +1,58 @@
-# Current verification overlay — 2026-11-06 11:23 WAT
+# Current verification overlay — 2026-11-06 12:35 WAT
 
-This snapshot supersedes earlier repository/PR/CI status only. The per-domain phase tables below remain based on the historical 2026-09-08 audit and must not be treated as current code evidence. This is not release certification.
+This snapshot supersedes repository, PR, review, CI, migration, and deployment status below. The historical per-domain product tables still reflect the 2026-09-08 audit and are not current code evidence. This is not release certification.
 
-## Main and CI
+## Main, workflow, and access
 
-- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC). Latest push-to-main Tests run: [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), success on that exact SHA at 2026-09-08 11:12 UTC.
-- Main contains migrations **001–033** only. Main `.github/workflows/tests.yml` applies SQL files lexically and enforces a 57% coverage floor; it has no contiguous-sequence preflight, ORM schema audit, or post-test DB-leakage audit.
-- Latest overall Actions run observed: [42185122997](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42185122997), success on PR #62 exact head `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0`: **865 passed, 1 warning, 76.01% coverage**. Branch-local contiguous migration preflight, migrations 001–033, ORM schema audit, and post-test leakage audit passed. It does not exercise 034–040.
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08 11:09:59 UTC. The latest push-to-main Tests run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on that exact SHA on 2026-09-08.
+- Main contains migrations **001–033**. Main `.github/workflows/tests.yml` applies SQL files lexically, runs pytest with a 57% coverage floor, and does not include the contiguous-migration preflight, ORM schema audit, or post-test database-leakage audit now present on open PR branches.
+- The repository rulesets endpoint returned an empty list. The branch-protection endpoint returned 403 `Resource not accessible by integration`; branch-protection state therefore could not be independently confirmed in this verification.
+- Latest overall Tests run: [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706), successful on PR #62 exact head `6bf7619656543829641b806b4b5488cdf8ace56e`: **866 passed, 1 warning, 76.01% coverage**. Its migration preflight, migrations 001–033, ORM schema audit, and post-test leakage audit all passed. It does not exercise feature migrations 034–040.
 
-## All open PRs — current heads, exact-head CI, and unresolved threads
+## All ten open PRs
+
+Thread counts are unresolved / total; outdated threads remain included. All review submissions currently show COMMENTED; **no open PR has an APPROVED review**.
 
 | PR | Exact head | Latest known exact-head Tests | Unresolved / total threads |
 |---|---|---|---:|
-| #63 observability audit | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 |
-| #62 migration/seed integration | `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0` | [42185122997](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42185122997) success; 865 / 76.01% | 9 / 9 |
-| #61 contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
-| #60 contact-consent P0 | `afbafbfaa4789fd5f209ad63ff4a2cc71ea5ddc2` | [42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902) success; 961 / 76.56% | 21 / 21 |
-| #59 verification docs | docs-only `[skip ci]` update | no exact-head run | 4 / 4 |
-| #57 local seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| #63 observability audit | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 / 76.08% | 1 / 1 |
+| #62 migration/seed integration | `6bf7619656543829641b806b4b5488cdf8ace56e` | [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) success; 866 / 76.01% | 9 / 9 |
+| #61 contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; 809 / 76.01% | 0 / 0 |
+| #60 contact-consent P0 | `afbafbfaa4789fd5f209ad63ff4a2cc71ea5ddc2` | [42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902) success; 961 / 76.56% | 20 / 21 |
+| #59 verification docs | `febd4844fb9889ebaa65d368cfff0f6d98171291` (before this refresh) | docs-only `[skip ci]`; no exact-head run | 4 / 4 |
+| #57 local seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; 811 / 76.01% | 1 / 1 |
 | #55 DB leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
-| #50 Identity Registry lifecycle | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 13 / 13 |
+| #50 Identity Registry lifecycle | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 5 / 13 |
 | #49 outbound message library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 / 76.67% | 80 / 80 |
 | #48 private-media observation wiring | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 15 / 15 |
 
-All results are branch-local. A green run is not independent approval and does not prove the integrated migration/deployment chain. Thread totals include outdated threads.
+Every green result above is branch-local. It is not independent approval or proof of the integrated migration/deployment chain.
 
-## Highest-priority findings and gates
+## Work completed in this verification
 
-1. **PR #62 has a current P1 disposable-target isolation gap.** `scripts/validate_zina_seed_policy.sh` contains 22 direct `psql` calls, including cleanup `DROP DATABASE`, initial `DROP/CREATE DATABASE`, and fixture reads/writes. They bypass the sanitized `psql_cmd()` in `deploy/scripts/run-migrations.sh` and inherit libpq environment overrides such as `PGHOSTADDR` and `PGOPTIONS`. The URI validator does not sanitize the child process environment. Introduce one URL-accepting sanitized helper and route every direct call—including cleanup—through it; clear at least `PGHOSTADDR`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGOPTIONS`, `PGSERVICE`, and `PGSERVICEFILE`. Add a fake-`psql` regression that injects and captures those variables on every invocation. This exact finding is already present on the current #62 review thread; do not duplicate it. Keep #62 draft/open until fixed and independently verified.
-2. **Deployment isolation is split.** #62 has target/seed/sequence preflights and the public-schema-qualified leakage audit, but still injects broad `.env.production` into services and lacks #60's restricted runtime role. #60 has service-specific allowlists and a restricted API DB role but lacks all #62 preflights. Preserve #55's leakage audit, #57's seed policy, and #61's sequence gate in one candidate; neither merge order is safe if it drops the other branch's guards.
-3. **Migration numbering is unique in current feature branches:** 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60). The historical 034 collision is resolved in branch filenames, but main remains at 033. No candidate has proved fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, combined schema audit, zero DB leakage, and runtime-role privileges.
-4. **PR #60 P0 progress:** exact one-use OWNER approval is reserved before WAHA after final fences; the original contact-policy authority type/ID is rechecked after final consent/STOP/safety/window waits; exact-chat advisory-lock → policy-row order has two-session coverage. Its exact-head run passed 961 tests / 76.56%, but the draft remains open with unresolved independent review. OWNER decisions remain: (a) STOP after final dispatch reservation cannot recall the one request already entering transport and applies to subsequent sends; (b) whether terminal opt-out is Contact-wide across mapped aliases with no routine override; and (c) whether OWNER `.contact consent grant` plus opaque `evidence_ref` is sufficient evidence of external contact consent, or is separate from OWNER automation permission.
-5. **PR #50 legacy provenance:** `introduction_reply()` is narrowed to assistant/OWNER identity and no longer makes project/Datacube claims, pending independent review. Migration 035's `updated_at = created_at` heuristic cannot reliably classify pre-033 legacy rows whose timestamps were advanced by earlier read paths. Preserve ambiguous provenance as unknown unless Fabian approves a stronger evidence/attestation strategy; do not keep adding timestamp special cases.
-6. **Later product work stays gated:** #49 is a foundation only, not live producer selection or dashboard integration. #48 is metadata observation/return wiring only. Private-media byte retention remains OFF.
+- PR #62 was advanced from `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0` to `6bf7619656543829641b806b4b5488cdf8ace56e`.
+- Commits [b7ad7a2](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/b7ad7a2d4a8083fe0c0b74ad2581553dd2aed781) and [6bf7619](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/6bf7619656543829641b806b4b5488cdf8ace56e) route all 22 direct `psql` call sites in `scripts/validate_zina_seed_policy.sh` through one `psql_sanitized` helper. It clears `PGHOSTADDR`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGOPTIONS`, `PGSERVICE`, and `PGSERVICEFILE`, and pins `search_path` to `public`.
+- Added a fake-`psql` regression that injects all eight variables and verifies the first destructive-call attempt and EXIT-cleanup call both receive the sanitized environment. A static assertion ensures the helper is the only raw `psql` call site.
+- Exact-head run [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) passed **866 tests, 1 warning, 76.01% coverage**; migration-sequence preflight, 001–033 application, ORM schema audit, and zero-leakage audit passed. The corresponding #62 review thread has an evidence reply but remains unresolved for independent review.
+
+## Migration and deployment integration blockers
+
+1. Feature migration allocation is now unique: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. Main remains at 033. The historical duplicate 034 filenames are resolved across branch trees, but no integrated candidate has proved fresh 001–040, installed 033→040 upgrade with representative existing rows, second-run checksum/no-op, combined schema audit, zero DB leakage, and restricted runtime-role privileges.
+2. Deployment hardening is split. #62 has target/seed/sequence preflights, the public-schema audit, and the now-hardened disposable seed-policy harness, but its Compose still injects `.env.production` into postgres/API/WAHA/migrate. #60 has the restricted non-owner API role and service-specific environment allowlists, but lacks #62's pre-DDL target/seed/sequence preflights. Neither merge order is safe by itself. Preserve #55's leakage audit, #57's local-seed safety, and #61's migration-sequence gate in one reviewed candidate.
+3. No branch has yet demonstrated the combined 001–040 fresh install, installed 033→040 upgrade, second-run no-op/checksum, schema audit, zero leakage, and runtime-role boundary in the same disposable PostgreSQL candidate.
+
+## P0, identity, and later-product gates
+
+- #60's latest exact-head run passed 961 tests / 76.56% on migrations 001–033 + 038–040 only. The branch now reserves exact one-use OWNER approval before WAHA and rechecks the original authority/policy identity after final consent, STOP, safety, and delivery-window fences. Its ScheduledAction worker fence uses the same queue→action row-lock order as OWNER mutations.
+- **OWNER decision required:** accept that STOP committed before the final dispatch reservation blocks delivery, while STOP after reservation cannot recall the one request already entering transport and applies to subsequent sends; otherwise redesign the reservation/transport protocol. Also confirm whether terminal opt-out is Contact-wide across mapped aliases with no routine override, and whether OWNER `.contact consent grant` evidence is sufficient proof of external contact consent or must remain separate from automation permission.
+- #60 still requires cumulative #48 view-once source-lock / success-only return-audit integration. No real WAHA send or production reconnection is authorized.
+- #50's introduction is now limited to assistant/OWNER identity and suppresses disabled/tombstoned identity claims. Migration 035's `updated_at = created_at` legacy provenance heuristic remains unsafe for pre-033 rows whose timestamps may have been advanced by older read paths; preserve ambiguous provenance as unknown unless an explicit OWNER-attested strategy is approved.
+- #49 remains an outbound-message-library foundation only; it is not integrated into the live producer, selection, or dashboard. #48 remains metadata observation/return wiring only. Private-media byte retention remains OFF.
 
 ## Next safe step and release decision
 
-Fix the #62 seed-policy harness's inherited libpq environment exposure with a fake-`psql` regression, then compose #60/#62/#55/#57/#61 into one reviewed deployment candidate and prove fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, schema audit, zero DB leakage, and restricted-role privileges on disposable PostgreSQL. Obtain the explicit OWNER decisions above and independent human review before merge or controlled testing. **Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+Continue the independent P0 review, then compose #48/#50/#49/#60 feature migrations and #60/#62/#55/#57/#61 deployment controls into one reviewed candidate. Run the fresh 001–040 chain, installed 033→040 upgrade, checksum/no-op, schema audit, DB-leakage audit, and runtime-role tests on disposable PostgreSQL. Obtain the explicit OWNER decisions and independent human review before any merge or controlled test. **Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
 
 ---
 
