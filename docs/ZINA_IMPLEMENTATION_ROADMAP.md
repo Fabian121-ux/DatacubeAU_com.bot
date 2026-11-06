@@ -1,3 +1,14 @@
+## Verification delta — 2026-11-06 (after PR #62 exact-head run)
+
+- **PR #62 exact head:** `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0`. [Tests run 42185122997](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42185122997) passed: **865 passed, 1 warning, 76.01% coverage**. Contiguous migration preflight, branch migrations 001–033, ORM schema audit, full pytest suite and post-test DB-leakage audit all succeeded. The leakage audit found no rows in audited ORM models or existing raw cleanup tables.
+- The #62 change [44d7dba](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0) fixes the shadow-schema false negative by counting `public.<dialect-quoted-table>` and adds a PostgreSQL regression where an earlier `search_path` schema contains a same-named table. The related review thread has an evidence reply but remains unresolved for independent review.
+- #62's run applies only 001–033; it does not prove the integrated 001–040 chain or 033→040 upgrade, and the branch still lacks #60's restricted runtime role/service-specific credentials. Keep #62 draft/open.
+- **PR #50 introduction source:** `introduction_reply()` now emits only the assistant/OWNER relationship and suppresses it when either default identity is disabled/tombstoned. It no longer makes project/Datacube AU claims. This earlier concern is source-addressed on #50 head `2dc4225465c41a0aa47b2a762b7d37bf8e34764a`, pending independent review. Migration 035 still uses `updated_at = created_at` for legacy provenance and remains unsafe for pre-033 rows whose timestamps were advanced by earlier reads; ambiguous rows must remain unknown unless Fabian approves an evidence/attestation strategy.
+- #60 remains exact-head green at 961 passed / 76.56% on `afbafbf`, but only 001–033 + 038–040 were applied. The OWNER STOP-after-reservation contract and contact-consent semantics remain product decisions.
+- The docs PR head at the start of this delta was `831917e2797dbe68533f8242feac88de391e4a43`; this is a docs-only `[skip ci]` refresh. No test/migration result is inferred from this documentation write.
+
+---
+
 ## Verification delta — 2026-11-06 (after the prior snapshot)
 
 - **PR #62 advanced:** exact head is now `44d7dba65f239a9cfb7bf7a8a5fd98104a84a0f0`. The raw-table leakage audit now counts only `public.<quoted_table>`, not whichever same-named table wins `search_path`; a shadow-schema PostgreSQL regression was ported from #55. Tests run [42185122997](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42185122997) was still in progress at this snapshot. Its migration-sequence preflight, migration application, and ORM schema audit had passed; pytest and the final leakage gate had not yet completed. Do not claim a pass until the exact run completes.
