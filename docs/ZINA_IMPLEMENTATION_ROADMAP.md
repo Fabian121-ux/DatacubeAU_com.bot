@@ -1,3 +1,53 @@
+## Fresh exact-state verification — 2026-11-06 01:23 WAT (00:23 UTC)
+
+This is a fresh GitHub source, review-thread, workflow, migration-inventory, and Actions snapshot. It is not a release certification.
+
+### Main, CI, and deployment
+
+- `main` is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08 11:09:59 UTC. The branch API reports `protected=false`.
+- Latest Tests run on exact `main`: [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), success, 2026-09-08 11:10:02 UTC. No newer push-to-main run exists.
+- Main contains SQL migrations **001–033** only. Branch allocations are now unique: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. This resolves the historical duplicate-034 allocation at branch level only; no integrated 001–040 chain is on main.
+- Main `.github/workflows/tests.yml` lexically applies available migrations and runs pytest with a 57% coverage floor. It does not enforce contiguous numbering, run the ORM schema audit, or run the post-test DB-leakage audit.
+- Main `deploy/scripts/run-migrations.sh` does not validate the database target or sanitize libpq environment overrides and reapplies every seed on each invocation. Main Compose injects `.env.production` into postgres, API, WAHA, and migrate; API and migration-owner credentials are not separated on main. The restricted runtime-role/service allowlist exists only on #60's branch; #62's preflight work is not integrated with it.
+
+### All ten open PRs — exact heads, review threads, and exact-head Tests
+
+Thread counts are **unresolved / total**; active and outdated unresolved counts are shown separately. All submitted reviews currently have state COMMENTED; **no open PR has an APPROVED review**.
+
+| PR | Exact head | Threads (unresolved / total; active / outdated) | Latest exact-head Tests |
+|---|---|---:|---|
+| #48 PrivateMediaArtifact observation | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15; 0 / 0 | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success; 001–034 |
+| #49 Outbound Message Library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80; 1 / 0 | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 001–033 + 036–037 |
+| #50 Identity Registry follow-up | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | 5 / 13; 4 / 1 | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 passed, 76.53%; 001–033 + 035 |
+| #55 DB-leakage CI gate | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1; 0 / 1 | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success; 001–033 + schema/leakage audit |
+| #57 deployment seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1; 0 / 1 | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success; 001–033 |
+| #59 verification docs | `eaa5c8d1137958a1f72b93d45ac6b88a49bde6bb` | 4 / 4; 1 / 3 | No run on this exact docs head; commits use `[skip ci]` |
+| #60 contact-consent P0 | `f24c8318aa79e0c7519b91a52d0461a2bfed9730` | 20 / 21; 11 / 9 | [42096178533](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42096178533) success; 958 passed, 76.55%; 001–033 + 038–040 |
+| #61 migration-sequence gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0; 0 / 0 | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success; 001–033 |
+| #62 deployment preflight integration | `a8d032de4eb52f2c4baf31d197a5a856a6d7d4bc` | 8 / 8; 5 / 3 | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success; 864 passed, 76.01%; preflight + 001–033 + schema/leakage audit |
+| #63 router/conversation audit | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1; 0 / 1 | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success; 803 passed, 76.08%; 001–033 |
+
+The latest visible overall Tests run is #60 run **42096178533**, successful on its exact head. It is branch-local evidence only and does not validate the cumulative 001–040 chain, an installed 033→040 upgrade, second-run checksum/no-op behavior, or the integrated schema/leakage/runtime-role gates.
+
+### Current P0, identity, and integration blockers
+
+1. **#60 — contact-policy authority expiry remains P0.** The exact one-use OWNER approval is now reserved before WAHA, after the final consent/safety/STOP/window fences, with a database-side `clock_timestamp()` expiry predicate and exact queue/inbound/recipient/content binding. An ambiguous WAHA result leaves the approval consumed and the queue quarantined. However, the original `contact_policy` authority type and policy ID are still discarded by the worker. The later quiet-hours helper filters expired/disabled policies out and treats a missing row as “no quiet-hours restriction.” Preserve the original policy ID and, after all final locks, re-read that same row and check enabled/disabled state, exact contact/chat, category allow/prohibit/approval-required rules, and `expires_at > clock_timestamp()`. Missing, disabled, expired, or no-longer-authorizing policy must deny before WAHA.
+2. **#60 — policy lock-order inversion remains P1.** Worker `authorize()` locks the policy row before the later final-window helper obtains the exact-chat advisory lock; OWNER policy upsert/disable takes advisory lock → policy row. This is a row→advisory versus advisory→row deadlock cycle. Acquire the shared exact-chat lock before the first policy-row lock and add two-session tests for both lock winners.
+3. **#60 — STOP linearization needs OWNER acceptance.** A STOP committed before the durable final dispatch reservation blocks. A STOP arriving after that reservation cannot reliably retract the already-entering single network attempt; it must veto later attempts. More pre-send reads cannot remove this network boundary. Keep this explicit product decision open.
+4. **Deployment candidates must be composed, not merged independently.** #60 carries the restricted runtime DB role and service-specific environment allowlists, but lacks #62's database-target, local-seed, and migration-sequence preflights. #62 carries those preflights but still has broad `.env.production` injection and its raw-table leakage counter is not schema-qualified after a `public` existence check. Port #55's `public."<table>"` counter and shadow-schema regression into the integrated candidate; preserve #57 seed safety and #61 sequence validation.
+5. **#50 — identity decisions remain open.** Current tests cover tombstoned/disabled assistant and OWNER fallbacks and owner-neutral project answers. Still unresolved: remove project/Datacube claims from the shared introduction (recommended) versus gating every named registry fact; and do not infer legacy default provenance from `updated_at = created_at`. Safest migration behavior is to leave pre-033 rows with unknown provenance unclassified unless immutable evidence or explicit OWNER attestation exists.
+6. **#49 remains foundation-only.** It is not yet integrated into live message production, selection, or dashboard management. Do not connect it to delivery until P0 authority and integrated migration/review gates are satisfied.
+7. **#48 view-once observation/return wiring is source-reviewed and its 15 review threads are resolved, but the PR is still open.** Preserve its exact source-row lock and success-only return audit when composing the worker with #60. Private-media retention remains OFF.
+
+### Readiness
+
+Keep all PRs open for independent review; do not self-approve, resolve review threads, or merge. Required evidence still missing: one cumulative fresh 001–040 chain, installed 033→040 upgrade with representative rows, second-run checksum/no-op, combined migration preflight/schema audit/zero-leakage checks, runtime-role privilege/ownership proof on the same candidate, and resolution of blocking P0 review/product decisions. The older product-phase tables were last comprehensively audited on 2026-09-08 and remain historical.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.** This documentation refresh is docs-only and uses `[skip ci]`; it runs no tests, migrations, schema audit, leakage audit, production DB operation, or WAHA action.
+
+
+---
+
 > **Product-phase freshness warning (2026-11-05):** The detailed phase-by-phase status tables retained below were last comprehensively audited against source on 2026-09-08. This run refreshed the main/PR/CI/migration/P0/deployment snapshot above, but did not re-audit every product domain and dashboard path. Treat older DONE/PARTIAL/MISSING labels in those detailed tables as historical until each domain is rechecked against current code; do not use the 2026-09-08 checklist checkboxes as current release evidence.
 
 ## Fresh exact-state verification — 2026-11-05 21:17 UTC
