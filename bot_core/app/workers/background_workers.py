@@ -486,10 +486,13 @@ async def _delivery_authorized(
     if delivery_policy not in {"approval_required", "authorized_external"}:
         return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None
 
-    _context, decision = await authority.authorize_queue_message(
-        message,
-        lock_chat_mapping=lock_chat_mapping,
-    )
+    if lock_chat_mapping:
+        _context, decision = await authority.authorize_queue_message(
+            message,
+            lock_chat_mapping=True,
+        )
+    else:
+        _context, decision = await authority.authorize_queue_message(message)
     if not decision.allowed:
         return False, decision.reason, None
     return True, decision.reason, decision.approval_id
