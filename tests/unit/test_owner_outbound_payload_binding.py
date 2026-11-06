@@ -226,13 +226,15 @@ async def test_owner_destination_alone_is_not_delivery_authority(db_session, mon
     row.message_text = "mutated"
     await db_session.commit()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(
         db_session, OutboundAuthorizationService(db_session), row
     )
 
     assert allowed is False
     assert "mutated" in reason or "payload" in reason
     assert approval_id is None
+    assert authority_type is None
+    assert policy_id is None
 
 
 # --------------------------------------------------------------------------------------
