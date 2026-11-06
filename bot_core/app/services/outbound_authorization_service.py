@@ -252,11 +252,15 @@ class OutboundAuthorizationService:
                 "none",
                 "queue row missing exact durable authority context or content hash mismatch",
             )
-        return context, await self.authorize(
-            context,
-            now=now,
-            lock_chat_mapping=lock_chat_mapping,
-        )
+        if lock_chat_mapping:
+            decision = await self.authorize(
+                context,
+                now=now,
+                lock_chat_mapping=True,
+            )
+        else:
+            decision = await self.authorize(context, now=now)
+        return context, decision
 
     async def create_pending_approval(
         self,
