@@ -4,7 +4,7 @@ This overlay supersedes the historical 2026-09-08 checkbox snapshot below. It is
 
 ### Current release decision
 
-<badge>NOT TEST READY</badge>
+**NOT TEST READY**
 
 - Main is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest push-to-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed on 2026-09-08. No newer main push run is visible.
 - Current latest overall Tests run: [42096178533](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42096178533), success on PR #60 exact head `f24c8318aa79e0c7519b91a52d0461a2bfed9730`: 958 passed, 1 warning, 76.55% coverage. It applies 001–033 + 038–040 only; it is not the integrated feature-migration chain.
