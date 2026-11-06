@@ -237,6 +237,7 @@ class OutboundAuthorizationService:
         message: Any,
         *,
         now: datetime | None = None,
+        lock_chat_mapping: bool = False,
     ) -> tuple[AuthorizationContext | None, AuthorizationDecision]:
         """Authorize one concrete queue row without letting callers bypass context checks.
 
@@ -251,7 +252,11 @@ class OutboundAuthorizationService:
                 "none",
                 "queue row missing exact durable authority context or content hash mismatch",
             )
-        return context, await self.authorize(context, now=now)
+        return context, await self.authorize(
+            context,
+            now=now,
+            lock_chat_mapping=lock_chat_mapping,
+        )
 
     async def create_pending_approval(
         self,
@@ -410,17 +415,24 @@ class OutboundAuthorizationService:
             policy_id=policy_id,
         )
 
-    async def authorize(self, context: AuthorizationContext, *, now: datetime | None = None) -> AuthorizationDecision:
-        # OWNER policy mutations acquire this exact-chat lock before touching the
-        # policy row. Match that order here: taking FOR UPDATE first and the
-        # advisory lock later in the final delivery-window check can deadlock
-        # against an OWNER upsert/disable holding the advisory lock.
+    async def authorize(
+        self,
+        context: AuthorizationContext,
+        *,
+        now: datetime | None = None,
+        lock_chat_mapping: bool = False,
+    ) -> AuthorizationDecision:
+        # The initial queue-batch preflight must not accumulate several exact-chat
+        # advisory locks in one transaction. The final per-row dispatch fence opts
+        # into this lock so its order matches OWNER policy mutations and the
+        # final consent/delivery-window checks.
         if not ContactMessagingConsentService._is_direct_chat(context.target_chat_id):
             return AuthorizationDecision(False, "none", "exact contact/chat identity invalid")
-        await ContactMessagingConsentService.lock_exact_chat_mapping(
-            self.session,
-            context.target_chat_id,
-        )
+        if lock_chat_mapping:
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session,
+                context.target_chat_id,
+            )
         instant = now or utcnow()
 
         # Quiet hours are a contact-level delivery restriction, not an authority

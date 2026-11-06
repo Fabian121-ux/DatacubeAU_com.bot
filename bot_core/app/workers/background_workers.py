@@ -196,6 +196,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 session,
                 OutboundAuthorizationService(session),
                 message,
+                lock_chat_mapping=True,
             )
             if not final_allowed:
                 await _mark_delivery_blocked(
@@ -320,6 +321,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     session,
                     OutboundAuthorizationService(session),
                     message,
+                    lock_chat_mapping=True,
                 )
                 if not final_allowed:
                     await _mark_delivery_blocked(
@@ -442,7 +444,13 @@ async def _send_authorized_media(client: WAHAClient, message: OutboundMessage, p
     raise WahaClientError(f"unsupported outbound media operation: {plan.operation}")
 
 
-async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:
+async def _delivery_authorized(
+    session,
+    authority: OutboundAuthorizationService,
+    message: OutboundMessage,
+    *,
+    lock_chat_mapping: bool = False,
+) -> tuple[bool, str, int | None]:
     """Apply the final outbound authorization fence against exact durable authority.
 
     Exact configured OWNER self-DM remains allowed. Router-generated external replies
@@ -478,7 +486,10 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
     if delivery_policy not in {"approval_required", "authorized_external"}:
         return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None
 
-    _context, decision = await authority.authorize_queue_message(message)
+    _context, decision = await authority.authorize_queue_message(
+        message,
+        lock_chat_mapping=lock_chat_mapping,
+    )
     if not decision.allowed:
         return False, decision.reason, None
     return True, decision.reason, decision.approval_id

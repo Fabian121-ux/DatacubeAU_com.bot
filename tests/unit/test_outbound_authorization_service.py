@@ -240,7 +240,7 @@ async def test_contact_policy_authorization_locks_policy_until_dispatch_transact
         response_category="normal_reply",
     )
 
-    decision = await OutboundAuthorizationService(session).authorize(context)
+    decision = await OutboundAuthorizationService(session).authorize(context, lock_chat_mapping=True)
 
     assert decision.allowed is True
     assert decision.authority_type == "contact_policy"
@@ -287,7 +287,7 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
     # Dispatch authorization wins the row lock first: an OWNER disable must wait
     # until the dispatch transaction releases the policy lock.
     async with sessions() as dispatch_session, sessions() as owner_session:
-        decision = await OutboundAuthorizationService(dispatch_session).authorize(context)
+        decision = await OutboundAuthorizationService(dispatch_session).authorize(context, lock_chat_mapping=True)
         assert decision.allowed is True
         assert decision.authority_type == "contact_policy"
 
@@ -352,7 +352,7 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
 
         async def authorize_while_disable_is_uncommitted():
             authorization_started.set()
-            return await OutboundAuthorizationService(dispatch_session).authorize(context)
+            return await OutboundAuthorizationService(dispatch_session).authorize(context, lock_chat_mapping=True)
 
         authorization_task = asyncio.create_task(authorize_while_disable_is_uncommitted())
         await authorization_started.wait()
@@ -431,6 +431,7 @@ async def test_exact_owner_approval_cannot_bypass_contact_quiet_hours(
 
     decision = await OutboundAuthorizationService(session).authorize(
         context,
+        lock_chat_mapping=True,
         now=datetime(2026, 8, 31, 11, 0, tzinfo=timezone.utc),
     )
 
@@ -499,6 +500,7 @@ async def test_exact_owner_approval_remains_valid_outside_contact_quiet_hours():
 
     decision = await OutboundAuthorizationService(session).authorize(
         context,
+        lock_chat_mapping=True,
         now=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
     )
 
