@@ -1,3 +1,40 @@
+## Current release verification — 2026-11-06
+
+**Release decision: NOT TEST READY.** This overlay supersedes the older repository/CI snapshot below; historical product checkboxes and per-domain tables remain historical until a fresh full codebase audit.
+
+### Main and latest CI
+
+- Main SHA: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main push Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. Main still contains migrations 001–033.
+- Exact #60 head [afbafbf](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/afbafbfaa4789fd5f209ad63ff4a2cc71ea5ddc2) passed [42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902): **961 passed, 1 warning, 76.56% coverage**. The run applied 001–033 + 038–040 only; it is not integrated 001–040 or installed 033→040 proof.
+- Main Tests workflow still lacks the migration-sequence preflight, ORM schema audit and post-test DB-leakage audit. Those gates exist only on open PR branches.
+
+### Release blockers
+
+- [ ] **Integrated migration chain:** branch allocation is now unique (034 #48, 035 #50, 036–037 #49, 038–040 #60), but no single candidate has run fresh PostgreSQL 001–040, installed 033→040 upgrade, second-run no-op/checksums, and combined schema audit.
+- [ ] **Integrated deployment boundary:** combine #60's restricted runtime API role and service-specific Compose allowlists with #62's DB-target validation, local-seed allowlist and pre-DDL contiguous-migration guard. API receives only the restricted runtime URL; WAHA receives only transport settings; owner URLs remain migration-only. Preserve #55's schema-qualified raw-table leakage audit and #57's local-seed safety.
+- [ ] **P0 OWNER STOP decision:** accept that STOP before final dispatch reservation blocks, while STOP after reservation cannot recall the already-entering single attempt and blocks subsequent sends; otherwise redesign the reservation/transport protocol. No amount of repeated pre-send reads can cancel a network request already in flight.
+- [ ] **Consent semantics:** decide whether terminal opt-out is Contact-wide across all mapped aliases and cannot be routinely overridden; decide whether the OWNER `.contact consent grant` attestation/evidence reference represents external consent or must be a separate authority.
+- [ ] **Independent review:** all ten open PRs have review submissions in COMMENTED state only; no APPROVED review was found. #60 has 20/21 unresolved inline threads (9 active, 11 outdated); #62 has 8/8 (5 active); #50 has 5/13 (4 active); #49 has 1/80; #48 has 0/15. Green branch-local CI does not clear unresolved architecture/review blockers.
+- [ ] **Identity Registry decisions:** keep generic introduction limited to assistant/OWNER identity or gate every project fact it names. Do not use `updated_at = created_at` to infer old default provenance; preserve ambiguous legacy rows as unknown unless an explicit owner-attested provenance strategy is approved.
+- [ ] **Outbound Message Library:** #49 remains foundation only; do not wire live producer selection, contact automation or dashboard until P0 and integrated migrations are complete.
+- [ ] **Private media:** #48 observation/metadata wiring does not activate private-byte retention. Retention remains OFF until owner authorization, TTL/quota/integrity/delete/audit controls are separately validated.
+
+### Current PR #60 exact-head work
+
+The latest #60 source/test branch preserves the exact contact-policy authority type and policy ID through the worker, rechecks it after final consent/STOP/safety/window waits, rejects expired/replaced policy authority before transport, reserves exact one-use OWNER approval before WAHA, and quarantines uncertain outcomes. The three latest commits updated stale policy-ID and five-field helper test fixtures; the exact-head suite passed 961 tests at 76.56%. Nine active review threads remain, including the OWNER STOP linearization decision and cross-PR deployment integration. PR #60 remains draft/open.
+
+### Controlled test sequence (not authorized yet)
+
+Only after all integrated P0, migration, deployment, schema/leakage and independent-review gates pass:
+1. OWNER self-DM text.
+2. OWNER self-DM commands.
+3. OWNER self-DM media and view-once.
+4. One explicitly approved external contact, with exact one-use authority and consent checks.
+
+No autonomous live WhatsApp exercise. Private-media retention stays OFF. **NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh exact-state verification — 2026-11-06 04:20 WAT (03:20 UTC)
 
 This overlay supersedes the historical 2026-09-08 checkbox snapshot below. It is a source/PR/CI review, not a release certification. Product-phase checkboxes and domain-status tables remain historical until a fresh full codebase audit is completed.
