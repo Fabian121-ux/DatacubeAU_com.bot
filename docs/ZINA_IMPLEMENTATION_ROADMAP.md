@@ -1,3 +1,48 @@
+## Fresh engineering verification — 2026-11-06
+
+This snapshot supersedes the previous 2026-11-06 04:20 WAT overlay for repository/PR/CI state only. The historical per-domain product tables below still carry their older 2026-09-08 audit date and are not current implementation evidence. This is not release certification.
+
+### Main, workflow and current CI
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59 UTC). Latest push-to-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that exact SHA at 2026-09-08 11:10 UTC. No newer main push run is visible.
+- Main contains migrations **001–033**. Main `.github/workflows/tests.yml` applies the checked-in SQL files lexically and runs pytest with a 57% coverage floor; it does not yet enforce contiguous numbering, run the ORM schema audit, or run the post-test DB-leakage audit.
+- Branch allocation is now unique: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. The duplicate-034 allocation has been reconciled in the branch trees. No candidate yet proves the complete fresh 001–040 chain or installed 033→040 upgrade.
+- Exact #60 head [afbafbf](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/afbafbfaa4789fd5f209ad63ff4a2cc71ea5ddc2) passed [Tests run 42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902): **961 passed, 1 warning, 76.56% coverage**. Its disposable workflow DB applied 001–033 + 038–040 only; it did not run the integrated sequence, schema or leakage gates.
+
+### All ten open PRs — exact heads, exact-head Tests, review threads
+
+Thread counts are unresolved / total, with active and outdated unresolved counts shown separately. Every submitted review state is COMMENTED; **no open PR has an APPROVED review**.
+
+| PR | Exact head | Latest exact-head Tests | Threads unresolved / total (active / outdated) |
+|---|---|---|---:|
+| #63 observability | `13fad868` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 (0 / 1) |
+| #62 deployment seed guards | `a8d032de` | [41073226073](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41073226073) success | 8 / 8 (5 / 3) |
+| #61 migration sequence gate | `8a1c1dbf` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 (0 / 0) |
+| #60 contact consent P0 | `afbafbf` | [42184294902](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42184294902) success; 961 / 76.56% | 20 / 21 (9 / 11) |
+| #59 verification docs | `e9821606` | no run on this docs-only head | 4 / 4 (1 / 3) |
+| #57 seed safety | `d831ce4e` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 (0 / 1) |
+| #55 DB leakage audit | `b5cb5ff4` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 (0 / 1) |
+| #50 Identity Registry | `2dc42254` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 855 / 76.53% | 5 / 13 (4 / 1) |
+| #49 outbound message library | `bcd0033e` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 896 / 76.67% | 1 / 80 (1 / 0) |
+| #48 private media metadata | `3acacbfe` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success | 0 / 15 (0 / 0) |
+
+All successful runs above are branch-local. None proves the integrated migration/deployment contract or substitutes for independent approval.
+
+### Current P0 and architecture state
+
+- #60 now preserves and rechecks the original authority type and exact contact-policy ID after final consent, STOP, safety and delivery-window waits; policy expiry/replacement regressions assert zero mocked WAHA calls. Exact one-use OWNER approvals are reserved/consumed before WAHA, and uncertain outcomes remain quarantined. The latest 961-test run is green, but the PR still has **9 active unresolved inline threads**.
+- **OWNER decision required:** a STOP committed after the final dispatch reservation cannot recall the one request already entering transport; it blocks subsequent sends. Fabian must accept that linearization contract or require a stronger atomic reservation protocol.
+- **OWNER decision required:** terminal opt-out is currently Contact-wide across mapped aliases with no routine re-consent/override. Also decide whether `.contact consent grant`'s OWNER attestation plus opaque `evidence_ref` is adequate evidence of external contact consent, or whether contact consent and OWNER automation permission are separate authorities.
+- #60 and #62 deployment changes must be integrated, not merged in an order that restores broad `.env.production` credentials to API/WAHA or drops DB-target/seed/sequence preflights. Keep #55's schema-qualified leakage audit, #57 seed-safety behavior and #61's contiguous migration gate in the same candidate.
+- #50 still needs a human decision to keep generic introduction text limited to assistant/OWNER identity or gate every project fact it names. Its `updated_at = created_at` legacy backfill heuristic is not reliable historical provenance; ambiguous legacy rows should remain unknown unless Fabian approves an attestation/evidence strategy.
+- #49 remains a foundation only: no live producer selection or dashboard integration before P0 and migration reconciliation. #48 metadata observation does not authorize private-byte retention; retention remains OFF.
+
+### Next safe engineering step
+
+Keep #60 open for independent review and the STOP/consent policy decisions. Then build one disposable integration candidate containing migrations 034–040 plus the #60/#62/#55/#57/#61 deployment and audit gates; prove fresh 001–040, installed 033→040 upgrade, second-run checksum/no-op, schema audit, zero DB leakage and restricted runtime-role privileges before any merge decision. **Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh exact-state verification — 2026-11-06 04:20 WAT (03:20 UTC)
 
 This is a fresh GitHub source, PR/review-thread, workflow, migration-inventory, and Actions snapshot. It is not release certification. The older per-domain product tables below still carry their 2026-09-08 audit date and must not be treated as current code status.
