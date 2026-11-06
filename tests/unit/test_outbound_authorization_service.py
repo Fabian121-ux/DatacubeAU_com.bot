@@ -193,7 +193,7 @@ async def test_final_delivery_window_guard_denies_active_or_malformed_quiet_hour
 
 
 @pytest.mark.asyncio
-async def test_contact_policy_authorization_locks_policy_until_dispatch_transaction_finishes():
+async def test_contact_policy_preflight_uses_the_exact_chat_lock_before_reading_policy():
     """A concurrent OWNER disable must serialize behind a policy-based send fence."""
     class Result:
         def __init__(self, *, scalar=None, mapping=None):
@@ -247,7 +247,7 @@ async def test_contact_policy_authorization_locks_policy_until_dispatch_transact
     policy_sql = next(sql for sql in session.statements if "FROM contact_automation_policies" in sql)
     assert "pg_advisory_xact_lock" in session.statements[0]
     assert session.statements.index(policy_sql) > 0
-    assert "FOR UPDATE" in policy_sql.upper()
+    assert "FOR UPDATE" not in policy_sql.upper()
     assert "clock_timestamp()" in policy_sql
 
 
@@ -284,10 +284,13 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
         response_category="normal_reply",
     )
 
-    # Dispatch authorization wins the row lock first: an OWNER disable must wait
-    # until the dispatch transaction releases the policy lock.
+    # The final delivery-window check takes the shared advisory lock before its
+    # policy-row lock; an OWNER disable must wait for this transaction to finish.
     async with sessions() as dispatch_session, sessions() as owner_session:
-        decision = await OutboundAuthorizationService(dispatch_session).authorize(context, lock_chat_mapping=True)
+        decision = await OutboundAuthorizationService(dispatch_session).check_contact_delivery_window(
+            contact_id=context.contact_id,
+            exact_chat_id=context.target_chat_id,
+        )
         assert decision.allowed is True
         assert decision.authority_type == "contact_policy"
 
@@ -317,8 +320,8 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
         await dispatch_session.commit()
         await asyncio.wait_for(update_task, timeout=3)
 
-    # Conversely, if the OWNER disable already owns the row lock, authorization
-    # must wait and then observe the disabled policy rather than approve from stale state.
+    # Conversely, if the OWNER disable owns the advisory lock first, the final
+    # delivery-window check must wait and then observe that no active policy remains.
     async with sessions() as owner_session, sessions() as dispatch_session:
         await ContactMessagingConsentService.lock_exact_chat_mapping(
             owner_session, test_contact.whatsapp_id
@@ -352,7 +355,10 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
 
         async def authorize_while_disable_is_uncommitted():
             authorization_started.set()
-            return await OutboundAuthorizationService(dispatch_session).authorize(context, lock_chat_mapping=True)
+            return await OutboundAuthorizationService(dispatch_session).check_contact_delivery_window(
+                contact_id=context.contact_id,
+                exact_chat_id=context.target_chat_id,
+            )
 
         authorization_task = asyncio.create_task(authorize_while_disable_is_uncommitted())
         await authorization_started.wait()
@@ -362,9 +368,9 @@ async def test_contact_policy_disable_and_authorization_serialize_in_both_orders
         decision = await asyncio.wait_for(authorization_task, timeout=3)
         await dispatch_session.commit()
 
-    assert decision.allowed is False
+    assert decision.allowed is True
     assert decision.authority_type == "none"
-    assert decision.reason == "no exact active owner approval or contact automation policy"
+    assert decision.reason == "no active contact quiet-hours policy"
 
 
 @pytest.mark.asyncio
@@ -442,7 +448,7 @@ async def test_exact_owner_approval_cannot_bypass_contact_quiet_hours(
     assert not any("FROM outbound_approvals" in sql for sql in session.statements)
     assert "pg_advisory_xact_lock" in session.statements[0]
     policy_sql = next(sql for sql in session.statements if "FROM contact_automation_policies" in sql)
-    assert "FOR UPDATE" in policy_sql.upper()
+    assert "FOR UPDATE" not in policy_sql.upper()
 
 
 @pytest.mark.asyncio

@@ -449,7 +449,6 @@ class OutboundAuthorizationService:
                   AND enabled = true
                   AND disabled_at IS NULL
                   AND (expires_at IS NULL OR expires_at > clock_timestamp())
-                FOR UPDATE
                 """
             ),
             {
