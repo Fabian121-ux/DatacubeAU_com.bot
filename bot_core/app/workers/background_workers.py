@@ -310,6 +310,26 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
 
+                # Revalidate the original authority after every potentially blocking
+                # final fence. A contact-policy row can expire while consent, safety,
+                # or STOP locks are being acquired; absence of an active policy is not
+                # authority for a row whose only authority was that policy. Exact
+                # OWNER approvals and locked ScheduledActions remain independently
+                # valid and are re-proved by this same authoritative helper.
+                final_allowed, final_reason, final_approval_id = await _delivery_authorized(
+                    session,
+                    OutboundAuthorizationService(session),
+                    message,
+                )
+                if not final_allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final outbound authority recheck failed: {final_reason}",
+                    )
+                    await session.commit()
+                    continue
+
             # Consume an exact one-use OWNER approval only after every final
             # recipient, content, consent, STOP, safety, and delivery-window fence.
             # The queue row is still locked; the database clock decides expiry here.

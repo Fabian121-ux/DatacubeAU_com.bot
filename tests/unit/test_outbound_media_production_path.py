@@ -20,6 +20,7 @@ production code. No real WhatsApp transport is contacted.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -907,3 +908,83 @@ async def test_scheduled_action_remains_exactly_once_outside_contact_quiet_hours
     assert [operation for operation, _ in client.calls] == ["send_text"]
     assert client.calls[0][1]["chatId"] == chat_id
     assert queue.status == "sent"
+
+@pytest.mark.asyncio
+async def test_contact_policy_expiry_after_final_authority_check_blocks_before_waha(db_session, monkeypatch):
+    """A policy that expires during the last worker fences cannot authorize a send."""
+    target_chat_id = "2348000000091@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Expiring policy target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="This must not outlive its contact policy"),
+        chat_id=target_chat_id,
+        message_id="PROD-POLICY-EXPIRY-FINAL-FENCE",
+    )
+    metadata = dict(row.formatting_json or {})
+    metadata["delivery_policy"] = "authorized_external"
+    metadata["response_category"] = metadata.get("response_category") or "normal_reply"
+    row.formatting_json = metadata
+    row.status = "pending"
+    row.next_attempt_at = utcnow()
+    await db_session.flush()
+
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=target_chat_id,
+        enabled=True,
+        allowed_categories=[metadata["response_category"]],
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    assert policy.ok is True
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-policy-expiry-final-fence",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+
+    async def expire_policy_after_authority_checks(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        await session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET expires_at = clock_timestamp() - interval '1 second',
+                    updated_at = clock_timestamp()
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :exact_chat_id
+                """
+            ),
+            {"contact_id": int(contact.id), "exact_chat_id": exact_chat_id},
+        )
+
+    # This hook runs after the worker's initial final-authority check, while all
+    # remaining dispatch fences are being evaluated. The policy expires in the same
+    # transaction, immediately before the quiet-hours check and final authority recheck.
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        expire_policy_after_authority_checks,
+    )
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final outbound authority recheck failed" in (row.error_message or "")
+

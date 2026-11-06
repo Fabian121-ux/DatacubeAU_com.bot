@@ -370,14 +370,13 @@ class OutboundAuthorizationService:
                   AND exact_chat_id = :exact_chat_id
                   AND enabled = true
                   AND disabled_at IS NULL
-                  AND (expires_at IS NULL OR expires_at > :instant)
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
                 FOR UPDATE
                 """
             ),
             {
                 "contact_id": contact_id,
                 "exact_chat_id": exact_chat_id,
-                "instant": instant,
             },
         )
         row = result.mappings().first()
@@ -412,6 +411,16 @@ class OutboundAuthorizationService:
         )
 
     async def authorize(self, context: AuthorizationContext, *, now: datetime | None = None) -> AuthorizationDecision:
+        # OWNER policy mutations acquire this exact-chat lock before touching the
+        # policy row. Match that order here: taking FOR UPDATE first and the
+        # advisory lock later in the final delivery-window check can deadlock
+        # against an OWNER upsert/disable holding the advisory lock.
+        if not ContactMessagingConsentService._is_direct_chat(context.target_chat_id):
+            return AuthorizationDecision(False, "none", "exact contact/chat identity invalid")
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            context.target_chat_id,
+        )
         instant = now or utcnow()
 
         # Quiet hours are a contact-level delivery restriction, not an authority
@@ -427,14 +436,13 @@ class OutboundAuthorizationService:
                   AND exact_chat_id = :target_chat_id
                   AND enabled = true
                   AND disabled_at IS NULL
-                  AND (expires_at IS NULL OR expires_at > :instant)
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
                 FOR UPDATE
                 """
             ),
             {
                 "contact_id": context.contact_id,
                 "target_chat_id": context.target_chat_id,
-                "instant": instant,
             },
         )
         row = policy.mappings().first()
@@ -458,7 +466,7 @@ class OutboundAuthorizationService:
                   AND target_chat_id = :target_chat_id
                   AND content_sha256 = :content_sha256
                   AND status = 'approved'
-                  AND expires_at > :instant
+                  AND expires_at > clock_timestamp()
                 LIMIT 1
                 """
             ),
@@ -467,7 +475,6 @@ class OutboundAuthorizationService:
                 "inbound_message_id": context.inbound_message_id,
                 "target_chat_id": context.target_chat_id,
                 "content_sha256": context.content_sha256,
-                "instant": instant,
             },
         )
         approval_id = approval.scalar_one_or_none()
