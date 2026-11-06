@@ -44,17 +44,27 @@ TEST_DB="$(printf '%s\n' "$url_info" | sed -n '1p')"
 TEST_URL_SYNC="$(printf '%s\n' "$url_info" | sed -n '2p')"
 TEST_URL_ASYNC="$(printf '%s\n' "$url_info" | sed -n '3p')"
 
+# Every connection made by this CI harness is pinned to the validated URL and
+# public schema. Do not inherit libpq target/session overrides from the runner.
+psql_sanitized() {
+  local database_url="$1"
+  shift
+  env -u PGHOSTADDR -u PGHOST -u PGPORT -u PGDATABASE -u PGUSER \
+      -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
+    psql "$database_url" -q -c 'SET search_path TO public' "$@"
+}
+
 cleanup() {
   if [ -n "${TEST_DB:-}" ]; then
-    psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
+    psql_sanitized "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
       "DROP DATABASE IF EXISTS \"$TEST_DB\" WITH (FORCE)" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
+psql_sanitized "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
   "DROP DATABASE IF EXISTS \"$TEST_DB\" WITH (FORCE)" >/dev/null
-psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
+psql_sanitized "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
   "CREATE DATABASE \"$TEST_DB\"" >/dev/null
 
 run_runner() {
@@ -78,9 +88,9 @@ printf '%s\n' "$first_output" | grep -Fq "Skipping local-only seed 001_local_see
   exit 1
 }
 
-local_contact_count="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc \
+local_contact_count="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc \
   "SELECT COUNT(*) FROM contacts WHERE whatsapp_id = '234000000000@c.us';")"
-local_group_count="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc \
+local_group_count="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc \
   "SELECT COUNT(*) FROM group_configs WHERE chat_id = '120363000000000000@g.us';")"
 if [ "$local_contact_count" != "0" ] || [ "$local_group_count" != "0" ]; then
   echo "Local fixture rows were inserted during a default deployment." >&2
@@ -89,8 +99,8 @@ fi
 
 # Simulate an older installation that already has the local fixture rows.
 # Editing them between deploys must survive the runner's default path.
-psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/001_local_seed.sql" >/dev/null
-psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c "
+psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/001_local_seed.sql" >/dev/null
+psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c "
 UPDATE dm_configs
 SET is_enabled = FALSE, cooldown_seconds = 91, updated_at = NOW()
 WHERE contact_id = (SELECT id FROM contacts WHERE whatsapp_id = '234000000000@c.us');
@@ -139,12 +149,12 @@ printf '%s\n' "$second_output" | grep -Fq "Applying seed 002_default_config.sql"
   exit 1
 }
 
-dm_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+dm_state="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT is_enabled::text || ':' || cooldown_seconds::text
 FROM dm_configs
 WHERE contact_id = (SELECT id FROM contacts WHERE whatsapp_id = '234000000000@c.us');
 ")"
-group_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+group_state="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT reply_mode || ':' || is_enabled::text || ':' || cooldown_seconds::text
 FROM group_configs
 WHERE chat_id = '120363000000000000@g.us';
@@ -162,7 +172,7 @@ fi
 # constraint, so bare ON CONFLICT DO NOTHING would silently duplicate every rule
 # on each deployment. A same-key operator edit must also survive a redeploy.
 default_rule_keys="('help'), ('commands'), ('status'), ('ping'), ('/start'), ('hi'), ('hello'), ('hey'), ('good morning'), ('good afternoon'), ('good evening'), ('who are you'), ('what is your name'), ('what is datacube au')"
-missing_default_keys="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+missing_default_keys="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 WITH expected(keyword) AS (VALUES $default_rule_keys)
 SELECT e.keyword
 FROM expected AS e
@@ -200,7 +210,7 @@ if [ -n "$missing_default_keys" ]; then
   exit 1
 fi
 
-default_rule_counts_before="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+default_rule_counts_before="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT COUNT(*)::text || ':' || COUNT(DISTINCT NULLIF(
   BTRIM(
     REGEXP_REPLACE(
@@ -238,7 +248,7 @@ if [ -z "$before_rows" ] || [ "$before_rows" != "$before_keys" ]; then
   exit 1
 fi
 
-custom_reply_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+custom_reply_state="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT response_text || ':' || is_enabled::text || ':' || priority::text
 FROM reply_rules
 WHERE NULLIF(
@@ -260,7 +270,7 @@ if [ "$custom_reply_state" != "operator-customized /help response:false:7" ]; th
   exit 1
 fi
 
-default_rule_counts_after="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+default_rule_counts_after="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT COUNT(*)::text || ':' || COUNT(DISTINCT NULLIF(
   BTRIM(
     REGEXP_REPLACE(
@@ -308,12 +318,12 @@ printf '%s\n' "$opt_in_output" | grep -Fq "Applying seed 001_local_seed.sql" || 
   exit 1
 }
 
-dm_opt_in_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+dm_opt_in_state="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT is_enabled::text || ':' || cooldown_seconds::text
 FROM dm_configs
 WHERE contact_id = (SELECT id FROM contacts WHERE whatsapp_id = '234000000000@c.us');
 ")"
-group_opt_in_state="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+group_opt_in_state="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT reply_mode || ':' || is_enabled::text || ':' || cooldown_seconds::text
 FROM group_configs
 WHERE chat_id = '120363000000000000@g.us';
@@ -327,7 +337,7 @@ fi
 # lock that the seed transaction must acquire, start two independent seed
 # sessions, and require both to queue on that lock before releasing it. This
 # proves serialization rather than relying on a timing-sensitive duplicate race.
-psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c "
+psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c "
 DELETE FROM reply_rules
 WHERE keyword = 'what is datacube au'
   AND match_mode = 'exact'
@@ -337,14 +347,14 @@ WHERE keyword = 'what is datacube au'
 lock_holder_log="$ROOT/.seed-lock-holder-$GITHUB_RUN_ID.log"
 seed_one_log="$ROOT/.seed-concurrency-one-$GITHUB_RUN_ID.log"
 seed_two_log="$ROOT/.seed-concurrency-two-$GITHUB_RUN_ID.log"
-psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
+psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -c \
   "SELECT pg_advisory_lock(20261026, 2); SELECT pg_sleep(5); SELECT pg_advisory_unlock(20261026, 2);" \
   >"$lock_holder_log" 2>&1 &
 lock_holder_pid=$!
 
 lock_ready=0
 for attempt in $(seq 1 50); do
-  held="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+  held="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
     SELECT COUNT(*)
     FROM pg_locks
     WHERE locktype = 'advisory'
@@ -367,14 +377,14 @@ if [ "$lock_ready" != "1" ]; then
   exit 1
 fi
 
-psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/002_default_config.sql" >"$seed_one_log" 2>&1 &
+psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/002_default_config.sql" >"$seed_one_log" 2>&1 &
 seed_one_pid=$!
-psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/002_default_config.sql" >"$seed_two_log" 2>&1 &
+psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -f "$ROOT/bot_core/seeds/002_default_config.sql" >"$seed_two_log" 2>&1 &
 seed_two_pid=$!
 
 waiting_count=0
 for attempt in $(seq 1 30); do
-  waiting_count="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+  waiting_count="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
     SELECT COUNT(*)
     FROM pg_locks
     WHERE locktype = 'advisory'
@@ -409,7 +419,7 @@ if ! wait "$seed_two_pid"; then
   exit 1
 fi
 
-concurrent_default_count="$(psql "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
+concurrent_default_count="$(psql_sanitized "$TEST_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "
 SELECT COUNT(*)
 FROM reply_rules
 WHERE keyword = 'what is datacube au'
