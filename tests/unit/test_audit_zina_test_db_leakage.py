@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +20,7 @@ _AUDIT_MODULE = importlib.util.module_from_spec(_AUDIT_SPEC)
 _AUDIT_SPEC.loader.exec_module(_AUDIT_MODULE)
 audit_model_inventory = _AUDIT_MODULE.audit_model_inventory
 collect_model_leaks = _AUDIT_MODULE.collect_model_leaks
+collect_raw_table_leaks = _AUDIT_MODULE.collect_raw_table_leaks
 
 
 @pytest.mark.parametrize(
@@ -200,3 +202,18 @@ async def test_audit_reports_contact_row_even_when_fixture_cleanup_excludes_cont
         audit_model_inventory(cleanup_models_without_contact),
     )
     assert ("contacts", 1) in leaks
+
+@pytest.mark.asyncio
+async def test_raw_table_audit_counts_public_rows_when_search_path_has_shadow_table(db_session):
+    table = "audit_shadow_regression_table"
+    await db_session.execute(text("CREATE SCHEMA audit_shadow_regression"))
+    await db_session.execute(text(f'CREATE TABLE public."{table}" (id integer PRIMARY KEY)'))
+    await db_session.execute(text(f'CREATE TABLE audit_shadow_regression."{table}" (id integer PRIMARY KEY)'))
+    await db_session.execute(text(f'INSERT INTO public."{table}" (id) VALUES (1)'))
+    await db_session.execute(text("SET LOCAL search_path TO audit_shadow_regression, public"))
+
+    connection = await db_session.connection()
+    leaks = await collect_raw_table_leaks(connection, (table,))
+
+    assert leaks == [(table, 1)]
+

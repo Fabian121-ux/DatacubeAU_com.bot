@@ -112,6 +112,30 @@ async def collect_model_leaks(connection, models) -> list[tuple[str, int]]:
     return leaks
 
 
+async def collect_raw_table_leaks(connection, raw_tables) -> list[tuple[str, int]]:
+    """Count raw audit tables in public, independent of the connection search_path."""
+    leaks: list[tuple[str, int]] = []
+    for table in raw_tables:
+        # Names come from the repository's static CLEANUP_RAW_TABLES inventory. Quote
+        # through the active dialect, and schema-qualify the count exactly as the
+        # existence probe is schema-qualified above.
+        exists = (
+            await connection.execute(
+                text("SELECT to_regclass(:qualified_name) IS NOT NULL"),
+                {"qualified_name": f"public.{table}"},
+            )
+        ).scalar_one()
+        if not exists:
+            continue
+        quoted_table = connection.dialect.identifier_preparer.quote(table)
+        count = int(
+            (await connection.execute(text(f"SELECT COUNT(*) FROM public.{quoted_table}"))).scalar_one()
+        )
+        if count:
+            leaks.append((table, count))
+    return leaks
+
+
 async def main() -> int:
     # Validate before importing conftest: it imports application modules, so the
     # guard must run before any of that import-time configuration can touch a URL.
@@ -130,24 +154,7 @@ async def main() -> int:
             )
 
             raw_tables = tuple(CLEANUP_RAW_TABLES) + ("outbound_message_set_keys",)
-            for table in raw_tables:
-                exists = (
-                    await connection.execute(
-                        text("SELECT to_regclass(:qualified_name) IS NOT NULL"),
-                        {"qualified_name": f"public.{table}"},
-                    )
-                ).scalar_one()
-                if not exists:
-                    continue
-                count = int(
-                    (
-                        await connection.execute(
-                            text(f'SELECT COUNT(*) FROM "{table}"')
-                        )
-                    ).scalar_one()
-                )
-                if count:
-                    leaks.append((table, count))
+            leaks.extend(await collect_raw_table_leaks(connection, raw_tables))
     finally:
         await engine.dispose()
 
