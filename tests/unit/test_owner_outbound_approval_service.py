@@ -16,10 +16,30 @@ class _Result:
         return self._scalar
 
 
+class _Savepoint:
+    def __init__(self):
+        self.is_active = True
+        self.committed = False
+        self.rolled_back = False
+
+    async def commit(self):
+        self.is_active = False
+        self.committed = True
+
+    async def rollback(self):
+        self.is_active = False
+        self.rolled_back = True
+
+
 class _Session:
     def __init__(self, scalars=None):
         self.scalars = list(scalars or [])
         self.calls = []
+        self.savepoint = _Savepoint()
+
+    async def begin_nested(self):
+        self.calls.append(("SAVEPOINT", {}))
+        return self.savepoint
 
     async def execute(self, statement, params=None):
         self.calls.append((str(statement), params or {}))
@@ -159,7 +179,7 @@ async def test_approve_fails_closed_on_wrong_target_without_granting_authority(m
 
 @pytest.mark.asyncio
 async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatch):
-    session = _Session(scalars=[None, 41])
+    session = _Session(scalars=[10, 41])
     service = OwnerOutboundApprovalService(session)
     row = _row()
 
@@ -189,11 +209,41 @@ async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatc
         for sql, params in session.calls
     )
     assert not any("SET status = 'approved'" in sql for sql, _ in session.calls)
+    assert session.savepoint.committed is True
+
+
+@pytest.mark.asyncio
+async def test_edit_rolls_back_queue_mutation_when_approval_expires_at_final_cas(monkeypatch):
+    # The queue UPDATE succeeds, but the database-clock expiry CAS returns no row.
+    # The savepoint must roll the draft mutation back before the caller commits the
+    # OWNER command receipt and denial result.
+    session = _Session(scalars=[10, None])
+    service = OwnerOutboundApprovalService(session)
+    row = _row()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _load(*args, **kwargs):
+        return row
+
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
+    monkeypatch.setattr(service, "_load_exact", _load)
+    monkeypatch.setattr(service, "_audit", _noop)
+
+    result = await service.edit(41, "must not persist")
+
+    assert result.ok is False
+    assert result.error == "approval expired"
+    assert session.savepoint.rolled_back is True
+    assert session.savepoint.committed is False
+    assert any("UPDATE outbound_queue" in sql for sql, _ in session.calls)
+    assert any("UPDATE outbound_approvals" in sql for sql, _ in session.calls)
 
 
 @pytest.mark.asyncio
 async def test_edit_rebinds_media_digest_including_transport_metadata(monkeypatch):
-    session = _Session(scalars=[None, 41])
+    session = _Session(scalars=[10, 41])
     service = OwnerOutboundApprovalService(session)
     row = _row(
         media_url="http://waha:3000/api/files/original.jpg",

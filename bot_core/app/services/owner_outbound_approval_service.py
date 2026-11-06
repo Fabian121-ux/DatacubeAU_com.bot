@@ -189,37 +189,54 @@ class OwnerOutboundApprovalService:
         formatting = dict(row["formatting_json"] or {})
         formatting["content_sha256"] = digest
 
-        await self.session.execute(
-            text(
-                """
-                UPDATE outbound_queue
-                SET message_text = :message_text,
-                    formatting_json = CAST(:formatting_json AS jsonb),
-                    status = 'deferred', error_message = NULL, updated_at = :instant
-                WHERE id = :queue_id AND status = 'deferred'
-                """
-            ),
-            {
-                "queue_id": int(row["outbound_queue_id"]),
-                "message_text": new_text,
-                "formatting_json": self._json_dumps(formatting),
-                "instant": instant,
-            },
-        )
-        updated_approval = await self.session.execute(
-            text(
-                """
-                UPDATE outbound_approvals
-                SET content_sha256 = :content_sha256, updated_at = :instant
-                WHERE id = :approval_id AND status = 'pending'
-                  AND expires_at > clock_timestamp()
-                RETURNING id
-                """
-            ),
-            {"approval_id": approval_id, "content_sha256": digest, "instant": instant},
-        )
-        if updated_approval.scalar_one_or_none() is None:
-            return self._deny("edit", approval_id, "Approval expired before the edit could be committed.", "approval expired")
+        # The queue draft and its approval digest are one logical mutation. The
+        # final database-clock expiry CAS can fail after the queue UPDATE, so keep
+        # both writes inside a SAVEPOINT: the webhook caller commits even when a
+        # command returns a denial result.
+        savepoint = await self.session.begin_nested()
+        try:
+            updated_queue = await self.session.execute(
+                text(
+                    """
+                    UPDATE outbound_queue
+                    SET message_text = :message_text,
+                        formatting_json = CAST(:formatting_json AS jsonb),
+                        status = 'deferred', error_message = NULL, updated_at = :instant
+                    WHERE id = :queue_id AND status = 'deferred'
+                    RETURNING id
+                    """
+                ),
+                {
+                    "queue_id": int(row["outbound_queue_id"]),
+                    "message_text": new_text,
+                    "formatting_json": self._json_dumps(formatting),
+                    "instant": instant,
+                },
+            )
+            if updated_queue.scalar_one_or_none() is None:
+                await savepoint.rollback()
+                return self._deny("edit", approval_id, "Draft changed before the edit could be committed.", "queue state changed")
+
+            updated_approval = await self.session.execute(
+                text(
+                    """
+                    UPDATE outbound_approvals
+                    SET content_sha256 = :content_sha256, updated_at = :instant
+                    WHERE id = :approval_id AND status = 'pending'
+                      AND expires_at > clock_timestamp()
+                    RETURNING id
+                    """
+                ),
+                {"approval_id": approval_id, "content_sha256": digest, "instant": instant},
+            )
+            if updated_approval.scalar_one_or_none() is None:
+                await savepoint.rollback()
+                return self._deny("edit", approval_id, "Approval expired before the edit could be committed.", "approval expired")
+            await savepoint.commit()
+        except Exception:
+            if savepoint.is_active:
+                await savepoint.rollback()
+            raise
         await self._audit(row, decision="allow", reason="owner edited exact deferred draft; approval remains pending")
         return OwnerApprovalMutationResult(
             True,
