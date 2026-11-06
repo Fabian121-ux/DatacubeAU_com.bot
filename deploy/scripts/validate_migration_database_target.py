@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import os
+import re
+import sys
+from urllib.parse import parse_qsl, unquote, urlsplit
+
+
+def parse_endpoint(value: str, label: str, *, local_seed_mode: bool):
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise SystemExit(
+            f"Refusing migration run: {label} has an invalid host or port."
+        ) from exc
+
+    allowed_schemes = {"postgresql"} if label == "DATABASE_URL_SYNC" else {
+        "postgresql",
+        "postgresql+asyncpg",
+    }
+    if parsed.scheme not in allowed_schemes:
+        raise SystemExit(
+            f"Refusing migration run: {label} must use an allowed PostgreSQL URL scheme."
+        )
+    if local_seed_mode and (parsed.query or parsed.fragment):
+        raise SystemExit(
+            f"Refusing local fixture seeds: {label} query parameters/fragments are forbidden."
+        )
+    if parsed.query and not local_seed_mode:
+        target_override_keys = {
+            "host", "hostaddr", "port", "database", "dbname", "user", "service",
+            "servicefile", "unix_sock", "options",
+        }
+        query_keys = {
+            key.lower()
+            for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
+        }
+        if query_keys & target_override_keys:
+            raise SystemExit(
+                f"Refusing migration run: {label} query parameters cannot override database target or session settings."
+            )
+    if parsed.fragment:
+        raise SystemExit(
+            f"Refusing migration run: {label} URL fragments are not valid database targets."
+        )
+    if not host:
+        raise SystemExit(
+            f"Refusing migration run: {label} must include a hostname."
+        )
+    if label == "DATABASE_URL_SYNC" and not parsed.username:
+        # psql otherwise falls back to PGUSER or the operating-system account,
+        # which is outside the endpoint checked above and can change effective DDL authority.
+        raise SystemExit(
+            f"Refusing migration run: {label} must include an explicit username."
+        )
+    if "," in unquote(host):
+        # libpq treats comma-separated hostspecs as a failover list. Each psql
+        # invocation opens a fresh connection, so separate migration/audit
+        # operations could land on different servers despite matching URL text.
+        raise SystemExit(
+            f"Refusing migration run: {label} must use a single PostgreSQL host; "
+            "multi-host targets are refused for schema-changing migrations."
+        )
+
+    database = unquote(parsed.path.lstrip("/"))
+    if not database:
+        raise SystemExit(
+            f"Refusing migration run: {label} must include a database name."
+        )
+
+    # Never compare or print credentials. Non-target options such as sslmode remain
+    # valid for normal deployments; local fixture mode forbids all query parameters.
+    endpoint = (host.lower().rstrip("."), port if port is not None else 5432, database)
+    return parsed, endpoint
+
+
+def main() -> int:
+    if len(sys.argv) != 4:
+        raise SystemExit(
+            "usage: validate_migration_database_target.py DATABASE_URL_SYNC DATABASE_URL RUN_LOCAL_SEEDS"
+        )
+
+    sync_value, audit_value, run_local_seeds = sys.argv[1:4]
+    if run_local_seeds not in {"true", "false"}:
+        raise SystemExit("RUN_LOCAL_SEEDS must be exactly 'true' or 'false'.")
+    local_seed_mode = run_local_seeds == "true"
+
+    # Always validate the migration URL, even when schema_audit.py will fall back
+    # to it because DATABASE_URL is unset. Otherwise a target-overriding URI query
+    # (for example ?host=...) could bypass this guard and redirect psql itself.
+    sync_parsed, sync_endpoint = parse_endpoint(
+        sync_value, "DATABASE_URL_SYNC", local_seed_mode=local_seed_mode
+    )
+
+    if not audit_value:
+        if local_seed_mode:
+            raise SystemExit(
+                "Refusing local fixture seeds: DATABASE_URL is required to verify the schema-audit target."
+            )
+        # schema_audit.py falls back to the already-validated DATABASE_URL_SYNC.
+        return 0
+
+    _, audit_endpoint = parse_endpoint(
+        audit_value, "DATABASE_URL", local_seed_mode=local_seed_mode
+    )
+    if sync_endpoint != audit_endpoint:
+        raise SystemExit(
+            "Refusing migration run: DATABASE_URL_SYNC and DATABASE_URL must "
+            "target the same host, port, and database."
+        )
+
+    if not local_seed_mode:
+        return 0
+
+    # These additional restrictions apply only when enabling local fixture upserts.
+    host = sync_parsed.hostname
+    port = sync_parsed.port
+    database = sync_endpoint[2]
+    if host not in {"localhost", "127.0.0.1", "::1", "host.docker.internal"}:
+        raise SystemExit(
+            "Refusing local fixture seeds: target host must be local or host.docker.internal."
+        )
+    if port not in {None, 5432, 5433}:
+        raise SystemExit(
+            "Refusing local fixture seeds: target port must be 5432 or 5433."
+        )
+    if host == "host.docker.internal" and port != 5433:
+        raise SystemExit(
+            "Refusing local fixture seeds: host.docker.internal must use the documented disposable port 5433."
+        )
+
+    is_local_disposable = database == "zina_disposable"
+
+    # The CI namespace is not a generic prefix allowlist. Bind it to this exact
+    # workflow run/attempt so a misleading name cannot opt in outside Actions or
+    # point at another run's database.
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    expected_ci_database = (
+        f"zina_seed_policy_{run_id}_{run_attempt}"
+        if os.environ.get("GITHUB_ACTIONS") == "true"
+        and run_id.isdecimal()
+        and run_attempt.isdecimal()
+        else ""
+    )
+    is_current_ci_disposable = bool(
+        expected_ci_database
+        and re.fullmatch(r"zina_seed_policy_[0-9]+_[0-9]+", database)
+        and database == expected_ci_database
+    )
+    if not (is_local_disposable or is_current_ci_disposable):
+        raise SystemExit(
+            "Refusing local fixture seeds: database name must identify a disposable "
+            "zina_disposable database or this exact GitHub Actions run's "
+            "zina_seed_policy_<run_id>_<run_attempt> database."
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
