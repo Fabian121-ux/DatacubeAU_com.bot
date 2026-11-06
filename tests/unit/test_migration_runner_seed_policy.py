@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -610,3 +611,76 @@ def test_sync_target_requires_explicit_username_before_psql_when_pguser_is_set(
     assert "DATABASE_URL_SYNC must include an explicit username" in output
     assert not psql_marker.exists(), "implicit PGUSER reached psql before rejection"
     assert "untrusted-role" not in output
+
+
+def test_seed_policy_harness_sanitizes_every_psql_call_and_pins_public_schema(
+    tmp_path: Path,
+) -> None:
+    source = VALIDATION_SCRIPT.read_text(encoding="utf-8")
+    raw_calls = [line for line in source.splitlines() if re.match(r"^\s*psql\s", line)]
+    assert raw_calls == ['    psql "$database_url" -q -c \'SET search_path TO public\' "$@"'], raw_calls
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    env_marker = tmp_path / "psql-environment.txt"
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        """#!/bin/sh
+{
+  for key in PGHOSTADDR PGHOST PGPORT PGDATABASE PGUSER PGOPTIONS PGSERVICE PGSERVICEFILE; do
+    value=$(printenv "$key" || true)
+    [ -n "$value" ] || value='<unset>'
+    printf '%s=%s|' "$key" "$value"
+  done
+  case "$*" in
+    *"SET search_path TO public"*) printf 'search_path=public|' ;;
+    *) printf 'search_path=missing|' ;;
+  esac
+  printf '\\n'
+} >> "$PSQL_ENV_MARKER"
+exit 23
+""",
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_RUN_ID": "123456789",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "DATABASE_URL_SYNC": "postgresql://postgres:sync-secret@localhost:5432/datacube_bot_test",
+            "PSQL_ENV_MARKER": str(env_marker),
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            "PGHOSTADDR": "192.0.2.10",
+            "PGHOST": "untrusted-host",
+            "PGPORT": "6543",
+            "PGDATABASE": "untrusted-database",
+            "PGUSER": "untrusted-role",
+            "PGOPTIONS": "-csearch_path=tenant",
+            "PGSERVICE": "untrusted-service",
+            "PGSERVICEFILE": str(tmp_path / "untrusted-pg_service.conf"),
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(VALIDATION_SCRIPT)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "sync-secret" not in (result.stdout + result.stderr)
+    calls = env_marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2, calls
+    for call in calls:
+        for variable in (
+            "PGHOSTADDR", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER",
+            "PGOPTIONS", "PGSERVICE", "PGSERVICEFILE",
+        ):
+            assert f"{variable}=<unset>|" in call, call
+        assert "search_path=public|" in call, call
