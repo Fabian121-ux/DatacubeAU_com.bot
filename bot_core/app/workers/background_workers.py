@@ -167,7 +167,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     commit=False,
                 )
                 continue
-            allowed, reason, _approval_id = await _delivery_authorized(session, authority, message)
+            allowed, reason, _approval_id, _authority_type, _policy_id = await _delivery_authorized(session, authority, message)
             if not allowed:
                 await _mark_delivery_blocked(session, message, reason=reason)
                 continue
@@ -192,7 +192,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
             if message.status != "sending":
                 await session.rollback()
                 continue
-            final_allowed, final_reason, final_approval_id = await _delivery_authorized(
+            final_allowed, final_reason, final_approval_id, final_authority_type, final_policy_id = await _delivery_authorized(
                 session,
                 OutboundAuthorizationService(session),
                 message,
@@ -203,6 +203,18 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     session,
                     message,
                     reason=f"final outbound authority recheck failed: {final_reason}",
+                )
+                await session.commit()
+                continue
+            if (
+                final_authority_type == "contact_policy" and final_policy_id is None
+            ) or (
+                final_authority_type == "owner_approval" and final_approval_id is None
+            ):
+                await _mark_delivery_blocked(
+                    session,
+                    message,
+                    reason="final outbound authority is missing its exact policy/approval ID",
                 )
                 await session.commit()
                 continue
@@ -317,20 +329,31 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 # authority for a row whose only authority was that policy. Exact
                 # OWNER approvals and locked ScheduledActions remain independently
                 # valid and are re-proved by this same authoritative helper.
-                final_allowed, final_reason, final_approval_id = await _delivery_authorized(
+                rechecked_allowed, rechecked_reason, rechecked_approval_id, rechecked_authority_type, rechecked_policy_id = await _delivery_authorized(
                     session,
                     OutboundAuthorizationService(session),
                     message,
                     lock_chat_mapping=True,
                 )
-                if not final_allowed:
+                authority_changed = rechecked_authority_type != final_authority_type
+                if final_authority_type == "owner_approval":
+                    authority_changed = authority_changed or rechecked_approval_id != final_approval_id
+                elif final_authority_type == "contact_policy":
+                    authority_changed = authority_changed or rechecked_policy_id != final_policy_id
+                if not rechecked_allowed or authority_changed:
+                    reason = (
+                        f"final outbound authority recheck failed: {rechecked_reason}"
+                        if not rechecked_allowed
+                        else "final outbound authority source or exact policy/approval ID changed before dispatch"
+                    )
                     await _mark_delivery_blocked(
                         session,
                         message,
-                        reason=f"final outbound authority recheck failed: {final_reason}",
+                        reason=reason,
                     )
                     await session.commit()
                     continue
+                final_approval_id = rechecked_approval_id
 
             # Consume an exact one-use OWNER approval only after every final
             # recipient, content, consent, STOP, safety, and delivery-window fence.
@@ -389,6 +412,8 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                             "delivery_snapshot": _delivery_snapshot(message),
                             "waha_response": response,
                             "approval_id": approval_id,
+                            "authority_type": final_authority_type,
+                            "policy_id": final_policy_id,
                         },
                     )
                 )
@@ -450,7 +475,7 @@ async def _delivery_authorized(
     message: OutboundMessage,
     *,
     lock_chat_mapping: bool = False,
-) -> tuple[bool, str, int | None]:
+) -> tuple[bool, str, int | None, str | None, int | None]:
     """Apply the final outbound authorization fence against exact durable authority.
 
     Exact configured OWNER self-DM remains allowed. Router-generated external replies
@@ -460,7 +485,7 @@ async def _delivery_authorized(
     """
     metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
     if "delivery_outcome_uncertain" in metadata:
-        return False, "queue row has an uncertain prior transport outcome; replay denied", None
+        return False, "queue row has an uncertain prior transport outcome; replay denied", None, None, None
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
 
     if _is_owner_chat_id(message.chat_id):
@@ -473,18 +498,18 @@ async def _delivery_authorized(
         # rather than delivered, so a producer that forgets to stamp fails safe instead
         # of silently inheriting unbounded authority from the destination alone.
         if not OutboundAuthorizationService.owner_payload_matches(message):
-            return False, "owner queue row payload is not bound to its authorized content", None
-        return True, "exact configured owner chat with bound payload", None
+            return False, "owner queue row payload is not bound to its authorized content", None, None, None
+        return True, "exact configured owner chat with bound payload", None, "owner_chat", None
 
     if not delivery_policy:
         if await _is_exact_scheduled_action_binding(session, message, metadata):
-            return True, "exact durable scheduled action binding", None
-        return False, "external queue row missing explicit durable outbound authority", None
+            return True, "exact durable scheduled action binding", None, "scheduled_action", None
+        return False, "external queue row missing explicit durable outbound authority", None, None, None
 
     if delivery_policy == "immediate":
-        return False, "legacy external immediate router reply is not durably authorized", None
+        return False, "legacy external immediate router reply is not durably authorized", None, None, None
     if delivery_policy not in {"approval_required", "authorized_external"}:
-        return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None
+        return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None, None, None
 
     if lock_chat_mapping:
         _context, decision = await authority.authorize_queue_message(
@@ -494,8 +519,8 @@ async def _delivery_authorized(
     else:
         _context, decision = await authority.authorize_queue_message(message)
     if not decision.allowed:
-        return False, decision.reason, None
-    return True, decision.reason, decision.approval_id
+        return False, decision.reason, None, decision.authority_type, decision.policy_id
+    return True, decision.reason, decision.approval_id, decision.authority_type, decision.policy_id
 
 
 async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, metadata: dict[str, Any]) -> bool:

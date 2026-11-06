@@ -21,6 +21,7 @@ production code. No real WhatsApp transport is contacted.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -987,4 +988,100 @@ async def test_contact_policy_expiry_after_final_authority_check_blocks_before_w
     assert client.calls == []
     assert row.status == "deferred"
     assert "final outbound authority recheck failed" in (row.error_message or "")
+
+@pytest.mark.asyncio
+async def test_replaced_contact_policy_cannot_inherit_an_existing_queue_authority(db_session, monkeypatch):
+    """A new policy row cannot silently inherit the old row's in-flight authority."""
+    target_chat_id = "2348000000092@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Replaced policy target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="This exact policy ID must remain authoritative"),
+        chat_id=target_chat_id,
+        message_id="PROD-POLICY-ID-REPLACEMENT",
+    )
+    metadata = dict(row.formatting_json or {})
+    metadata["delivery_policy"] = "authorized_external"
+    metadata["response_category"] = metadata.get("response_category") or "normal_reply"
+    row.formatting_json = metadata
+    row.status = "pending"
+    row.next_attempt_at = utcnow()
+    await db_session.flush()
+
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=target_chat_id,
+        enabled=True,
+        allowed_categories=[metadata["response_category"]],
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    assert policy.ok is True
+    original_policy_id = int(policy.policy_id)
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-policy-id-replacement",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+    replacement_ids = []
+
+    async def replace_policy_after_authority_check(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        await session.execute(
+            text(
+                """
+                DELETE FROM contact_automation_policies
+                WHERE contact_id = :contact_id AND exact_chat_id = :exact_chat_id
+                """
+            ),
+            {"contact_id": int(contact.id), "exact_chat_id": exact_chat_id},
+        )
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO contact_automation_policies (
+                    contact_id, exact_chat_id, enabled, allowed_categories,
+                    prohibited_categories, approval_required_categories, created_by,
+                    disabled_at, updated_at
+                ) VALUES (
+                    :contact_id, :exact_chat_id, true, CAST(:allowed_categories AS jsonb),
+                    '[]'::jsonb, '[]'::jsonb, 'OWNER', NULL, clock_timestamp()
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "contact_id": int(contact.id),
+                "exact_chat_id": exact_chat_id,
+                "allowed_categories": json.dumps([metadata["response_category"]]),
+            },
+        )
+        replacement_ids.append(int(result.scalar_one()))
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        replace_policy_after_authority_check,
+    )
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert replacement_ids and replacement_ids[0] != original_policy_id
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "authority source or exact policy/approval ID changed" in (row.error_message or "")
 
