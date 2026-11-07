@@ -621,6 +621,85 @@ async def test_worker_rechecks_consent_expiry_after_final_locks_before_waha(db_s
 
 
 @pytest.mark.asyncio
+async def test_worker_rechecks_consent_after_approval_reservation_before_waha(db_session, monkeypatch):
+    """Consent expiry during the final approval reservation must still veto WAHA."""
+    target_chat_id = "2348000000054@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Consent expiry during approval reservation",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Consent must still be current after approval reservation"),
+        chat_id=target_chat_id,
+        message_id="PROD-CONSENT-EXPIRY-AFTER-APPROVAL-RESERVATION",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approved = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approved.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-approval-reservation",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_consume = OutboundAuthorizationService.consume_approval
+
+    async def consume_then_expire_consent(self, exact_approval_id, *, message):
+        consumed = await original_consume(
+            self,
+            exact_approval_id,
+            message=message,
+        )
+        assert consumed is True
+        # Model the TTL expiring while the final approval reservation was waiting.
+        # The final consent check must happen after this potentially blocking write.
+        await self.session.execute(
+            text(
+                """
+                UPDATE contact_messaging_consents
+                SET expires_at = clock_timestamp() - interval '1 second'
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :exact_chat_id
+                """
+            ),
+            {"contact_id": int(contact.id), "exact_chat_id": target_chat_id},
+        )
+        return consumed
+
+    monkeypatch.setattr(
+        OutboundAuthorizationService,
+        "consume_approval",
+        consume_then_expire_consent,
+    )
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final contact consent denied: contact consent has expired" in (row.error_message or "")
+    approval_status = (
+        await db_session.execute(
+            text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+    ).scalar_one()
+    assert approval_status == "consumed"
+
+
+@pytest.mark.asyncio
 async def test_exact_owner_approval_is_consumed_at_the_final_dispatch_boundary(db_session, monkeypatch):
     target_chat_id = "2348000000052@c.us"
     contact = Contact(

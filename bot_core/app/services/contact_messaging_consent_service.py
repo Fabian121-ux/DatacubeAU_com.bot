@@ -461,11 +461,11 @@ class ContactMessagingConsentService:
     ) -> ConsentDecision:
         """Recheck a locked consent row at the final pre-transport boundary.
 
-        The worker calls this only after it has acquired the exact-chat mapping,
-        Contact/consent, safety-reservation, and pending-STOP boundary locks. The
-        row is refreshed under FOR UPDATE and the clock is read after that query,
-        so a consent TTL that elapsed while any later fence waited cannot authorize
-        the subsequent WAHA attempt.
+        The worker calls this after exact-chat mapping, Contact/consent,
+        safety-reservation, pending-STOP, delivery-window, final-authority, and
+        one-use approval-reservation checks. The row is refreshed under FOR UPDATE
+        and PostgreSQL's wall clock is read after that lock is acquired. No later
+        authorization query may run before the single WAHA attempt.
         """
         if not isinstance(contact_id, int) or contact_id <= 0 or not self._is_direct_chat(exact_chat_id):
             return ConsentDecision(False, "exact contact/chat consent identity is invalid")
@@ -477,7 +477,10 @@ class ContactMessagingConsentService:
             .execution_options(populate_existing=True)
         )
         row = result.scalar_one_or_none()
-        return self._consent_decision_for_row(row, contact_id, utcnow())
+        database_now = (
+            await self.session.execute(text("SELECT clock_timestamp()"))
+        ).scalar_one()
+        return self._consent_decision_for_row(row, contact_id, database_now)
 
     async def _resolve_owner_chat(self, exact_chat_id: str) -> Contact:
         if not self._is_direct_chat(exact_chat_id):

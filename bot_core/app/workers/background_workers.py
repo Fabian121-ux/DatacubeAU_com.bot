@@ -287,24 +287,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
 
-                # Consent may expire while the worker waits for the final safety and
-                # STOP-boundary locks. Refresh it and read the clock after those locks,
-                # immediately before the single transport attempt.
-                final_consent = await ContactMessagingConsentService(
-                    session
-                ).revalidate_locked_outbound_queue_message_consent(
-                    consent.contact_id,
-                    message.chat_id,
-                )
-                if not final_consent.allowed:
-                    await _mark_delivery_blocked(
-                        session,
-                        message,
-                        reason=f"final contact consent denied: {final_consent.reason}",
-                    )
-                    await session.commit()
-                    continue
-
                 # Quiet hours are a delivery restriction, not an authority source.
                 # Apply the same final check to exact approvals and ScheduledActions;
                 # keep its advisory/row locks through the one transport attempt.
@@ -355,9 +337,10 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     continue
                 final_approval_id = rechecked_approval_id
 
-            # Consume an exact one-use OWNER approval only after every final
-            # recipient, content, consent, STOP, safety, and delivery-window fence.
-            # The queue row is still locked; the database clock decides expiry here.
+            # Reserve an exact one-use OWNER approval only after recipient, content,
+            # STOP, safety, delivery-window, and final authority checks. Reservation is
+            # not proof of delivery; an approval remains consumed if a later final
+            # consent check denies the attempt.
             approval_id = final_approval_id
             if approval_id is not None:
                 consumed = await OutboundAuthorizationService(session).consume_approval(
@@ -372,6 +355,43 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     )
                     await session.commit()
                     continue
+
+            # This is the last time-bounded external-contact authorization check.
+            # It deliberately follows the final delivery-window/authority checks and
+            # the potentially blocking one-use approval reservation. No further
+            # authorization query may run before the single transport attempt.
+            if not _is_owner_chat_id(message.chat_id):
+                final_consent = await ContactMessagingConsentService(
+                    session
+                ).revalidate_locked_outbound_queue_message_consent(
+                    consent.contact_id,
+                    message.chat_id,
+                )
+                if not final_consent.allowed:
+                    if approval_id is not None:
+                        session.add(
+                            AuditLog(
+                                action="outbound_approval_consumed_dispatch_blocked",
+                                entity_type="outbound_queue",
+                                entity_id=str(message.id),
+                                details_json={
+                                    "chat_id": message.chat_id,
+                                    "approval_id": approval_id,
+                                    "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                                    "reason": final_consent.reason,
+                                    "delivery_attempt_reserved": False,
+                                },
+                            )
+                        )
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final contact consent denied: {final_consent.reason}",
+                    )
+                    await session.commit()
+                    continue
+
+            if approval_id is not None:
                 session.add(
                     AuditLog(
                         action="outbound_approval_consumed_for_dispatch",
