@@ -6,8 +6,9 @@ This snapshot supersedes the 2026-11-06 21:20 WAT overlay below. **Release decis
 
 - Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08 11:09:59 UTC. Exact-SHA Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded. Main contains migrations 001–033 and its workflow lacks the contiguous sequence preflight, ORM schema audit, and post-test leakage audit.
 - Current branch migration allocation is unique: 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60). The duplicate-034 collision is resolved in branch allocation only; no integrated 001–040 chain has passed.
+- PR #62 contains the exact same migration-sequence validator and unit-test blobs as PR #61 and invokes the same preflight. Treat #61 as a duplicate standalone gate; do not merge both as separate implementations.
 - #60 exact head `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` passed Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306): **966 passed, 1 warning, 76.53% coverage**. The job applied 001–033 + 038–040 only; no integrated 001–040, schema-audit, or DB-leakage proof is present.
-- Current unresolved review counts: #48 15/15, #49 80/80, #50 13/13, #55 1/1, #57 1/1, #59 4/4, #60 23/23, #61 0/0, #62 9/9, #63 1/1. These are current thread counts, not approvals. No merge or self-approval is authorized.
+- Current unresolved / total inline-thread counts (2026-11-07 03:24 WAT): #48 0/15; #49 1/80; #50 5/13 (4 active, 1 outdated); #55 1/1 (outdated); #57 1/1 (outdated); #59 4/4 (1 active, 3 outdated); #60 21/23 (9 active, 12 outdated); #61 0/0; #62 9/9 (4 active, 5 outdated); #63 1/1 (outdated). No open PR has an APPROVED review submission; #48 has only COMMENTED reviews. Counts describe thread state, not approval.
 - The current branch-protection read was denied by the GitHub integration (403); branch protection status is unverified.
 
 ## Release blockers
@@ -19,7 +20,7 @@ This snapshot supersedes the 2026-11-06 21:20 WAT overlay below. **Release decis
 - [ ] **Integrated migrations:** prove fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, and sequence preflight on one disposable PostgreSQL candidate.
 - [ ] **Integrated deployment security:** combine #60's restricted runtime role and explicit service allowlists with #62's DB-target validation, seed policy, contiguous migration preflight, public-schema audit, #55 leakage audit, and #57 seed safety. Exact #62 head still mounts `.env.production` into API and WAHA; the integrated candidate must remove those broad mounts so API receives only the runtime URL, WAHA only transport settings, and migration-owner credentials only the migrate service.
 - [ ] **Identity provenance:** #50's timestamp predicate cannot recover legacy defaults already touched by pre-033 scored reads. Preserve ambiguous provenance as NULL/unknown or require explicit OWNER attestation / immutable seed evidence; Fabian must choose.
-- [ ] **Independent review:** all critical PRs remain open with unresolved threads; branch-local green CI is not independent approval.
+- [ ] **Independent review:** all critical PRs remain open; no APPROVED review submission exists. #48 has 0/15 unresolved threads but only COMMENTED reviews; #49 has 1/80, #50 5/13, #60 21/23, and #62 9/9 unresolved. Branch-local green CI is not independent approval.
 - [ ] **Dashboard and architecture:** complete required Identity/FAQ/Knowledge/Command Center/Scheduled Action/Private Media management and observability gaps; route Internet through the single Tool Dispatcher/Authority before claiming the architecture gate complete.
 - [ ] **Controlled testing:** write and approve the staged OWNER self-DM → commands → media/view-once → one explicitly approved external contact plan only after the preceding gates pass.
 

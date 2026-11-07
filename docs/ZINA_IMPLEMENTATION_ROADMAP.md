@@ -18,15 +18,15 @@ Counts are unresolved / total inline threads. Green checks are branch-local evid
 | #63 | Conversation observability | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 |
 | #62 | Deployment seed/migration integration | `6bf7619656543829641b806b4b5488cdf8ace56e` | [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) success; 001–033 only | 9 / 9 |
 | #61 | Contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
-| #60 | P0 contact-consent fence | `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` | [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) success; 966 passed / 76.53%; 001–033 + 038–040 only | 23 / 23 |
+| #60 | P0 contact-consent fence | `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` | [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) success; 966 passed / 76.53%; 001–033 + 038–040 only | 21 / 23 (9 active; 12 outdated) |
 | #59 | Verification docs | This docs-only refresh advances the branch | No run expected (`[skip ci]`) | 4 / 4 at pre-refresh head |
 | #57 | Local fixture seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
 | #55 | CI database-leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
-| #50 | Identity Registry lifecycle/provenance | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 001–033 + 035 | 13 / 13 |
+| #50 | Identity Registry lifecycle/provenance | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 001–033 + 035 | 5 / 13 (4 active; 1 outdated) |
 | #49 | Outbound Message Library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 001–033 + 036–037 | 80 / 80 |
-| #48 | PrivateMediaArtifact observation/return | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success; 001–033 + 034 | 15 / 15 |
+| #48 | PrivateMediaArtifact observation/return | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success; 001–033 + 034 | 0 / 15 |
 
-PR #48's earlier review state of 0/15 unresolved is stale; the current thread query returns 15 unresolved. No independent approval is evidenced by this snapshot. Keep every PR open; no merge or self-approval is authorized.
+Fresh review-thread query (2026-11-07 03:24 WAT): #48 has 0/15 unresolved; #49 1/80; #50 5/13 (4 active, 1 outdated); #55 1/1 (outdated); #57 1/1 (outdated); #59 4/4 (1 active, 3 outdated); #60 21/23 (9 active, 12 outdated); #61 0/0; #62 9/9 (4 active, 5 outdated); #63 1/1 (outdated). No PR has an APPROVED review submission; #48's review submissions are COMMENTED. Keep every PR open; no merge or self-approval is authorized.
 
 ## Work completed in this run
 
@@ -41,11 +41,12 @@ PR #48's earlier review state of 0/15 unresolved is stale; the current thread qu
 - **Consent-expiry ordering was addressed in bec9f88 and exact-head CI passed** (966 passed / 76.53%). The new check follows final authority/quiet-hours/approval reservation; approval stays consumed if consent expires at that last boundary, and the blocked outcome is audited. The thread remains open for independent review.
 - The OWNER-attested `.contact` grant remains a product decision: confirm whether that evidence is sufficient to represent external-contact consent, while keeping consent distinct from OWNER automation permission and exact send authority.
 - **Cross-PR worker integration remains P0:** #48's worker binds the exact view-once source/chat/command IDs, locks the active source immediately before WAHA, and marks returned only after confirmed success. #60's worker has the final contact-consent/STOP/safety/approval fences but contains neither view-once source-lock nor success-only return-mark helper; #48's worker has no #60 consent/STOP/approval fence. Neither worker branch is safe alone. One candidate must combine both in the single existing worker/Outbound Queue/WAHA path and run an integrated PostgreSQL/mock-WAHA adversarial matrix.
-- The #60 runtime-role test now has a disposable-target guard, unique per-run credentials, and cleanup; the provisioner revokes UPDATE on the consent-event sequence and verifies `setval()` is denied. Those source fixes still need exact-head CI and independent review; their threads remain unresolved.
+- The #60 runtime-role test now has a disposable-target guard, unique per-run credentials, and cleanup; the provisioner revokes UPDATE on the consent-event sequence and verifies `setval()` is denied. These source fixes are present on exact #60 head `bec9f886` and included in run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306): 966 passed, 1 warning, 76.53%. Independent review remains open; the run applied only 001–033 + 038–040.
 
 ## Migration and deployment integration
 
 - The old duplicate-034 collision is resolved in branch allocation, not in main: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. Main remains at 033.
+- PR #62 contains the exact same migration-sequence validator and unit-test blobs as PR #61 (verified identical blob SHAs for both files) and invokes that preflight in its workflow. Treat #61 as a duplicate standalone gate; do not merge both as separate implementations.
 - #62 carries target validation, local-seed policy, contiguous migration preflight, public-schema audit, and DB-leakage audit. Its exact current `docker-compose.yml` still injects `.env.production` into API (line 29), WAHA (line 59), and migrate (line 129); it does not isolate DB/admin/provider secrets or provision/verify #60's restricted runtime DB role.
 - #60 carries the restricted non-owner runtime role and API/WAHA environment allowlists, but its runner does not yet carry #62's complete target/seed/sequence preflights. Neither merge order is safe. Consolidate both contracts with #55's leakage audit and #57's seed safety in one reviewed candidate.
 - No candidate has demonstrated fresh 001–040, installed 033→040 upgrade with representative existing rows, second-run checksum/no-op, schema audit, zero leakage, and restricted runtime-role privileges together.
@@ -60,7 +61,7 @@ PR #48's earlier review state of 0/15 unresolved is stale; the current thread qu
 
 ## Release decision
 
-**NOT TEST READY.** The exact-head P0 run is pending; STOP semantics and consent-evidence policy need OWNER decisions; migration/deployment integration and independent review remain incomplete; dashboard CRUD/observability gates remain. No controlled real-world WhatsApp testing is authorized.
+**NOT TEST READY.** The exact-head P0 run is green on #60 head `bec9f886` (run 42324039306: 966 passed, 1 warning, 76.53%) but applies only 001–033 + 038–040. STOP semantics and consent-evidence policy still need OWNER decisions; integrated worker/migration/deployment proof and independent review remain incomplete; dashboard CRUD/observability gates remain. No controlled real-world WhatsApp testing is authorized.
 
 **REAL WAHA ACTIONS: NONE.** No production database mutation, WAHA reconnection, real send, merge, self-approval, unrestricted broadcast, or private-media retention activation occurred.
 
