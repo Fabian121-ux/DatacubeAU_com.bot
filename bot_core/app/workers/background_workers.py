@@ -267,25 +267,15 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(session, message, reason=dispatch.reason)
                     await session.commit()
                     continue
-            # A STOP receipt is committed before ingress waits on the exact-chat lock.
-            # This is the final pre-transport veto: a claim committed before this read
-            # blocks the send. Once this read completes, the single transport attempt is
-            # considered in-flight and cannot be reliably cancelled after network entry.
+            # Acquire the exact-chat mapping/Contact locks before the remaining
+            # final fences, but defer the pending-receipt read until the last
+            # pre-transport boundary. Ingress commits a STOP receipt before it waits
+            # on these locks, so the final read below can observe a STOP that arrives
+            # while policy, approval, or consent checks are still waiting.
             if not _is_owner_chat_id(message.chat_id):
                 await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
                     session, message.chat_id
                 )
-                pending_opt_out = await ContactMessagingConsentService(
-                    session
-                ).has_pending_opt_out_intent_for_contact(consent.contact_id)
-                if pending_opt_out:
-                    await _mark_delivery_blocked(
-                        session,
-                        message,
-                        reason="pending inbound opt-out intent; external delivery denied",
-                    )
-                    await session.commit()
-                    continue
 
                 # Quiet hours are a delivery restriction, not an authority source.
                 # Apply the same final check to exact approvals and ScheduledActions;
@@ -351,9 +341,9 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 continue
 
             # Reserve an exact one-use OWNER approval only after recipient, content,
-            # STOP, safety, delivery-window, and final authority checks. Reservation is
-            # not proof of delivery; an approval remains consumed if a later final
-            # consent check denies the attempt.
+            # safety, delivery-window, final authority, and source checks. The final
+            # consent and pending-STOP vetoes still run after this reservation; if
+            # either denies, the approval remains consumed and cannot be replayed.
             approval_id = final_approval_id
             if approval_id is not None:
                 consumed = await OutboundAuthorizationService(session).consume_approval(
@@ -400,6 +390,39 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                         session,
                         message,
                         reason=f"final contact consent denied: {final_consent.reason}",
+                    )
+                    await session.commit()
+                    continue
+
+            # This is the final pending-STOP veto, adjacent to the one transport
+            # attempt. The receipt claim commits before ingress waits on the mapping
+            # lock held above, so this read observes STOPs committed during any of the
+            # later policy/approval/consent fences. Once it completes, one attempt is
+            # reserved; a later STOP applies to subsequent attempts.
+            if not _is_owner_chat_id(message.chat_id):
+                pending_opt_out = await ContactMessagingConsentService(
+                    session
+                ).has_pending_opt_out_intent_for_contact(consent.contact_id)
+                if pending_opt_out:
+                    if approval_id is not None:
+                        session.add(
+                            AuditLog(
+                                action="outbound_approval_consumed_dispatch_blocked",
+                                entity_type="outbound_queue",
+                                entity_id=str(message.id),
+                                details_json={
+                                    "chat_id": message.chat_id,
+                                    "approval_id": approval_id,
+                                    "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                                    "reason": "pending inbound opt-out intent; external delivery denied",
+                                    "delivery_attempt_reserved": False,
+                                },
+                            )
+                        )
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason="pending inbound opt-out intent; external delivery denied",
                     )
                     await session.commit()
                     continue

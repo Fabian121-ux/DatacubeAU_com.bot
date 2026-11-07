@@ -1172,3 +1172,173 @@ async def test_uncertain_approved_external_send_cannot_be_requeued_or_replayed(
     assert client.calls == 1
     assert queue.status == "deferred"
     assert "uncertain prior transport outcome" in (queue.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_stop_committed_during_one_use_approval_reservation_blocks_before_waha(
+    db_session, test_contact, monkeypatch
+):
+    """A STOP committed while approval reservation waits must be seen by the final veto."""
+    now = utcnow()
+    chat_id = "222@c.us"
+    test_contact.whatsapp_id = chat_id
+    test_contact.chat_id = chat_id
+    await db_session.flush()
+
+    source = Message(
+        contact_id=test_contact.id,
+        chat_id=chat_id,
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(source)
+    await db_session.flush()
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-stop-during-approval-reservation",
+        owner_identity="OWNER",
+    )
+
+    reply_text = "approved reply that must be vetoed by a later STOP"
+    queue = OutboundMessage(
+        chat_id=chat_id,
+        message_text=reply_text,
+        formatting_json={
+            "delivery_policy": "approval_required",
+            "inbound_message_id": source.id,
+            "contact_id": test_contact.id,
+            "content_sha256": OutboundAuthorizationService.content_hash(reply_text),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.commit()
+
+    contact_id = int(test_contact.id)
+    queue_id = int(queue.id)
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    monkeypatch.setattr(background_workers, "SessionLocal", factory)
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+
+    async def _authorized(session, authority, message, *, lock_chat_mapping=False):
+        return True, "exact one-use OWNER approval", 41, "owner_approval", None
+
+    async def _safe(self, message, *, now=None, contact_id=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    monkeypatch.setattr(background_workers, "_delivery_authorized", _authorized)
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+
+    approval_reservation_started = asyncio.Event()
+    release_approval_reservation = asyncio.Event()
+
+    async def pause_approval_reservation(self, approval_id, *, message=None):
+        assert approval_id == 41
+        approval_reservation_started.set()
+        await release_approval_reservation.wait()
+        return True
+
+    monkeypatch.setattr(OutboundAuthorizationService, "consume_approval", pause_approval_reservation)
+
+    client = _RecordingClient()
+    worker_task = asyncio.create_task(background_workers._deliver_due_outbound_messages(client))
+    route_task = None
+
+    event = {
+        "event": "message",
+        "session": "test",
+        "payload": {
+            "id": f"STOP-DURING-APPROVAL-{contact_id}",
+            "chatId": chat_id,
+            "from": chat_id,
+            "senderId": chat_id,
+            "fromMe": False,
+            "body": "STOP",
+        },
+    }
+    event_key = f"test:{chat_id}:STOP-DURING-APPROVAL-{contact_id}"
+
+    async def route_stop():
+        async with factory() as route_session:
+            idempotency = InboundIdempotencyService(route_session)
+            claimed = await idempotency.claim(
+                InboundReceipt(
+                    event_key=event_key,
+                    session_name="test",
+                    chat_id=chat_id,
+                    message_id=f"STOP-DURING-APPROVAL-{contact_id}",
+                    sender_identity_ids=(chat_id,),
+                    sender_contact_ids=(str(contact_id),),
+                    opt_out_intent=True,
+                )
+            )
+            assert claimed is True
+            result = await InboundRouter(route_session).process_event(event)
+            await idempotency.mark_completed(event_key)
+            return result
+
+    try:
+        await asyncio.wait_for(approval_reservation_started.wait(), timeout=5)
+        route_task = asyncio.create_task(route_stop())
+
+        async def wait_for_committed_stop_receipt():
+            for _ in range(100):
+                if route_task.done():
+                    await route_task
+                    raise AssertionError("STOP routing finished before approval reservation released the dispatch lock")
+                async with factory() as observer:
+                    receipt = (
+                        await observer.execute(
+                            text(
+                                "SELECT opt_out_intent, status FROM inbound_webhook_receipts "
+                                "WHERE event_key = :event_key"
+                            ),
+                            {"event_key": event_key},
+                        )
+                    ).one_or_none()
+                    if receipt is not None:
+                        assert receipt.opt_out_intent is True
+                        assert receipt.status == "processing"
+                        return
+                await asyncio.sleep(0.01)
+            raise AssertionError("STOP receipt was not committed while approval reservation was waiting")
+
+        await asyncio.wait_for(wait_for_committed_stop_receipt(), timeout=5)
+        assert not route_task.done(), "STOP routing must wait for the dispatch transaction"
+
+        release_approval_reservation.set()
+        processed = await asyncio.wait_for(worker_task, timeout=5)
+        route_result = await asyncio.wait_for(route_task, timeout=5)
+    finally:
+        release_approval_reservation.set()
+        if not worker_task.done():
+            await worker_task
+        if route_task is not None and not route_task.done():
+            await route_task
+
+    assert processed == 1
+    assert client.calls == []
+    assert route_result["action"] == "ignored"
+    await db_session.refresh(queue)
+    assert queue.status == "deferred"
+    assert "pending inbound opt-out intent" in (queue.error_message or "")
+
+    async with factory() as verify_session:
+        audit = (
+            await verify_session.execute(
+                select(AuditLog)
+                .where(AuditLog.action == "outbound_approval_consumed_dispatch_blocked")
+                .where(AuditLog.entity_id == str(queue_id))
+            )
+        ).scalar_one_or_none()
+        assert audit is not None
+        assert audit.details_json["approval_id"] == 41
+        assert audit.details_json["delivery_attempt_reserved"] is False
