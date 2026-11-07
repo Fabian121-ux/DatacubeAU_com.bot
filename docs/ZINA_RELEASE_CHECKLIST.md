@@ -1,3 +1,54 @@
+# Current release verification overlay — 2026-11-07 09:23 WAT (08:23 UTC)
+
+**Release decision: NOT TEST READY.** This is a fresh source/CI/review snapshot, not release certification. Historical checkboxes below are not current proof.
+
+## Verified baseline
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (2026-09-08 11:09:59 UTC); no newer main commit was returned. Exact-SHA Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08.
+- Main contains migrations 001–033. Its workflow still lacks migration-sequence preflight, ORM schema audit, and post-test DB-leakage audit. Main Compose still mounts broad `.env.production` into API/WAHA; restricted runtime DB-role isolation is only on PR #60.
+- Latest visible Tests run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded on PR #60 exact head `155430d29414e9d918062ce74d05cbee72edfa6a`: 974 passed, 1 warning, 76.50%. Its DB step applied 001–033 + 038–040 only, not 034–037; it did not run the sequence preflight, schema audit, or DB-leakage audit.
+- Branch protection is **unverified**: fresh branch-protection read returned 403; rulesets returned empty.
+
+## Open PRs and fresh inline review state
+
+Counts are unresolved / total; active unresolved excludes outdated threads. No open PR has an APPROVED review; PR #61 has no review submission.
+
+| PR | Exact head | Unresolved / total | Active unresolved |
+|---|---|---:|---:|
+| #63 | `13fad868affe01d6069f4288481f8cd8dd341c62` | 1 / 1 | 0 |
+| #62 | `6bf7619656543829641b806b4b5488cdf8ace56e` | 9 / 9 | 4 |
+| #61 | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 | 0 |
+| #60 | `155430d29414e9d918062ce74d05cbee72edfa6a` | 22 / 24 | 9 |
+| #59 | `89fa894deaaac8db23c29cebb911bf4567070490` (before this docs refresh) | 4 / 4 | 1 |
+| #57 | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 | 0 |
+| #55 | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 | 0 |
+| #50 | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | 5 / 13 | 4 |
+| #49 | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 | 1 |
+| #48 | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 | 0 |
+
+All PRs remain open. Green CI and COMMENTED review submissions are not independent approval or merge authorization.
+
+## Blocking product and P0 decisions
+
+1. **STOP boundary:** #60 now checks pending STOP immediately before the single WAHA call and proves STOP committed during approval reservation blocks. A STOP committed after the final receipt read but before network entry may still lose one already-reserved attempt. Fabian must accept that one-attempt linearization point or request a stronger reservation/transport protocol.
+2. **Terminal opt-out scope:** #60 currently makes opt-out Contact-wide across current mapped aliases and permanently blocks routine re-consent/OWNER override. Fabian must confirm this is intended.
+3. **Consent evidence:** `.contact consent grant` stores OWNER-attested provenance and an opaque evidence reference. Fabian must decide whether that attestation is sufficient evidence of external contact consent, distinct from automation permission and per-send authorization.
+4. **Legacy identity provenance:** #50 migration 035 still infers system defaults from `updated_at = created_at`. Historical pre-033 scored reads could have advanced timestamps. Choose unknown/NULL for ambiguous legacy rows or explicit OWNER-attested/immutable seed evidence; no more timestamp heuristics.
+
+## Integration and test gates
+
+- Migration allocation is unique by branch: 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60). Main remains at 033; the integrated chain has not been proven.
+- #60 contains the restricted runtime DB role and service-specific API/WAHA environment allowlists, but lacks #62's pre-DDL target/seed/sequence preflights. #62 has those preflights, schema audit, and leakage gate, but its Compose still injects broad `.env.production` into API/WAHA and lacks #60's restricted runtime role. #61, #55, and #57 are already represented in #62; do not merge duplicate implementations separately.
+- #48's PrivateMediaArtifact observation/`.vvopen`/delete wiring is not in #60; #60's worker fences are not in #48. Compose both in one worker path.
+- Required proof on one disposable PostgreSQL candidate: fresh 001–040; installed 033→040 upgrade with representative rows; second-run checksum/no-op; sequence preflight; ORM schema audit; zero DB leakage; restricted runtime-role privilege/membership checks; exact-head full suite/coverage; P0 adversarial matrix; mock-WAHA regressions.
+- No integrated candidate currently satisfies these gates together. Private-media byte retention remains OFF; no real WAHA test is authorized.
+
+**Highest-value next step:** resolve the OWNER policy decisions, then compose #48/#50/#49/#60 with #55/#57/#61/#62 into one reviewed integration candidate and run the complete disposable-PostgreSQL fresh/upgrade/no-op/security proof. Keep all PRs open pending independent review.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Current release verification overlay — 2026-11-07 06:20 WAT
 
 This snapshot supersedes the 2026-11-07 03:24 WAT overlay below. **Release decision: NOT TEST READY.** Historical checkboxes are not current proof.
