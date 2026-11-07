@@ -159,8 +159,68 @@ class ViewOnceCommandService:
         if not decision.accepted:
             return self._reply(f"This view-once media could not be returned safely: {decision.reason}")
 
+        # Serialize duplicate webhook deliveries for this exact command and source.
+        # The command lock prevents a conflicting replay from locking a different source
+        # while the source-row lock protects lifecycle state through queue creation.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:command_message_id, 0))"),
+            {"command_message_id": transport_message_id},
+        )
+        locked_source = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT source_chat_id FROM view_once_media_metadata
+                    WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+                    FOR UPDATE
+                    """
+                ),
+                {"source_message_id": quoted_id},
+            )
+        ).mappings().one_or_none()
+        if locked_source is None:
+            return self._reply("Zina's metadata for this item was deleted before it could be queued.")
+        if str(locked_source["source_chat_id"] or "") != str(record["source_chat_id"] or ""):
+            return self._reply("The source chat no longer matches its recorded identity, so this item was not returned.")
+
         existing = await self._existing_return(transport_message_id)
         if existing is not None:
+            existing_row = await self.session.get(OutboundMessage, existing)
+            existing_metadata = (
+                existing_row.formatting_json
+                if existing_row is not None and isinstance(existing_row.formatting_json, dict)
+                else {}
+            )
+            existing_matches = (
+                existing_row is not None
+                and existing_row.chat_id == owner_chat_id
+                and existing_metadata.get("source_message_id") == quoted_id
+                and str(existing_metadata.get("source_chat_id") or "")
+                == str(record["source_chat_id"] or "")
+                and existing_metadata.get("command_message_id") == transport_message_id
+                and OutboundAuthorizationService.owner_payload_matches(existing_row)
+            )
+            if not existing_matches:
+                self.session.add(
+                    AuditLog(
+                        action="view_once_return_replay_conflict",
+                        entity_type="outbound_queue",
+                        entity_id=str(existing),
+                        details_json={
+                            "request_id": request_id,
+                            "command_message_id": transport_message_id,
+                            "requested_source_message_id": quoted_id,
+                            "requested_source_chat_id": record["source_chat_id"],
+                            "existing_source_message_id": existing_metadata.get("source_message_id"),
+                            "existing_source_chat_id": existing_metadata.get("source_chat_id"),
+                        },
+                    )
+                )
+                await self.session.flush()
+                return self._reply(
+                    "This WhatsApp command ID is already bound to a different or invalid media return; "
+                    "no additional media was queued."
+                )
             return ViewOnceCommandResult(True, outbound_queue_id=existing)
 
         caption = f"View-once {decision.media.media_kind} from your WhatsApp history."
@@ -169,6 +229,7 @@ class ViewOnceCommandService:
             "command": self.COMMAND,
             "command_message_id": transport_message_id,
             "source_message_id": quoted_id,
+            "source_chat_id": record["source_chat_id"],
             **decision.media.queue_metadata(),
         }
         queued = OutboundMessage(
@@ -194,6 +255,20 @@ class ViewOnceCommandService:
         queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
         await self.session.flush()
 
+        self.session.add(
+            AuditLog(
+                action="view_once_return_queued",
+                entity_type="outbound_queue",
+                entity_id=str(queued.id),
+                details_json={
+                    "request_id": request_id,
+                    "source_message_id": quoted_id,
+                    "media_kind": decision.media.media_kind,
+                    "media_mime": decision.media.mimetype,
+                },
+            )
+        )
+        await self.session.flush()
         return ViewOnceCommandResult(True, outbound_queue_id=queued.id)
 
     # ----------------------------------------------------------------------------------
