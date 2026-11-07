@@ -45,7 +45,7 @@ PR #48's earlier review state of 0/15 unresolved is stale; the current thread qu
 ## Migration and deployment integration
 
 - The old duplicate-034 collision is resolved in branch allocation, not in main: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. Main remains at 033.
-- #62 carries target validation, local-seed policy, contiguous migration preflight, public-schema audit, DB-leakage audit, and service-specific Compose allowlists, but it does not provision/verify #60's restricted runtime DB role.
+- #62 carries target validation, local-seed policy, contiguous migration preflight, public-schema audit, and DB-leakage audit. Its exact current `docker-compose.yml` still injects `.env.production` into API (line 29), WAHA (line 59), and migrate (line 129); it does not isolate DB/admin/provider secrets or provision/verify #60's restricted runtime DB role.
 - #60 carries the restricted non-owner runtime role and API/WAHA environment allowlists, but its runner does not yet carry #62's complete target/seed/sequence preflights. Neither merge order is safe. Consolidate both contracts with #55's leakage audit and #57's seed safety in one reviewed candidate.
 - No candidate has demonstrated fresh 001–040, installed 033→040 upgrade with representative existing rows, second-run checksum/no-op, schema audit, zero leakage, and restricted runtime-role privileges together.
 
