@@ -1,3 +1,70 @@
+# Current verification overlay — 2026-11-07
+
+This snapshot supersedes the 2026-11-06 21:20 WAT overlay below. The per-domain roadmap tables remain the 2026-09-08 audit and are not current code evidence. This is not release certification.
+
+## Main and workflow baseline
+
+- `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; last commit 2026-09-08 11:09:59 UTC. Exact-SHA main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded.
+- Main contains migrations 001–033. `.github/workflows/tests.yml` applies the SQL files lexically and runs pytest with a 57% coverage floor; it does not run the contiguous-migration preflight, ORM schema audit, or post-test DB-leakage audit.
+- Main's deployment runner predates the target/seed/sequence preflights and restricted runtime-role split. The current deployment safeguards exist on open PR branches, not main.
+- A fresh branch-protection read was denied with GitHub API 403 (“Resource not accessible by integration”). Do not treat the historical “main is unprotected” observation as re-verified.
+
+## All ten open PRs — exact heads rechecked 2026-11-07
+
+Counts are unresolved / total inline threads. Green checks are branch-local evidence only.
+
+| PR | Scope | Exact head | Latest known Tests | Unresolved / total |
+|---|---|---|---|---:|
+| #63 | Conversation observability | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 |
+| #62 | Deployment seed/migration integration | `6bf7619656543829641b806b4b5488cdf8ace56e` | [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) success; 001–033 only | 9 / 9 |
+| #61 | Contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
+| #60 | P0 contact-consent fence | `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` | [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) in progress; migration step passed | 23 / 23 |
+| #59 | Verification docs | This docs-only refresh advances the branch | No run expected (`[skip ci]`) | 4 / 4 at pre-refresh head |
+| #57 | Local fixture seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
+| #55 | CI database-leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
+| #50 | Identity Registry lifecycle/provenance | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) success; 001–033 + 035 | 13 / 13 |
+| #49 | Outbound Message Library foundation | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) success; 001–033 + 036–037 | 80 / 80 |
+| #48 | PrivateMediaArtifact observation/return | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) success; 001–033 + 034 | 15 / 15 |
+
+PR #48's earlier review state of 0/15 unresolved is stale; the current thread query returns 15 unresolved. No independent approval is evidenced by this snapshot. Keep every PR open; no merge or self-approval is authorized.
+
+## Work completed in this run
+
+- On existing PR #60, pushed [bec9f88](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a). The final contact-consent expiry check now runs after delivery-window and final-authority checks and after the potentially blocking one-use OWNER approval reservation. It reads PostgreSQL `clock_timestamp()` after locking the consent row.
+- Added a PostgreSQL/mock-WAHA regression that expires consent during approval reservation and asserts zero WAHA calls, a deferred queue row, and a consumed approval (no replay).
+- Exact-head Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) is in progress. Its migration-application step passed, applying 001–033 and 038–040 only. No pytest count, coverage result, schema audit, leakage audit, or integrated 001–040 result is claimed yet.
+- The predecessor #60 head `a28cd8fae8180fa395865fbb0b75f5aa07f1dd31` passed run [42242248132](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42242248132): 965 passed / 76.54% coverage. That run also applied only 001–033 + 038–040.
+
+## P0 safety decisions and remaining blockers
+
+- **STOP linearization remains an OWNER decision.** Ingress commits a STOP-intent receipt before waiting on the dispatch-boundary lock. If that receipt commits after the worker's final pending-STOP read but before the WAHA call, the current attempt may proceed. Decide whether the acquired boundary/read is the reservation point for one already-in-flight attempt (with all later sends vetoed), or require a redesigned reservation/transport protocol. Do not claim cancellation through actual transport entry.
+- **Consent-expiry ordering was addressed in bec9f88**, but its exact-head test is still running. The new check is after final authority/quiet-hours/approval reservation; approval stays consumed if consent expires at that last boundary, and the blocked outcome is audited.
+- The OWNER-attested `.contact` grant remains a product decision: confirm whether that evidence is sufficient to represent external-contact consent, while keeping consent distinct from OWNER automation permission and exact send authority.
+- The #60 runtime-role test now has a disposable-target guard, unique per-run credentials, and cleanup; the provisioner revokes UPDATE on the consent-event sequence and verifies `setval()` is denied. Those source fixes still need exact-head CI and independent review; their threads remain unresolved.
+
+## Migration and deployment integration
+
+- The old duplicate-034 collision is resolved in branch allocation, not in main: **034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60)**. Main remains at 033.
+- #62 carries target validation, local-seed policy, contiguous migration preflight, public-schema audit, DB-leakage audit, and service-specific Compose allowlists, but it does not provision/verify #60's restricted runtime DB role.
+- #60 carries the restricted non-owner runtime role and API/WAHA environment allowlists, but its runner does not yet carry #62's complete target/seed/sequence preflights. Neither merge order is safe. Consolidate both contracts with #55's leakage audit and #57's seed safety in one reviewed candidate.
+- No candidate has demonstrated fresh 001–040, installed 033→040 upgrade with representative existing rows, second-run checksum/no-op, schema audit, zero leakage, and restricted runtime-role privileges together.
+
+## Identity and later domains
+
+- #50 now makes `introduction_reply()` consult Identity Registry lifecycle state and fail closed when the registry cannot be read; the greeting is limited to the assistant/OWNER relationship. The old introduction bypass is source-addressed on that branch.
+- **Migration 035 provenance remains unresolved.** The current main's pre-033 scored-read path advanced `updated_at` on ordinary reads. Removing that behavior in #50 cannot restore timestamps already advanced on deployed databases. `updated_at = created_at` therefore skips some genuine legacy defaults. Do not add another timestamp heuristic: preserve ambiguous legacy provenance as NULL/unknown, or require explicit OWNER attestation / immutable seed evidence. Fabian must decide whether unknown legacy provenance is acceptable.
+- #48 is metadata/observation wiring only; private bytes are not implemented and retention remains OFF.
+- #49 is still a foundation: no live producer selection or dashboard integration is release-proven. Do not integrate it before P0 safety and the combined migration/deployment candidate.
+- #63 improves observability, but the Internet path still needs the registered `web.search` tool to execute through the single Tool Dispatcher/Authority boundary; direct `InternetService` use remains a roadmap blocker.
+
+## Release decision
+
+**NOT TEST READY.** The exact-head P0 run is pending; STOP semantics and consent-evidence policy need OWNER decisions; migration/deployment integration and independent review remain incomplete; dashboard CRUD/observability gates remain. No controlled real-world WhatsApp testing is authorized.
+
+**REAL WAHA ACTIONS: NONE.** No production database mutation, WAHA reconnection, real send, merge, self-approval, unrestricted broadcast, or private-media retention activation occurred.
+
+---
+
 # Current verification overlay — 2026-11-06 21:20 WAT
 
 This snapshot supersedes earlier repository, PR, review, CI, migration, and deployment observations below. The per-domain roadmap tables are the 2026-09-08 baseline audit, not a current code audit. This is not release certification.
