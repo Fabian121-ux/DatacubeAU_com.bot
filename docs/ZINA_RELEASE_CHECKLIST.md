@@ -1,4 +1,4 @@
-# Current release decision — 2026-11-07 13:17 WAT (12:17 UTC)
+# Current release decision — 2026-11-07 13:26 WAT (12:26 UTC)
 
 <NOT TEST READY>
 
@@ -27,7 +27,7 @@ This fresh overlay supersedes older checklist snapshots. Historical checkboxes b
 - [ ] Apply 001–040 from an empty disposable PostgreSQL 16 database; upgrade a representative installed 033 database through 040; verify second-run no-op and checksums.
 - [ ] Run the contiguous-sequence preflight, ORM schema audit, and zero-leakage audit on that same integrated candidate.
 - [ ] Compose #60's restricted runtime API DB role and API/WAHA environment allowlists with #62's pre-DDL DB-target, local-seed, and migration-sequence guards. API must not receive migration-owner credentials; WAHA must receive only transport settings.
-- [ ] Retain #55's schema-qualified leakage audit and #57's local-seed protection. #61 and #62 overlap on migration-sequence validation; do not merge duplicate runner changes blindly.
+- [ ] Retain #55's schema-qualified leakage audit and #57's local-seed protection. #62 is a strict descendant of #61 and already contains its migration-sequence guard; if #61 is independently approved/merged first, rebase/retest #62 instead of cherry-picking duplicate guard changes.
 - [ ] Keep private-media byte retention OFF until separate TTL/quota/integrity/delete/audit controls are independently approved and validated.
 
 ## Identity, governance, and product gates
@@ -41,7 +41,7 @@ This fresh overlay supersedes older checklist snapshots. Historical checkboxes b
 
 ## Engineering actions in this verification
 
-- Re-read main SHA/recent commits, all ten open PR heads, all review submissions and inline threads, recent Actions runs, main workflow YAML, migration trees, deployment runner/Compose, and the current #60/#48/#50 source paths.
+- Re-read main SHA/recent commits, all ten open PR heads, all review submissions and inline threads, recent Actions runs, main workflow YAML, migration trees, deployment runner/Compose, and the current #60/#48/#50 source paths. Compared #61/#62 ancestry and recorded the integration note on PR #61.
 - Updated only the existing PR #59 verification overlays in the roadmap and release checklist. No application code, migrations, tests, production database, deployment, or WAHA behavior changed.
 - No local repository checkout, `psql`, or Docker executable was available. No local tests/migrations were run and no Actions run was triggered by this docs-only update.
 
