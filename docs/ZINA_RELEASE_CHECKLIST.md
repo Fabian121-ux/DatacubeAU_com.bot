@@ -6,14 +6,14 @@ This snapshot supersedes the 2026-11-06 21:20 WAT overlay below. **Release decis
 
 - Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, last committed 2026-09-08 11:09:59 UTC. Exact-SHA Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded. Main contains migrations 001–033 and its workflow lacks the contiguous sequence preflight, ORM schema audit, and post-test leakage audit.
 - Current branch migration allocation is unique: 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60). The duplicate-034 collision is resolved in branch allocation only; no integrated 001–040 chain has passed.
-- #60 exact head `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` has Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) in progress. Migration application passed for 001–033 + 038–040; no pytest/coverage result is claimed. The prior exact head passed 965 tests / 76.54% on 001–033 + 038–040 only.
+- #60 exact head `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` passed Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306): **966 passed, 1 warning, 76.53% coverage**. The job applied 001–033 + 038–040 only; no integrated 001–040, schema-audit, or DB-leakage proof is present.
 - Current unresolved review counts: #48 15/15, #49 80/80, #50 13/13, #55 1/1, #57 1/1, #59 4/4, #60 23/23, #61 0/0, #62 9/9, #63 1/1. These are current thread counts, not approvals. No merge or self-approval is authorized.
 - The current branch-protection read was denied by the GitHub integration (403); branch protection status is unverified.
 
 ## Release blockers
 
 - [ ] **P0 STOP boundary:** a STOP receipt can commit after the worker's final pending-STOP read and before WAHA entry. Fabian must define whether the reservation/read is the in-flight boundary for one attempt, or require a redesigned reservation/transport protocol.
-- [ ] **P0 consent expiry:** fixed in #60 commit [bec9f88](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a) by checking consent after final delivery-window/authority/approval reservation and using PostgreSQL `clock_timestamp()`; exact-head CI remains in progress. The new regression must pass before this finding is considered closed.
+- [ ] **P0 consent expiry:** fixed in #60 commit [bec9f88](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a); exact-head Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) passed 966 / 76.53%. The finding still needs independent review; this branch-local run does not prove the integrated migration/deployment candidate.
 - [ ] **Consent evidence policy:** confirm OWNER-attested `.contact` evidence is sufficient to represent external-contact consent, distinct from OWNER automation permission and send authority.
 - [ ] **Integrated migrations:** prove fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, and sequence preflight on one disposable PostgreSQL candidate.
 - [ ] **Integrated deployment security:** combine #60's restricted runtime role and service allowlists with #62's DB-target validation, seed policy, contiguous migration preflight, public-schema audit, #55 leakage audit, and #57 seed safety. API must receive only the runtime URL; WAHA only transport settings; migration-owner credentials only the migrate service.
@@ -27,7 +27,7 @@ This snapshot supersedes the 2026-11-06 21:20 WAT overlay below. **Release decis
 - #60's previous 965-test green run did not apply migrations 034–037 or run the combined sequence/schema/leakage gates.
 - #62's 866-test green run applied 001–033 only; it does not provision #60's runtime DB role.
 - #48/#49/#50 exact-head green runs are each branch-local to their own migration subsets.
-- The new #60 run is still in progress; no result is claimed for bec9f88.
+- The new #60 run passed 966 tests / 76.53% on bec9f88, but remains branch-local to 001–033 + 038–040.
 
 **REAL WAHA ACTIONS: NONE.** No production DB mutation, WAHA reconnection, real WhatsApp send, merge, self-approval, unrestricted broadcast, or private-media retention activation occurred.
 

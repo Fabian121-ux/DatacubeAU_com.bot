@@ -18,7 +18,7 @@ Counts are unresolved / total inline threads. Green checks are branch-local evid
 | #63 | Conversation observability | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429) success | 1 / 1 |
 | #62 | Deployment seed/migration integration | `6bf7619656543829641b806b4b5488cdf8ace56e` | [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) success; 001–033 only | 9 / 9 |
 | #61 | Contiguous migration gate | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) success | 0 / 0 |
-| #60 | P0 contact-consent fence | `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` | [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) in progress; migration step passed | 23 / 23 |
+| #60 | P0 contact-consent fence | `bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a` | [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) success; 966 passed / 76.53%; 001–033 + 038–040 only | 23 / 23 |
 | #59 | Verification docs | This docs-only refresh advances the branch | No run expected (`[skip ci]`) | 4 / 4 at pre-refresh head |
 | #57 | Local fixture seed safety | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) success | 1 / 1 |
 | #55 | CI database-leakage audit | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) success | 1 / 1 |
@@ -32,13 +32,13 @@ PR #48's earlier review state of 0/15 unresolved is stale; the current thread qu
 
 - On existing PR #60, pushed [bec9f88](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/bec9f886fcb9bd4069f2c8a9c07f764fd3542a7a). The final contact-consent expiry check now runs after delivery-window and final-authority checks and after the potentially blocking one-use OWNER approval reservation. It reads PostgreSQL `clock_timestamp()` after locking the consent row.
 - Added a PostgreSQL/mock-WAHA regression that expires consent during approval reservation and asserts zero WAHA calls, a deferred queue row, and a consumed approval (no replay).
-- Exact-head Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) is in progress. Its migration-application step passed, applying 001–033 and 038–040 only. No pytest count, coverage result, schema audit, leakage audit, or integrated 001–040 result is claimed yet.
+- Exact-head Tests run [42324039306](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42324039306) succeeded: **966 passed, 1 warning, 76.53% coverage**. Its migration step applied 001–033 and 038–040 only; it did not apply 034–037 or run the contiguous sequence preflight, ORM schema audit, post-test DB-leakage audit, or integrated 001–040 validation.
 - The predecessor #60 head `a28cd8fae8180fa395865fbb0b75f5aa07f1dd31` passed run [42242248132](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42242248132): 965 passed / 76.54% coverage. That run also applied only 001–033 + 038–040.
 
 ## P0 safety decisions and remaining blockers
 
 - **STOP linearization remains an OWNER decision.** Ingress commits a STOP-intent receipt before waiting on the dispatch-boundary lock. If that receipt commits after the worker's final pending-STOP read but before the WAHA call, the current attempt may proceed. Decide whether the acquired boundary/read is the reservation point for one already-in-flight attempt (with all later sends vetoed), or require a redesigned reservation/transport protocol. Do not claim cancellation through actual transport entry.
-- **Consent-expiry ordering was addressed in bec9f88**, but its exact-head test is still running. The new check is after final authority/quiet-hours/approval reservation; approval stays consumed if consent expires at that last boundary, and the blocked outcome is audited.
+- **Consent-expiry ordering was addressed in bec9f88 and exact-head CI passed** (966 passed / 76.53%). The new check follows final authority/quiet-hours/approval reservation; approval stays consumed if consent expires at that last boundary, and the blocked outcome is audited. The thread remains open for independent review.
 - The OWNER-attested `.contact` grant remains a product decision: confirm whether that evidence is sufficient to represent external-contact consent, while keeping consent distinct from OWNER automation permission and exact send authority.
 - The #60 runtime-role test now has a disposable-target guard, unique per-run credentials, and cleanup; the provisioner revokes UPDATE on the consent-event sequence and verifies `setval()` is denied. Those source fixes still need exact-head CI and independent review; their threads remain unresolved.
 
