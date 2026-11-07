@@ -10,14 +10,19 @@ produce a send, because the durable record deliberately stores no locator.
 
 from __future__ import annotations
 
+import asyncio
+import os
+
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.message_normalizer import MessageNormalizer
 from app.models.schema import AdminAccount, AuditLog, OutboundMessage
 from app.services.command_control_service import CommandControlService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.view_once_command_service import ViewOnceCommandService
+from app.services.waha_client import WahaClientError
 from app.workers import background_workers
 
 
@@ -495,3 +500,231 @@ async def test_retain_on_remains_unavailable(db_session):
         await db_session.execute(text("SELECT DISTINCT retention_mode FROM view_once_media_metadata"))
     ).scalars().all()
     assert modes == ["none"]
+
+
+
+class _SessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _ViewOnceWorkerClient:
+    def __init__(self, failure=None, on_send=None):
+        self.calls = []
+        self.failure = failure
+        self.on_send = on_send
+
+    async def send_image(self, chat_id, *, media_url, mimetype, caption=None, filename=None):
+        self.calls.append((chat_id, media_url, mimetype, caption, filename))
+        if self.on_send is not None:
+            await self.on_send()
+        if self.failure is not None:
+            raise self.failure
+        return {"id": "mock-view-once-return"}
+
+    async def send_text(self, *, chat_id, text):
+        raise AssertionError("view-once return must use the typed image transport")
+
+
+async def _deliver_view_once(db_session, monkeypatch, client):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_ID)
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    return await background_workers._deliver_due_outbound_messages(client)
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_view_once_return_only_after_waha_success(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    before = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert before is None
+
+    client = _ViewOnceWorkerClient()
+    await _deliver_view_once(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    after = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert row.status == "sent"
+    assert len(client.calls) == 1
+    assert after is not None
+    audits = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.action == "view_once_returned_to_owner")
+        )
+    ).scalars().all()
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_deleted_view_once_source_blocks_pending_owner_return_before_waha(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    await _run(db_session, _event(command_id="VV-DEL"), owner, operation="delete")
+    client = _ViewOnceWorkerClient()
+    await _deliver_view_once(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "deleted" in (row.error_message or "").lower()
+    returned = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert returned is None
+
+
+@pytest.mark.asyncio
+async def test_uncertain_view_once_return_does_not_mark_returned_or_retry(db_session, monkeypatch):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+    client = _ViewOnceWorkerClient(failure=WahaClientError("connection closed before response"))
+
+    await _deliver_view_once(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert len(client.calls) == 1
+    assert row.status == "deferred"
+    assert "automatic replay blocked" in (row.error_message or "")
+    returned = (
+        await db_session.execute(
+            text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
+        )
+    ).scalar_one()
+    assert returned is None
+
+    await _deliver_view_once(db_session, monkeypatch, client)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "expected_reason"),
+    [
+        ("source_chat_id", "2348000000009@c.us", "source chat"),
+        ("command_message_id", "", "command message id"),
+    ],
+)
+async def test_worker_fails_closed_on_invalid_view_once_source_binding(
+    db_session, monkeypatch, field, value, expected_reason
+):
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    row = (await _outbound(db_session))[0]
+
+    metadata = dict(row.formatting_json)
+    metadata[field] = value
+    row.formatting_json = metadata
+    row.formatting_json = OutboundAuthorizationService.stamp_owner_payload(row)
+    await db_session.flush()
+    assert OutboundAuthorizationService.owner_payload_matches(row)
+
+    client = _ViewOnceWorkerClient()
+    await _deliver_view_once(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert expected_reason in (row.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_worker_holds_view_once_source_lock_through_waha_attempt(db_session, monkeypatch):
+    """A concurrent OWNER delete must wait until the single return attempt commits."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await _run(db_session, _event(), owner)
+    queue = (await _outbound(db_session))[0]
+    queue_id = int(queue.id)
+    await db_session.commit()
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+    delete_started = asyncio.Event()
+
+    async def pause_transport():
+        send_started.set()
+        await release_send.wait()
+
+    client = _ViewOnceWorkerClient(on_send=pause_transport)
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_ID)
+    monkeypatch.setattr(background_workers, "SessionLocal", Session)
+
+    async def delete_source():
+        async with Session() as session:
+            delete_started.set()
+            await session.execute(
+                text(
+                    "UPDATE view_once_media_metadata SET deleted_at=now() "
+                    "WHERE source_message_id='SRC-1'"
+                )
+            )
+            await session.commit()
+
+    worker_task = asyncio.create_task(background_workers._deliver_due_outbound_messages(client))
+    delete_task = None
+    try:
+        await asyncio.wait_for(send_started.wait(), timeout=5)
+        delete_task = asyncio.create_task(delete_source())
+        await asyncio.wait_for(delete_started.wait(), timeout=5)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(delete_task), timeout=0.1)
+
+        release_send.set()
+        assert await asyncio.wait_for(worker_task, timeout=5) == 1
+        await asyncio.wait_for(delete_task, timeout=5)
+
+        async with Session() as verify:
+            status = (
+                await verify.execute(
+                    text("SELECT status FROM outbound_queue WHERE id=:queue_id"),
+                    {"queue_id": queue_id},
+                )
+            ).scalar_one()
+            returned, deleted = (
+                await verify.execute(
+                    text(
+                        "SELECT returned_to_owner_at, deleted_at "
+                        "FROM view_once_media_metadata WHERE source_message_id='SRC-1'"
+                    )
+                )
+            ).one()
+        assert client.calls and status == "sent"
+        assert returned is not None and deleted is not None
+    finally:
+        release_send.set()
+        if not worker_task.done():
+            await worker_task
+        if delete_task is not None and not delete_task.done():
+            await delete_task
+        await engine.dispose()
