@@ -1,8 +1,8 @@
-# Current release decision — 2026-11-07 17:20 WAT (16:20 UTC)
+# Current release decision — 2026-11-07 21:24 WAT (20:24 UTC)
 
 **<NOT TEST READY>**
 
-This fresh overlay supersedes the 13:26 WAT snapshot below. Historical checkboxes are not current proof.
+This fresh overlay supersedes the 17:20 WAT snapshot below. Historical checkboxes are not current proof.
 
 ## Verified baseline
 
@@ -10,7 +10,7 @@ This fresh overlay supersedes the 13:26 WAT snapshot below. Historical checkboxe
 - Latest overall Tests run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded on PR #60 exact head `155430d29414e9d918062ce74d05cbee72edfa6a`: 974 passed, 1 warning, 76.50%. It applied 001–033 + 038–040 only; it did not apply 034–037 or run the sequence preflight, ORM schema audit, or post-test leakage audit.
 - Current migration allocation: #48=034, #50=035, #49=036–037, #60=038–040. Unique branch numbering is not integrated 001–040 proof.
 - Ten PRs remain open; none has an APPROVED review. Active unresolved inline threads: #60=9, #62=4, #50=4, #49=1, #59=1. #48/#61 have no unresolved threads; #55/#57/#63 have only outdated unresolved threads.
-- Main branch protection remains unverified (branch-protection endpoint returned 403; rulesets returned empty).
+- The branch endpoint reports `protected: false` / `protection.enabled: false`, with required-status-check enforcement `off`; `main` is **not branch-protected**. Configure and verify required independent human review and CI through repository administration before any merge.
 
 ## Blocking P0 gates
 
