@@ -1,13 +1,13 @@
-# Fresh engineering verification overlay — 2026-11-07 17:20 WAT (16:20 UTC)
+# Fresh engineering verification overlay — 2026-11-07 21:24 WAT (20:24 UTC)
 
-This overlay supersedes the 13:26 WAT snapshot below. Historical phase tables and earlier overlays are not current code proof.
+This overlay supersedes the 17:20 WAT snapshot below. Historical phase tables and earlier overlays are not current code proof.
 
 ## Main, CI, deployment, and migration baseline
 
 - `main` remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (2026-09-08 11:09:59 UTC); no later main commit was returned. Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that exact SHA on 2026-09-08.
 - Main contains migrations 001–033 only. Main `.github/workflows/tests.yml` (blob `445b1fd`) applies the migration glob lexically and runs pytest with the 57% coverage floor; it has no migration-sequence preflight, ORM schema audit, or post-test DB-leakage audit.
 - Main `deploy/scripts/run-migrations.sh` (blob `98f151a`) has no pre-DDL database-target, migration-sequence, or local-seed guard. Main Compose still injects `.env.production` into API, WAHA, and migrate services; the restricted API runtime DB role exists only on PR #60.
-- Main branch-protection read returned HTTP 403 and the rulesets endpoint returned `[]`; effective protection remains **unverified**, not proven absent.
+- The branch endpoint reports `protected: false`, `protection.enabled: false`, and required-status-check enforcement `off`; `main` is **not branch-protected**. Configure and independently verify required human review and CI before any merge.
 
 ## All ten open PRs — exact heads, review state, and latest exact-head Tests run
 
@@ -19,7 +19,7 @@ Review counts are unresolved / total inline threads; active unresolved excludes 
 | [#62 deployment/seed/migration preflights](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `6bf7619656543829641b806b4b5488cdf8ace56e` | 9 / 9 (4) | [42210751706 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706), 866 passed / 76.01% |
 | [#61 migration-sequence guard](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 (0) | [40300425938 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) |
 | [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `155430d29414e9d918062ce74d05cbee72edfa6a` | 22 / 24 (9) | [42340254616 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616), 974 passed / 76.50% |
-| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `2010465ea301ab61794fb02aac25abbfe7609daa` before this docs refresh | 4 / 4 (1) | No exact-head run returned |
+| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `d9764c57532357e965588b1b1eed8934ef8651e6` before this docs refresh | 4 / 4 (1) | No exact-head run returned |
 | [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 (0) | [40169146406 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) |
 | [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 (0) | [41713366314 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314), 816 passed / 76.01% |
 | [#50 Identity Registry lifecycle fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | 5 / 13 (4) | [42085040529 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529), 855 passed / 76.53% |
