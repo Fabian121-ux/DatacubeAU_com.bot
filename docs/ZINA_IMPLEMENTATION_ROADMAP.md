@@ -1,3 +1,69 @@
+# Fresh engineering verification overlay — 2026-11-07 12:17 WAT (11:17 UTC)
+
+This overlay supersedes earlier snapshots below. It records source/PR/CI evidence only; historical phase checkboxes are not current proof.
+
+## Main and workflow
+
+- Fresh `refs/heads/main` read: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`. The ten newest main commits still end at the 2026-09-08 merge of PR #47; no later main commit was returned.
+- Latest main Tests run: [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), exact SHA above, success at 2026-09-08 11:10–11:12 UTC. No later main-branch run was returned.
+- Main has migrations 001–033 only. Its current `.github/workflows/tests.yml` still applies the migration glob directly and runs pytest with the 57% coverage floor; it does not run migration-sequence preflight, ORM schema audit, or post-test DB-leakage audit.
+- Main `deploy/scripts/run-migrations.sh` has no pre-DDL target/sequence/seed preflight. Main `docker-compose.yml` still injects broad `.env.production` files into postgres, api, waha, and migrate. The branch-protection endpoint returned 403 and the rulesets endpoint returned an empty list; effective protection is unverified.
+
+## All open PRs — exact heads and review state
+
+Counts are unresolved / total inline threads; active unresolved excludes outdated threads. Every open PR has zero APPROVED review submissions.
+
+| PR | Current head | Latest exact-head Tests | Unresolved / total (active) |
+|---|---|---|---:|
+| [#63 observability audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `13fad868affe01d6069f4288481f8cd8dd341c62` | [41080836429 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41080836429), 803 passed / 76.08% | 1 / 1 (0) |
+| [#62 deployment/seed/migration preflights](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `6bf7619656543829641b806b4b5488cdf8ace56e` | [42210751706 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706), 866 passed / 76.01% | 9 / 9 (4) |
+| [#61 migration-sequence guard](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | [40300425938 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40300425938) | 0 / 0 (0) |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `155430d29414e9d918062ce74d05cbee72edfa6a` | [42340254616 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616), 974 passed / 76.50% | 22 / 24 (9) |
+| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `97a7d20eb82edfb212036dbb674e100663f5358d` | Docs-only; no exact-head run | 4 / 4 (1) |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | 1 / 1 (0) |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) | 1 / 1 (0) |
+| [#50 Identity Registry lifecycle fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529), 855 passed / 76.53% | 5 / 13 (4) |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545), 896 passed / 76.67% | 1 / 80 (1) |
+| [#48 PrivateMediaArtifact observation/return](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | 0 / 15 (0) |
+
+The latest overall Tests run is #60 run 42340254616 (2026-11-07 04:51–04:54 UTC). It is branch-local evidence, not integrated release proof.
+
+## Current P0 findings — PR #60 exact head
+
+Two fresh review findings were added against `155430d29414e9d918062ce74d05cbee72edfa6a` on 2026-11-07:
+
+1. **Consent expiry can pass the final check.** `background_workers.py` refreshes locked consent at lines 367–372, then awaits the pending-STOP query at lines 403–405, then calls WAHA at lines 445–449. Consent may expire while that later query waits; the earlier `clock_timestamp()` result is no longer the final time-bounded check.
+2. **Contact-policy authority can expire after its recheck.** The same worker rechecks the original policy at lines 304–309, before the later consent and pending-STOP fences. A `contact_policy`-authorized row can reach WAHA after the exact policy has expired while those later fences wait.
+
+Required design: after all blocking row/advisory locks are acquired, use one explicit final dispatch-reservation boundary that revalidates the same authority type and policy/approval ID, current exact contact mapping, consent status/expiry using PostgreSQL `clock_timestamp()`, terminal/pending opt-out, and exact queue/recipient/payload binding. Keep the relevant locks through the one transport attempt. The final pending-STOP read and all time-bounded checks must share that reservation boundary; add deterministic two-session tests that expire consent/policy while the last fence is paused and assert zero mock-WAHA calls. Preserve uncertain-send quarantine and never replay.
+
+The current pending-STOP read defines a proposed linearization point: a STOP committed after that reservation but before network entry may lose that one already-reserved attempt, while all subsequent attempts remain blocked. Fabian must explicitly accept this one-attempt boundary or require a stronger reservation/transport protocol.
+
+Other OWNER decisions remain: whether terminal opt-out is Contact-wide across mapped aliases with no routine re-consent/override, and whether OWNER-attested consent evidence is sufficient proof of external contact consent (distinct from automation permission and exact per-send authority).
+
+## Migration and deployment integration
+
+- Feature migration allocation is now unique by branch: #48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040. The original duplicate-034 collision is resolved in branch filenames only. Main remains at 033.
+- No candidate has proved fresh PostgreSQL 001–040, installed 033→040 upgrade with representative existing rows, second-run no-op/checksums, combined schema audit, and zero DB leakage.
+- #62 contains the same migration validator blob as #61 (blob SHA `606cd9881074dd8a2bdd65fd280be76bd987f469`) and its current Tests workflow already runs “Validate migration sequence before applying SQL.” #61's validator/deployment-runner portion is therefore duplicated by #62; do not merge both implementations independently. #61's separate PR has no review submission.
+- #62's current Compose still mounts broad `.env.production` into postgres/api/waha/migrate and has no `DATABASE_URL_RUNTIME` or runtime-role provisioner. #60 has the restricted API runtime role and service-specific API/WAHA environment allowlists, but lacks #62's pre-DDL target/seed/sequence guards, schema audit, and leakage gate. Compose these changes into one candidate; neither branch should be merged over the other in a way that drops its security boundary.
+- #62 includes the newer public-schema-qualified leakage audit and local-seed policy work represented by #55/#57. Retain those corrections in the integrated candidate rather than merging overlapping runner variants blindly.
+- #48 and #60 both modify the outbound worker. Preserve #48's exact view-once source lock, success-only return marker, and PrivateMediaArtifact observation wiring together with #60's contact consent, STOP, quiet-hours, exact approval, ScheduledAction, and uncertain-delivery fences.
+
+## Identity and message-library blockers
+
+- #50 now makes the generic introduction assistant/OWNER-only and checks Identity Registry lifecycle, but migration 035 still uses `updated_at = created_at` to infer historical defaults. Pre-033 scored reads may already have advanced timestamps on genuine system defaults. Preserve ambiguous legacy provenance as unknown/NULL, or require explicit OWNER-attested/immutable seed evidence; do not add another timestamp heuristic.
+- #49 remains a content-library foundation only. It is not wired into live producers, contextual selection, or the dashboard, and it cannot grant send authority. One current unresolved thread concerns permanent set-key retirement after hard deletion.
+
+## Local validation and release decision
+
+- This environment has GitHub connector access but no local `psql` or Docker executable and no repository checkout; no local pytest, PostgreSQL migration, schema, or DB-leakage run was performed.
+- No Actions run was triggered by this documentation refresh.
+- No open PR has an APPROVED review. Main protection is unverified (branch-protection read 403; rulesets empty).
+- Controlled-test readiness remains **NOT TEST READY**. Private-media byte retention remains OFF. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Current verification overlay — 2026-11-07 09:23 WAT (08:23 UTC)
 
 This snapshot supersedes the 2026-11-07 06:20 WAT overlay below. It is a fresh GitHub source/CI/review recheck, not release certification. The per-domain tables later in this file remain the 2026-09-08 audit and must not be treated as current code evidence.
