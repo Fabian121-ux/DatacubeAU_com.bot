@@ -1,4 +1,4 @@
-# Fresh engineering verification overlay — 2026-11-07 13:17 WAT (12:17 UTC)
+# Fresh engineering verification overlay — 2026-11-07 13:26 WAT (12:26 UTC)
 
 This overlay supersedes the prior 12:17 WAT snapshot. Historical phase tables below are not current code proof.
 
@@ -19,7 +19,7 @@ Counts are unresolved / total inline threads; the final column is unresolved thr
 | [#62 deployment/seed/migration preflights](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `6bf7619656543829641b806b4b5488cdf8ace56e` | 9 / 9 (4) |
 | [#61 migration-sequence guard](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 0 / 0 (0) |
 | [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `155430d29414e9d918062ce74d05cbee72edfa6a` | 22 / 24 (9) |
-| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `57cc38c3e5f4749bb6503e382ee016f29d2d28d2` (before this refresh) | 4 / 4 (1) |
+| [#59 verification docs](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `a36fdc3eead4878c4fe8bb408f490714469e9032` (before this refresh) | 4 / 4 (1) |
 | [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 (0) |
 | [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 (0) |
 | [#50 Identity Registry lifecycle fixes](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | 5 / 13 (4) |
@@ -44,14 +44,14 @@ Counts are unresolved / total inline threads; the final column is unresolved thr
 ## Migration, deployment, identity, and message-library blockers
 
 - The live branch trees confirm unique feature allocation: #48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040. Main remains 001–033. The original duplicate-034 collision is resolved in branch filenames, but no single candidate contains and validates the contiguous 001–040 chain or an installed 033→040 upgrade.
-- #61 and #62 both carry migration-sequence preflight logic. Do not merge their overlapping runner changes independently. #62 also has database-target/local-seed preflights plus schema/leakage checks, but its current Compose still mounts broad `.env.production` into postgres/API/WAHA/migrate. #60 has the restricted API runtime DB role and service-specific environment allowlists, but lacks #62's pre-DDL target/seed/sequence guards and integrated schema/leakage gates. Compose one reviewed deployment candidate, retaining #55's schema-qualified leakage audit and #57's local-seed safety.
+- #62 is a strict descendant of #61 (36 commits ahead, 0 behind; merge base equals #61 head) and carries #61's validator and workflow preflight unchanged. Safe sequence: independently review/merge #61 only with human authorization, then rebase/retest #62 atop updated main; do not cherry-pick or duplicate the guard. #62 adds database-target/local-seed preflights plus schema/leakage checks, but its current Compose still mounts broad `.env.production` into postgres/API/WAHA/migrate. #60 has the restricted API runtime DB role and service-specific environment allowlists, but lacks #62's pre-DDL target/seed/sequence guards and integrated schema/leakage gates. Compose one reviewed deployment candidate, retaining #55's schema-qualified leakage audit and #57's local-seed safety.
 - #50's current `introduction_reply()` and `identity_reply()` now consult Identity Registry lifecycle and fail closed when the owner/assistant defaults are unavailable. Migration 035 still infers historical `system_default` provenance from `updated_at = created_at`; timestamps cannot prove origin for legacy rows touched by earlier reads/edits. Preserve ambiguous pre-033 rows as `legacy_unknown`/NULL or require explicit OWNER-attested evidence; do not add another timestamp heuristic.
 - #49 remains a content-library foundation only: no live producer/selection/dashboard integration, and selecting a variant grants no send authority. One current unresolved review thread concerns permanent set-key retirement after hard deletion.
 
 ## Local validation and release decision
 
 - This runtime has GitHub connector access but no repository checkout, `psql`, or Docker executable. No local pytest, PostgreSQL migration, schema-audit, or DB-leakage run was performed.
-- This run refreshed only the existing PR #59 documentation branch. No application code, migration, deployment, production database, or WAHA behavior changed; no Actions run was triggered.
+- This run refreshed only the existing PR #59 documentation branch and added an integration note to [PR #61](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61#issuecomment-6706903336) documenting the #61 → #62 ancestry. No application code, migration, deployment, production database, or WAHA behavior changed; no Actions run was triggered.
 - No open PR has an APPROVED review. Main branch protection remains unverified (403; rulesets empty). Controlled-test readiness is **NOT TEST READY**. Private-media byte retention remains OFF. **REAL WAHA ACTIONS: NONE.**
 ---
 
