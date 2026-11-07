@@ -1,3 +1,52 @@
+# Current release decision — 2026-11-07 17:20 WAT (16:20 UTC)
+
+**<NOT TEST READY>**
+
+This fresh overlay supersedes the 13:26 WAT snapshot below. Historical checkboxes are not current proof.
+
+## Verified baseline
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on 2026-09-08. Main still has migrations 001–033 only.
+- Latest overall Tests run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded on PR #60 exact head `155430d29414e9d918062ce74d05cbee72edfa6a`: 974 passed, 1 warning, 76.50%. It applied 001–033 + 038–040 only; it did not apply 034–037 or run the sequence preflight, ORM schema audit, or post-test leakage audit.
+- Current migration allocation: #48=034, #50=035, #49=036–037, #60=038–040. Unique branch numbering is not integrated 001–040 proof.
+- Ten PRs remain open; none has an APPROVED review. Active unresolved inline threads: #60=9, #62=4, #50=4, #49=1, #59=1. #48/#61 have no unresolved threads; #55/#57/#63 have only outdated unresolved threads.
+- Main branch protection remains unverified (branch-protection endpoint returned 403; rulesets returned empty).
+
+## Blocking P0 gates
+
+- [ ] Fix #60's final time-of-check gap: consent is revalidated with `clock_timestamp()` before the later pending-STOP query; consent can expire while that query waits. The same contact-policy ID is rechecked before later source/approval/consent/STOP waits and can expire before transport.
+- [ ] After all blocking locks, establish one final dispatch-reservation boundary that revalidates exact authority type and policy/approval ID, current Contact mapping, consent status/provenance/expiry, terminal/pending opt-out, and exact queue recipient/content/media binding using the database clock. Keep locks through one transport attempt; add deterministic two-session expiry/STOP regressions with zero mock-WAHA calls.
+- [ ] OWNER must explicitly accept or revise the STOP linearization contract: a STOP committed after the final reservation but before network entry may lose one already-reserved attempt; subsequent attempts must be blocked.
+- [ ] OWNER must confirm terminal opt-out is Contact-wide across mapped aliases and cannot be overridden by routine re-consent.
+- [ ] OWNER must confirm whether OWNER-attested consent plus opaque `evidence_ref` is sufficient external-contact consent evidence, distinct from contact-specific automation permission and exact one-use send authority.
+- [ ] Integrate #48's exact view-once source lock/success-only return marker/PrivateMediaArtifact observation hooks with #60's consent, STOP, quiet-hours, approval, ScheduledAction, and uncertain-send fences in one authoritative worker path.
+
+## Integrated migration and deployment gates
+
+- [ ] Integrate #48 (034), #50 (035), #49 (036–037), and #60 (038–040) in that order.
+- [ ] Apply 001–040 from an empty disposable PostgreSQL 16 database; upgrade a representative installed 033 database through 040; verify existing data, constraints, triggers, contiguous ledger/checksums, second-run no-op, and cleanup/leakage.
+- [ ] Run migration-sequence preflight, ORM schema audit, and post-test DB-leakage audit on that same integrated candidate. Existing green branch runs validate disjoint subsets only.
+- [ ] Compose #60's restricted API runtime DB role and service-specific API/WAHA environment allowlists with #62's pre-DDL database-target, local-seed, migration-sequence, schema-audit, and leakage gates. #62's current Compose still passes broad `.env.production` to API/WAHA/migrate and does not provision `DATABASE_URL_RUNTIME`.
+- [ ] Retain #55's schema-qualified public-table leakage audit and #57's local-seed protection. #62 is 36 commits ahead of #61 and already contains #61's sequence guard; do not merge duplicate implementations.
+
+## Identity, governance, and product gates
+
+- [ ] #50: choose an auditable legacy-provenance policy. Migration 035's `updated_at = created_at` heuristic cannot reliably identify all pre-033 defaults; ambiguous rows must remain `legacy_unknown`/NULL or receive explicit OWNER attestation.
+- [ ] #49 remains content-only and unintegrated; resolve permanent set-key retirement review before any live producer/selection/dashboard wiring. A message variant never grants send authority.
+- [ ] Obtain independent human review and resolve blocking threads. Never self-approve or merge.
+- [ ] Verify effective main branch protection and required checks through a repository-admin view.
+- [ ] Complete dashboard CRUD/disable, command governance, and observability management before controlled testing.
+- [ ] Approve the staged OWNER self-DM → commands → media/view-once → one explicitly approved external-contact plan only after every preceding gate passes.
+
+## Engineering actions in this verification
+
+- Re-fetched main SHA/recent commits, all ten open PR heads, inline review threads/review submissions, exact-head Actions runs, main workflow YAML, migration trees, deployment runner/Compose, and current P0/identity source paths.
+- Refreshed only the existing PR #59 roadmap and release-checklist verification overlays. No application code, migrations, tests, production database, deployment, or WAHA behavior changed. The docs-only commit uses `[skip ci]`; no Actions run is claimed.
+- This run has GitHub source access but no local repository checkout, Docker, or `psql` execution. No local tests/migrations were run.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
 # Current release decision — 2026-11-07 13:26 WAT (12:26 UTC)
 
 <NOT TEST READY>
