@@ -194,30 +194,6 @@ class ViewOnceCommandService:
         queued.formatting_json = OutboundAuthorizationService.stamp_owner_payload(queued)
         await self.session.flush()
 
-        await self.session.execute(
-            text(
-                """
-                UPDATE view_once_media_metadata
-                SET returned_to_owner_at = now(), last_observed_at = now()
-                WHERE source_message_id = :source_message_id AND deleted_at IS NULL
-                """
-            ),
-            {"source_message_id": quoted_id},
-        )
-        self.session.add(
-            AuditLog(
-                action="view_once_returned_to_owner",
-                entity_type="outbound_queue",
-                entity_id=str(queued.id),
-                details_json={
-                    "request_id": request_id,
-                    "source_message_id": quoted_id,
-                    "media_kind": decision.media.media_kind,
-                    "media_mime": decision.media.mimetype,
-                },
-            )
-        )
-        await self.session.flush()
         return ViewOnceCommandResult(True, outbound_queue_id=queued.id)
 
     # ----------------------------------------------------------------------------------
