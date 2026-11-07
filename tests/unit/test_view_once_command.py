@@ -732,3 +732,43 @@ async def test_worker_holds_view_once_source_lock_through_waha_attempt(db_sessio
         if delete_task is not None and not delete_task.done():
             await delete_task
         await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_view_once_command_queues_exactly_one_return(db_session, monkeypatch):
+    """Duplicate webhook deliveries serialize before the idempotency lookup."""
+    owner = await _seed_owner(db_session)
+    await _seed_metadata(db_session)
+    await db_session.commit()
+
+    original_existing_return = ViewOnceCommandService._existing_return
+
+    async def delayed_existing_return(self, transport_message_id):
+        await asyncio.sleep(0.05)
+        return await original_existing_return(self, transport_message_id)
+
+    monkeypatch.setattr(ViewOnceCommandService, "_existing_return", delayed_existing_return)
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/datacube_bot_test",
+    )
+    engine = create_async_engine(database_url, pool_size=2)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    event = _event(command_id="VV-CONCURRENT")
+
+    async def process_duplicate():
+        async with Session() as session:
+            result = await _run(session, event, owner)
+            await session.commit()
+            return result.outbound_queue_id
+
+    try:
+        queue_ids = await asyncio.gather(process_duplicate(), process_duplicate())
+        async with Session() as session:
+            rows = (await session.execute(select(OutboundMessage))).scalars().all()
+        assert len(rows) == 1
+        assert queue_ids == [rows[0].id, rows[0].id]
+    finally:
+        await engine.dispose()
