@@ -1,3 +1,18 @@
+## Fresh release-gate snapshot — 2026-11-08 00:25 WAT (2026-11-07 23:25 UTC)
+
+This snapshot supersedes the older verification sections below. It is evidence-only; do not treat branch-local CI as integrated release approval.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; main still contains migrations 001–033. Latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed 2026-09-08. Latest overall Tests run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) passed on PR #60 exact head `155430d29414e9d918062ce74d05cbee72edfa6a`: 974 passed, 1 warning, 76.50%.
+- **Open PR inventory:** #63 `13fad868` (1/1 unresolved, outdated); #62 `6bf76196` (9/9, 4 active); #61 `8a1c1dbf` (0/0); #60 `155430d2` (22/24, 9 active); #59 `3d049447` (4/4, 1 active); #57 `d831ce4e` (1/1, outdated); #55 `b5cb5ff4` (1/1, outdated); #50 `2dc42254` (5/13, 4 active); #49 `bcd0033e` (1/80, 1 active); #48 `3acacbfe` (0/15). Review submissions were queried for all ten: **no APPROVED review exists**.
+- **Migration allocation:** #48=034, #50=035, #49=036–037, #60=038–040. Filenames are unique across branches, but no integrated 001–040 fresh install or 033→040 installed upgrade has been demonstrated.
+- **P0 gate:** #60 still has a post-recheck time-of-check window: the original contact-policy authority is rechecked before source/approval/consent/STOP waits; consent is rechecked before the final pending-STOP query. Revalidate the same authority, current mapping, consent and STOP in one final database-clock dispatch reservation immediately before the one WAHA attempt. Preserve exact one-use approval binding, source locking, ScheduledAction locking, uncertain-send quarantine and no replay. Integrate #48's PrivateMediaArtifact observation/command wiring with #60's consent/STOP worker in one path.
+- **Deployment gate:** #60's restricted runtime role/service allowlists and #62's pre-DDL DB-target, local-seed and migration-sequence preflights are split. #62's exact Compose still mounts broad `.env.production` into API/WAHA and lacks the #60 runtime-role provisioner; #60 lacks all #62 preflights. Retain #55's schema-qualified leakage audit, #61's sequence validator and #57's seed safety. Prove the actual API role is non-owner/non-privileged and WAHA has no DB/admin/provider secrets.
+- **Additional human decisions:** STOP after reservation is the in-flight boundary or redesign it; confirm Contact-wide terminal opt-out/no routine re-consent; decide whether OWNER consent attestation plus evidence reference is sufficient; remove or lifecycle-gate project/Datacube facts in #50 introductions; choose a reliable legacy provenance marker (never timestamp equality).
+- **Still required on one exact integrated candidate:** fresh 001–040; installed 033→040 upgrade with representative rows; second-run checksum/no-op; schema audit; full pytest/coverage; adversarial P0 matrix; post-test zero-leakage audit; runtime-role privilege/ownership/membership checks; one worker preserving #48/#60 fences; independent review resolution; main branch protection/required review verified.
+- **Controlled-test readiness: NOT TEST READY.** No local tests/migrations/leakage audit were run in this documentation update. No production DB mutation, WAHA reconnection, real WhatsApp send, private-media retention activation, merge, or self-approval occurred. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Current release decision — 2026-11-07 21:24 WAT (20:24 UTC)
 
 **<NOT TEST READY>**
