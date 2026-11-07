@@ -5,7 +5,7 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 
 from app.config import settings
 from app.db import SessionLocal
