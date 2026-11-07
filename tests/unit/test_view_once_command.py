@@ -351,7 +351,7 @@ async def test_queued_return_row_is_bound_and_clears_the_real_delivery_fence(db_
 
 
 @pytest.mark.asyncio
-async def test_return_marks_metadata_and_writes_audit(db_session):
+async def test_queueing_view_once_return_does_not_claim_delivery(db_session):
     owner = await _seed_owner(db_session)
     await _seed_metadata(db_session)
 
@@ -362,12 +362,13 @@ async def test_return_marks_metadata_and_writes_audit(db_session):
             text("SELECT returned_to_owner_at FROM view_once_media_metadata WHERE source_message_id='SRC-1'")
         )
     ).scalar_one()
-    assert returned is not None
+    assert returned is None
 
     audits = (
         await db_session.execute(select(AuditLog).where(AuditLog.action == "view_once_returned_to_owner"))
     ).scalars().all()
-    assert len(audits) == 1
+    assert audits == []
+    assert len(await _outbound(db_session)) == 1
 
 
 @pytest.mark.asyncio
@@ -682,6 +683,9 @@ async def test_worker_holds_view_once_source_lock_through_waha_attempt(db_sessio
 
     async def delete_source():
         async with Session() as session:
+            # Ensure this task owns a database connection before signalling that it is
+            # about to issue the UPDATE; the only expected wait is the source-row lock.
+            await session.connection()
             delete_started.set()
             await session.execute(
                 text(
