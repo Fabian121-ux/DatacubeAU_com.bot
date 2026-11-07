@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import logging
 from typing import Any
 
@@ -13,6 +15,7 @@ from app.db import SessionLocal
 from app.models.schema import AuditLog
 from app.services.admin_management_service import AdminManagementService
 from app.services.command_control_service import CommandControlService
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.conversation_handback_service import ConversationHandbackService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.inbound_idempotency_service import InboundIdempotencyService, InboundReceipt
@@ -69,10 +72,31 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unsupported_event", "event_name": event_name}
 
+    # A reply target must come from the transport's exact chat identity, not the
+    # normalizer's sender-ID fallback. Without this guard a malformed STOP can be
+    # claimed with chat_id=NULL while routing falls back to sender_id; the worker's
+    # final pending-opt-out veto then cannot see the receipt and could send past STOP.
+    exact_chat_id = _resolve_chat_id(payload)
+    if not exact_chat_id:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook_ignored",
+            request_id=request_id,
+            event_name=event_name or "message",
+            message_id=message_id,
+            reason="missing_exact_chat_id",
+        )
+        return {
+            "status": "ignored",
+            "reason": "missing_exact_chat_id",
+            "event_name": event_name or "message",
+        }
+
     # Status posts, channels/newsletters, and broadcast lists are not conversations.
     # Reject them before the idempotency claim and before any routing side effect so
     # they can never become a reply candidate.
-    if _is_non_conversational_chat(_resolve_chat_id(payload)):
+    if _is_non_conversational_chat(exact_chat_id):
         log_event(
             logger,
             logging.INFO,
@@ -112,18 +136,80 @@ async def waha_webhook(
         )
         return {"status": "ignored", "reason": "unexpected_session", "event_name": event_name or "message"}
 
+    # Detect an explicit external-contact opt-out before routing can wait on the
+    # per-chat mapping lock. The durable receipt becomes a veto signal for the final
+    # outbound fence while the STOP is still waiting to update consent state.
+    opt_out_intent = False
+    sender_identity_ids: tuple[str, ...] = ()
+    sender_contact_ids: tuple[str, ...] = ()
+    if not _is_from_me(payload):
+        normalized_for_consent = MessageNormalizer().normalize(event)
+        opt_out_intent = (
+            normalized_for_consent.chat_type.value == "dm"
+            and not InboundRouter._is_owner_chat_id(normalized_for_consent.chat_id)
+            and ContactMessagingConsentService.is_explicit_opt_out_message(
+                normalized_for_consent.message_text
+            )
+        )
+        if opt_out_intent:
+            # Preserve sender identity independently of the transport chat alias.
+            # A STOP on an unmapped alias may still identify an existing Contact.
+            sender_identity_ids = tuple(
+                dict.fromkeys(
+                    value.strip()
+                    for value in [
+                        normalized_for_consent.sender_id,
+                        *normalized_for_consent.sender_alternate_ids,
+                    ]
+                    if isinstance(value, str) and value.strip() and len(value.strip()) <= 120
+                )
+            )
+
     # Claim every message event before *any* command/action side effect. WAHA may
     # deliver the same message as both `message` and `message.any`, and webhook
     # retries must not execute owner commands twice.
     idempotency_key = _build_idempotency_key(event, payload)
-    if idempotency_key:
-        receipt = InboundReceipt(
-            event_key=idempotency_key,
-            session_name=_resolve_session_name(event, payload),
-            chat_id=_resolve_chat_id(payload),
+    if not idempotency_key and opt_out_intent:
+        # A STOP without a WAHA message ID still needs a durable veto before routing
+        # can block on the mapping lock. Fingerprint the stable payload so retries can
+        # reclaim the same receipt and message/message.any variants share the claim.
+        idempotency_key = _build_opt_out_intent_key(event, payload)
+    if not idempotency_key:
+        # Every ordinary message and OWNER command must have a stable transport ID
+        # before any routing or command side effect. The explicit opt-out fallback
+        # above is the sole exception because its durable receipt is a send veto.
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook_ignored",
+            request_id=request_id,
+            event_name=event_name or "message",
             message_id=message_id,
+            reason="missing_source_message_id",
         )
+        return {
+            "status": "ignored",
+            "reason": "missing_source_message_id",
+            "event_name": event_name or "message",
+        }
+    if idempotency_key:
         async with SessionLocal() as db:
+            if opt_out_intent and sender_identity_ids:
+                # Resolve stable Contact IDs before the durable receipt is committed,
+                # but do not acquire Contact/mapping locks yet. claim() commits the
+                # veto receipt before waiting on the shared dispatch boundary.
+                sender_contact_ids = await ContactMessagingConsentService(
+                    db
+                ).resolve_contact_ids_for_sender_identity_ids(sender_identity_ids)
+            receipt = InboundReceipt(
+                event_key=idempotency_key,
+                session_name=_resolve_session_name(event, payload),
+                chat_id=exact_chat_id,
+                message_id=message_id,
+                opt_out_intent=opt_out_intent,
+                sender_identity_ids=sender_identity_ids,
+                sender_contact_ids=sender_contact_ids,
+            )
             claimed = await InboundIdempotencyService(db).claim(receipt)
         if not claimed:
             log_event(
@@ -503,6 +589,28 @@ def _build_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> st
     session_name = _resolve_session_name(event, payload) or "default"
     chat_id = _resolve_chat_id(payload) or "unknown-chat"
     return f"{session_name}:{chat_id}:{message_id}"
+
+
+def _build_opt_out_intent_key(event: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Build a stable, non-PII receipt key for a STOP when WAHA omits message ID.
+
+    This fallback is used only for explicit external-contact opt-outs. It must be
+    stable across retries and message/message.any variants so the durable pending
+    intent remains reclaimable rather than silently disappearing at the final fence.
+    """
+    canonical = {
+        "session": _resolve_session_name(event, payload) or "default",
+        "chat_id": _resolve_chat_id(payload) or "unknown-chat",
+        "payload": payload,
+    }
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return "optout-no-id:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _owner_action_idempotency_key(event: dict[str, Any], payload: dict[str, Any]) -> str | None:

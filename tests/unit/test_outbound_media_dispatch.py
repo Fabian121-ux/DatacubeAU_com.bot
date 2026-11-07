@@ -440,7 +440,7 @@ async def test_dispatch_cannot_authorize_a_row_the_safety_limits_rejected(db_ses
             True, "owner_approval", "exact active owner approval", approval_id=None
         )
 
-    async def _rate_limited(self, message, *, now=None):
+    async def _rate_limited(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(False, "bounded outbound safety limit reached")
 
     monkeypatch.setattr(OutboundAuthorizationService, "authorize_queue_message", _authorized)

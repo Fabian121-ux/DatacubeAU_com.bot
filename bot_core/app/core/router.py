@@ -13,6 +13,7 @@ from app.core.message_normalizer import MessageNormalizer, NormalizedMessage
 from app.core.reply_planner import PlannedReply, ReplyPlanner
 from app.models.enums import DecisionType, Direction
 from app.models.schema import AuditLog, Contact, Message, OutboundMessage, RouterDecision
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
@@ -54,6 +55,40 @@ class InboundRouter:
         normalized = self.normalizer.normalize(event)
         contact = await self._get_or_create_contact(normalized)
         inbound = await self._save_inbound_message(normalized, contact.id)
+
+        # Explicit opt-outs are deterministic control signals, not AI content. Record
+        # them before memory extraction/planning and return without sending a reply.
+        if (
+            normalized.chat_type.value == "dm"
+            and not self._is_owner_chat_id(normalized.chat_id)
+            and ContactMessagingConsentService.is_explicit_opt_out_message(normalized.message_text)
+        ):
+            await ContactMessagingConsentService(self.session).record_inbound_opt_out(
+                contact_id=contact.id,
+                exact_chat_id=normalized.chat_id,
+                evidence_ref=str(inbound.id),
+            )
+            await self._save_audit_log(
+                action="contact_messaging_opt_out_recorded",
+                entity_type="contact",
+                entity_id=str(contact.id),
+                details_json={
+                    "chat_id": normalized.chat_id,
+                    "inbound_message_id": inbound.id,
+                    "consent_status": "opted_out",
+                },
+            )
+            await self.session.commit()
+            return asdict(RouteResult(
+                status="ok",
+                chat_type=normalized.chat_type.value,
+                action="ignored",
+                decision_type=DecisionType.IGNORE.value,
+                reason="explicit contact opt-out recorded; no outbound reply queued",
+                kb_confidence=0.0,
+                inbound_message_id=inbound.id,
+                outbound_message_id=None,
+            ))
 
         # Bounded capability observation only. This runs after authentication, session
         # binding, non-conversational rejection, and the durable event claim performed by
@@ -419,15 +454,68 @@ class InboundRouter:
                     )
 
     async def _get_or_create_contact(self, normalized: NormalizedMessage) -> Contact:
+        # Contact.chat_id is not unique. Serialize direct-chat mapping changes with
+        # the final outbound consent fence before taking any Contact row lock, so a
+        # second Contact cannot claim this exact chat between authorization and send.
+        if normalized.chat_type.value == "dm" and normalized.chat_id:
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session, normalized.chat_id
+            )
         whatsapp_id = normalized.sender_id
         identity = normalized.sender_identity or {}
         display_name = self._resolved_display_name(identity, normalized.sender_name)
         stmt = select(Contact).where(Contact.whatsapp_id == whatsapp_id).limit(1).with_for_update()
         model = (await self.session.execute(stmt)).scalar_one_or_none()
+        if model is None and normalized.chat_type.value == "dm" and normalized.chat_id:
+            # WAHA can present a direct chat ID that differs from the canonical sender
+            # ID. Reuse a unique existing chat mapping instead of creating a duplicate
+            # Contact; an ambiguous alias is not safe identity evidence.
+            alias_matches = (
+                await self.session.execute(
+                    select(Contact)
+                    .where(Contact.chat_id == normalized.chat_id)
+                    .order_by(Contact.id)
+                    .limit(2)
+                    .with_for_update()
+                )
+            ).scalars().all()
+            if len(alias_matches) > 1:
+                raise ValueError("ambiguous exact chat mapping; refusing to create a duplicate contact")
+            if alias_matches:
+                model = alias_matches[0]
         if model:
             if display_name and display_name != model.display_name and not getattr(model, "is_name_verified", False):
                 model.display_name = display_name
-            self._apply_contact_identity(model, normalized, identity)
+
+            # A pending STOP receipt is a durable veto even before routing has
+            # materialized its append-only consent event. Do not move this Contact
+            # away from the aliases used by that receipt: for legacy/unresolved
+            # receipts sender_contact_ids may be empty, so alias matching remains
+            # necessary until the STOP is applied. The final worker fence continues
+            # to deny any queued send while the receipt is processing.
+            preserve_chat_mapping = False
+            if (
+                normalized.chat_type.value == "dm"
+                and normalized.chat_id
+                and model.chat_id != normalized.chat_id
+            ):
+                preserve_chat_mapping = await ContactMessagingConsentService(
+                    self.session
+                ).has_pending_opt_out_intent_for_contact(int(model.id))
+                if preserve_chat_mapping:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "contact_chat_mapping_change_deferred_pending_opt_out",
+                        contact_id=int(model.id),
+                    )
+
+            self._apply_contact_identity(
+                model,
+                normalized,
+                identity,
+                update_chat_mapping=not preserve_chat_mapping,
+            )
             model.updated_at = utcnow()
             return model
 
@@ -447,8 +535,15 @@ class InboundRouter:
         return fallback
 
     @staticmethod
-    def _apply_contact_identity(model: Contact, normalized: NormalizedMessage, identity: dict[str, Any]) -> None:
-        model.chat_id = normalized.chat_id
+    def _apply_contact_identity(
+        model: Contact,
+        normalized: NormalizedMessage,
+        identity: dict[str, Any],
+        *,
+        update_chat_mapping: bool = True,
+    ) -> None:
+        if update_chat_mapping:
+            model.chat_id = normalized.chat_id
         model.whatsapp_phone = identity.get("phone") or model.whatsapp_phone
         model.normalized_phone = identity.get("normalized_phone") or model.normalized_phone
         model.waha_contact_id = identity.get("waha_contact_id") or model.waha_contact_id

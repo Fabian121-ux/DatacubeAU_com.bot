@@ -1,8 +1,14 @@
+import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import (
+    AuthorizationContext,
     AuthorizationDecision,
     OutboundAuthorizationService,
 )
@@ -134,3 +140,382 @@ async def test_authorize_queue_message_delegates_only_after_exact_context_valida
     assert context.outbound_queue_id == 10
     assert decision.allowed is True
     assert decision.approval_id == 9
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quiet_hours_json", "expected_reason"),
+    [
+        (
+            {"start": "00:00", "end": "00:00", "timezone": "Africa/Lagos"},
+            "contact policy quiet hours active",
+        ),
+        ({}, "contact policy quiet-hours configuration invalid"),
+    ],
+)
+async def test_final_delivery_window_guard_denies_active_or_malformed_quiet_hours(
+    quiet_hours_json, expected_reason
+):
+    class Result:
+        def __init__(self, mapping=None):
+            self.mapping = mapping
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "pg_advisory_xact_lock" in sql:
+                return Result()
+            if "FROM contact_automation_policies" in sql:
+                return Result({"id": 41, "quiet_hours_json": quiet_hours_json})
+            raise AssertionError(f"Unexpected delivery-window query: {sql}")
+
+    session = Session()
+    decision = await OutboundAuthorizationService(session).check_contact_delivery_window(
+        contact_id=17,
+        exact_chat_id="2348012345678@c.us",
+        now=datetime(2026, 8, 31, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == expected_reason
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    assert "FOR UPDATE" in session.statements[1].upper()
+
+
+@pytest.mark.asyncio
+async def test_contact_policy_preflight_uses_the_exact_chat_lock_before_reading_policy():
+    """A concurrent OWNER disable must serialize behind a policy-based send fence."""
+    class Result:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "FROM outbound_approvals" in sql:
+                return Result(scalar=None)
+            if "pg_advisory_xact_lock" in sql:
+                return Result()
+            if "FROM contact_automation_policies" in sql:
+                return Result(mapping={
+                    "id": 41,
+                    "allowed_categories": ["normal_reply"],
+                    "prohibited_categories": [],
+                    "approval_required_categories": [],
+                    "quiet_hours_json": None,
+                })
+            raise AssertionError(f"Unexpected authorization query: {sql}")
+
+    session = Session()
+    context = AuthorizationContext(
+        outbound_queue_id=91,
+        inbound_message_id=51,
+        contact_id=17,
+        target_chat_id="2348012345678@c.us",
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    decision = await OutboundAuthorizationService(session).authorize(context, lock_chat_mapping=True)
+
+    assert decision.allowed is True
+    assert decision.authority_type == "contact_policy"
+    policy_sql = next(sql for sql in session.statements if "FROM contact_automation_policies" in sql)
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    assert session.statements.index(policy_sql) > 0
+    assert "FOR UPDATE" not in policy_sql.upper()
+    assert "clock_timestamp()" in policy_sql
+
+
+@pytest.mark.asyncio
+async def test_contact_policy_disable_and_authorization_serialize_in_both_orders(db_session, test_contact):
+    """Real PostgreSQL sessions prove policy disable cannot race a final authorization."""
+    policy_id = (
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO contact_automation_policies (
+                    contact_id, exact_chat_id, enabled, allowed_categories,
+                    prohibited_categories, approval_required_categories, created_by
+                )
+                VALUES (
+                    :contact_id, :chat_id, true, '["normal_reply"]'::jsonb,
+                    '[]'::jsonb, '[]'::jsonb, 'test-owner'
+                )
+                RETURNING id
+                """
+            ),
+            {"contact_id": test_contact.id, "chat_id": test_contact.whatsapp_id},
+        )
+    ).scalar_one()
+    await db_session.commit()
+
+    sessions = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    context = AuthorizationContext(
+        outbound_queue_id=91001,
+        inbound_message_id=91002,
+        contact_id=test_contact.id,
+        target_chat_id=test_contact.whatsapp_id,
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    # The final delivery-window check takes the shared advisory lock before its
+    # policy-row lock; an OWNER disable must wait for this transaction to finish.
+    async with sessions() as dispatch_session, sessions() as owner_session:
+        decision = await OutboundAuthorizationService(dispatch_session).check_contact_delivery_window(
+            contact_id=context.contact_id,
+            exact_chat_id=context.target_chat_id,
+        )
+        assert decision.allowed is True
+        assert decision.authority_type == "contact_policy"
+
+        update_started = asyncio.Event()
+
+        async def disable_policy():
+            update_started.set()
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                owner_session, test_contact.whatsapp_id
+            )
+            await owner_session.execute(
+                text(
+                    """
+                    UPDATE contact_automation_policies
+                    SET enabled = false, disabled_at = now(), updated_at = now()
+                    WHERE id = :policy_id
+                    """
+                ),
+                {"policy_id": policy_id},
+            )
+            await owner_session.commit()
+
+        update_task = asyncio.create_task(disable_policy())
+        await update_started.wait()
+        await asyncio.sleep(0.05)
+        assert not update_task.done(), "policy disable must wait for the authorization transaction"
+        await dispatch_session.commit()
+        await asyncio.wait_for(update_task, timeout=3)
+
+    # Conversely, if the OWNER disable owns the advisory lock first, the final
+    # delivery-window check must wait and then observe that no active policy remains.
+    async with sessions() as owner_session, sessions() as dispatch_session:
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            owner_session, test_contact.whatsapp_id
+        )
+        await owner_session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET enabled = true, disabled_at = NULL, updated_at = now()
+                WHERE id = :policy_id
+                """
+            ),
+            {"policy_id": policy_id},
+        )
+        await owner_session.commit()
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            owner_session, test_contact.whatsapp_id
+        )
+        await owner_session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET enabled = false, disabled_at = now(), updated_at = now()
+                WHERE id = :policy_id
+                """
+            ),
+            {"policy_id": policy_id},
+        )
+
+        authorization_started = asyncio.Event()
+
+        async def authorize_while_disable_is_uncommitted():
+            authorization_started.set()
+            return await OutboundAuthorizationService(dispatch_session).check_contact_delivery_window(
+                contact_id=context.contact_id,
+                exact_chat_id=context.target_chat_id,
+            )
+
+        authorization_task = asyncio.create_task(authorize_while_disable_is_uncommitted())
+        await authorization_started.wait()
+        await asyncio.sleep(0.05)
+        assert not authorization_task.done(), "authorization must wait for the in-flight OWNER disable"
+        await owner_session.commit()
+        decision = await asyncio.wait_for(authorization_task, timeout=3)
+        await dispatch_session.commit()
+
+    assert decision.allowed is True
+    assert decision.authority_type == "none"
+    assert decision.reason == "no active contact quiet-hours policy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quiet_hours_json", "expected_reason"),
+    [
+        (
+            {"start": "09:00", "end": "17:00", "timezone": "Africa/Lagos"},
+            "contact policy quiet hours active",
+        ),
+        ({}, "contact policy quiet-hours configuration invalid"),
+    ],
+)
+async def test_exact_owner_approval_cannot_bypass_contact_quiet_hours(
+    quiet_hours_json, expected_reason
+):
+    class Result:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "pg_advisory_xact_lock" in sql:
+                return Result()
+            if "FROM contact_automation_policies" in sql:
+                return Result(
+                    mapping={
+                        "id": 41,
+                        "allowed_categories": ["normal_reply"],
+                        "prohibited_categories": [],
+                        "approval_required_categories": [],
+                        "quiet_hours_json": quiet_hours_json,
+                    }
+                )
+            if "FROM outbound_approvals" in sql:
+                # The exact one-use approval is valid. Quiet hours must still win.
+                return Result(scalar=99)
+            raise AssertionError(f"Unexpected authorization query: {sql}")
+
+    session = Session()
+    context = AuthorizationContext(
+        outbound_queue_id=91,
+        inbound_message_id=51,
+        contact_id=17,
+        target_chat_id="2348012345678@c.us",
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    decision = await OutboundAuthorizationService(session).authorize(
+        context,
+        lock_chat_mapping=True,
+        now=datetime(2026, 8, 31, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision.allowed is False
+    assert decision.authority_type == "contact_policy"
+    assert decision.reason == expected_reason
+    assert decision.policy_id == 41
+    assert not any("FROM outbound_approvals" in sql for sql in session.statements)
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    policy_sql = next(sql for sql in session.statements if "FROM contact_automation_policies" in sql)
+    assert "FOR UPDATE" not in policy_sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_exact_owner_approval_remains_valid_outside_contact_quiet_hours():
+    class Result:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.mapping
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "pg_advisory_xact_lock" in sql:
+                return Result()
+            if "FROM contact_automation_policies" in sql:
+                return Result(
+                    mapping={
+                        "id": 41,
+                        "allowed_categories": [],
+                        "prohibited_categories": ["normal_reply"],
+                        "approval_required_categories": ["normal_reply"],
+                        "quiet_hours_json": {
+                            "start": "09:00",
+                            "end": "17:00",
+                            "timezone": "Africa/Lagos",
+                        },
+                    }
+                )
+            if "FROM outbound_approvals" in sql:
+                return Result(scalar=99)
+            raise AssertionError(f"Unexpected authorization query: {sql}")
+
+    session = Session()
+    context = AuthorizationContext(
+        outbound_queue_id=91,
+        inbound_message_id=51,
+        contact_id=17,
+        target_chat_id="2348012345678@c.us",
+        content_sha256="a" * 64,
+        response_category="normal_reply",
+    )
+
+    decision = await OutboundAuthorizationService(session).authorize(
+        context,
+        lock_chat_mapping=True,
+        now=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision.allowed is True
+    assert decision.authority_type == "owner_approval"
+    assert decision.approval_id == 99
+    assert decision.policy_id == 41
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    assert "FROM contact_automation_policies" in session.statements[1]
+    assert "FROM outbound_approvals" in session.statements[2]
+    assert "clock_timestamp()" in session.statements[1]
+    assert "clock_timestamp()" in session.statements[2]

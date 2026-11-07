@@ -10,6 +10,9 @@ APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
 
+# Validate owner/runtime URLs and PostgreSQL bootstrap credentials before the first DB call.
+python "$APP_ROOT/deploy/scripts/validate_runtime_database_urls.py"
+
 psql_cmd() {
   psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
 }
@@ -122,6 +125,11 @@ for seed in "$SEEDS_DIR"/*.sql; do
   echo "Applying seed $(basename "$seed")"
   psql_cmd -f "$seed"
 done
+
+# Provision/refresh a separate non-owner API login after the schema exists.
+# The migration owner stays inside this one-shot service; the API receives only
+# DATABASE_URL_RUNTIME and cannot disable consent-history triggers.
+sh "$APP_ROOT/deploy/scripts/provision-runtime-role.sh"
 
 cd "$APP_ROOT/bot_core"
 python scripts/schema_audit.py

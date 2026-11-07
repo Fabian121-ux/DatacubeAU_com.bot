@@ -16,10 +16,30 @@ class _Result:
         return self._scalar
 
 
+class _Savepoint:
+    def __init__(self):
+        self.is_active = True
+        self.committed = False
+        self.rolled_back = False
+
+    async def commit(self):
+        self.is_active = False
+        self.committed = True
+
+    async def rollback(self):
+        self.is_active = False
+        self.rolled_back = True
+
+
 class _Session:
     def __init__(self, scalars=None):
         self.scalars = list(scalars or [])
         self.calls = []
+        self.savepoint = _Savepoint()
+
+    async def begin_nested(self):
+        self.calls.append(("SAVEPOINT", {}))
+        return self.savepoint
 
     async def execute(self, statement, params=None):
         self.calls.append((str(statement), params or {}))
@@ -27,8 +47,35 @@ class _Session:
         return _Result(scalar)
 
 
-def _row(*, approval_status="pending", queue_status="deferred", text_value="hello"):
-    digest = OutboundAuthorizationService.content_hash(text_value)
+def _row(
+    *,
+    approval_status="pending",
+    queue_status="deferred",
+    text_value="hello",
+    media_url=None,
+    media_type=None,
+    media_caption=None,
+    media_mime=None,
+    media_filename=None,
+):
+    formatting = {
+        "inbound_message_id": 5,
+        "contact_id": 7,
+        "response_category": "normal_reply",
+        "delivery_policy": "approval_required",
+    }
+    if media_mime is not None:
+        formatting["media_mime"] = media_mime
+    if media_filename is not None:
+        formatting["media_filename"] = media_filename
+    digest = OutboundAuthorizationService.content_hash_for_fields(
+        text_value,
+        media_url=media_url,
+        media_type=media_type,
+        media_caption=media_caption,
+        formatting_json=formatting,
+    )
+    formatting["content_sha256"] = digest
     return {
         "id": 41,
         "inbound_message_id": 5,
@@ -39,14 +86,11 @@ def _row(*, approval_status="pending", queue_status="deferred", text_value="hell
         "expires_at": utcnow() + timedelta(minutes=10),
         "queue_chat_id": "222@c.us",
         "message_text": text_value,
+        "media_url": media_url,
+        "media_type": media_type,
+        "media_caption": media_caption,
         "queue_status": queue_status,
-        "formatting_json": {
-            "inbound_message_id": 5,
-            "contact_id": 7,
-            "content_sha256": digest,
-            "response_category": "normal_reply",
-            "delivery_policy": "approval_required",
-        },
+        "formatting_json": formatting,
     }
 
 
@@ -66,6 +110,25 @@ def test_authority_mismatch_accepts_only_exact_durable_binding():
     assert "missing durable" in OwnerOutboundApprovalService._authority_mismatch(missing_source)
 
 
+@pytest.mark.parametrize(
+    ("field", "mutated_value"),
+    [("media_mime", "image/png"), ("media_filename", "renamed.jpg")],
+)
+def test_authority_mismatch_binds_transport_metadata(field, mutated_value):
+    row = _row(
+        media_url="http://waha:3000/api/files/original.jpg",
+        media_type="image",
+        media_caption="original caption",
+        media_mime="image/jpeg",
+        media_filename="original.jpg",
+    )
+    assert OwnerOutboundApprovalService._authority_mismatch(row) is None
+
+    mutated = {**row, "formatting_json": dict(row["formatting_json"])}
+    mutated["formatting_json"][field] = mutated_value
+    assert "content hash" in OwnerOutboundApprovalService._authority_mismatch(mutated)
+
+
 @pytest.mark.asyncio
 async def test_approve_requeues_only_exact_deferred_row_after_owner_approval(monkeypatch):
     session = _Session(scalars=[10, None])
@@ -78,7 +141,7 @@ async def test_approve_requeues_only_exact_deferred_row_after_owner_approval(mon
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
@@ -103,7 +166,7 @@ async def test_approve_fails_closed_on_wrong_target_without_granting_authority(m
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
@@ -116,7 +179,7 @@ async def test_approve_fails_closed_on_wrong_target_without_granting_authority(m
 
 @pytest.mark.asyncio
 async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatch):
-    session = _Session()
+    session = _Session(scalars=[10, 41])
     service = OwnerOutboundApprovalService(session)
     row = _row()
 
@@ -126,7 +189,7 @@ async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatc
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 
@@ -146,6 +209,80 @@ async def test_edit_rebinds_hash_but_keeps_draft_deferred_and_pending(monkeypatc
         for sql, params in session.calls
     )
     assert not any("SET status = 'approved'" in sql for sql, _ in session.calls)
+    assert session.savepoint.committed is True
+
+
+@pytest.mark.asyncio
+async def test_edit_rolls_back_queue_mutation_when_approval_expires_at_final_cas(monkeypatch):
+    # The queue UPDATE succeeds, but the database-clock expiry CAS returns no row.
+    # The savepoint must roll the draft mutation back before the caller commits the
+    # OWNER command receipt and denial result.
+    session = _Session(scalars=[10, None])
+    service = OwnerOutboundApprovalService(session)
+    row = _row()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _load(*args, **kwargs):
+        return row
+
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
+    monkeypatch.setattr(service, "_load_exact", _load)
+    monkeypatch.setattr(service, "_audit", _noop)
+
+    result = await service.edit(41, "must not persist")
+
+    assert result.ok is False
+    assert result.error == "approval expired"
+    assert session.savepoint.rolled_back is True
+    assert session.savepoint.committed is False
+    assert any("UPDATE outbound_queue" in sql for sql, _ in session.calls)
+    assert any("UPDATE outbound_approvals" in sql for sql, _ in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_edit_rebinds_media_digest_including_transport_metadata(monkeypatch):
+    session = _Session(scalars=[10, 41])
+    service = OwnerOutboundApprovalService(session)
+    row = _row(
+        media_url="http://waha:3000/api/files/original.jpg",
+        media_type="image",
+        media_caption="original caption",
+        media_mime="image/jpeg",
+        media_filename="original.jpg",
+    )
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _load(*args, **kwargs):
+        return row
+
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
+    monkeypatch.setattr(service, "_load_exact", _load)
+    monkeypatch.setattr(service, "_audit", _noop)
+
+    result = await service.edit(41, "edited exact text")
+    expected = OutboundAuthorizationService.content_hash_for_fields(
+        "edited exact text",
+        media_url=row["media_url"],
+        media_type=row["media_type"],
+        media_caption=row["media_caption"],
+        formatting_json=row["formatting_json"],
+    )
+
+    assert result.ok is True
+    assert any(
+        "UPDATE outbound_queue" in sql
+        and params.get("message_text") == "edited exact text"
+        and expected in params.get("formatting_json", "")
+        for sql, params in session.calls
+    )
+    assert any(
+        "UPDATE outbound_approvals" in sql and params.get("content_sha256") == expected
+        for sql, params in session.calls
+    )
 
 
 @pytest.mark.asyncio
@@ -155,7 +292,7 @@ async def test_requeue_refuses_sent_or_unapproved_rows(monkeypatch):
     async def _noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_audit", _noop)
 
     async def _sent(*args, **kwargs):
@@ -187,7 +324,7 @@ async def test_reject_never_turns_row_sendable(monkeypatch):
     async def _load(*args, **kwargs):
         return row
 
-    monkeypatch.setattr(service, "_lock", _noop)
+    monkeypatch.setattr(service, "_lock_queue_then_approval", _noop)
     monkeypatch.setattr(service, "_load_exact", _load)
     monkeypatch.setattr(service, "_audit", _noop)
 

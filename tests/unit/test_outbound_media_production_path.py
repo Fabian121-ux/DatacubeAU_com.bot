@@ -20,16 +20,25 @@ production code. No real WhatsApp transport is contacted.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.reply_planner import PlannedReply
 from app.core.router import InboundRouter
 from app.models.enums import DecisionType
-from app.models.schema import Contact, OutboundMessage
+from app.models.scheduled_action import ScheduledAction
+from app.models.schema import Contact, ContactMessagingConsent, OutboundMessage
+from app.services.scheduled_action_service import ScheduledActionService
+from app.utils.time import utcnow
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
+from app.services.owner_contact_automation_policy_service import OwnerContactAutomationPolicyService
+from app.services.owner_outbound_approval_service import OwnerOutboundApprovalService
 from app.services.waha_client import WahaClientError
 from app.workers import background_workers
 
@@ -138,6 +147,37 @@ async def _noop(*args, **kwargs):
 async def _deliver(db_session, monkeypatch, client):
     monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
     return await background_workers._deliver_due_outbound_messages(client)
+
+
+async def _scheduled_action_queue(db_session, contact, *, body: str, key: str):
+    queue = OutboundMessage(
+        chat_id=contact.whatsapp_id,
+        message_text=body,
+        formatting_json={},
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=utcnow(),
+    )
+    db_session.add(queue)
+    await db_session.flush()
+    action = ScheduledAction(
+        action_type="whatsapp.send_message",
+        target_contact_id=int(contact.id),
+        target_chat_id=contact.whatsapp_id,
+        payload_json={"text": body},
+        timezone="UTC",
+        scheduled_for=utcnow(),
+        status="queued",
+        is_enabled=True,
+        outbound_queue_id=int(queue.id),
+        idempotency_key=key,
+    )
+    db_session.add(action)
+    await db_session.flush()
+    queue.formatting_json = {"scheduled_action_id": int(action.id)}
+    await db_session.flush()
+    return queue
 
 
 # --------------------------------------------------------------------------------------
@@ -352,3 +392,775 @@ async def test_text_only_producer_path_is_unchanged(db_session, monkeypatch):
     assert client.calls == [("send_text", {"chatId": OWNER_CHAT, "text": text})]
     assert row.message_text == text
     assert row.status == "sent"
+
+
+@pytest.mark.asyncio
+async def test_terminal_opt_out_on_mapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
+    """A STOP on one current Contact alias vetoes an approved send to its other alias."""
+    target_chat_id = "2348000000002@c.us"
+    opt_out_alias = "2348000000003@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Alias opt-out regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="An already-consented reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-EXT-ALIAS-STOP",
+    )
+    assert row.status == "deferred"
+    assert row.formatting_json["delivery_policy"] == "approval_required"
+
+    # Keep both identifiers mapped to the same durable Contact after queue creation.
+    # Approval and consent for A must not override a later STOP received on B.
+    contact.chat_id = opt_out_alias
+    await db_session.flush()
+
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await db_session.refresh(row)
+
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-alias-stop",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    await consent.record_inbound_opt_out(
+        contact_id=int(contact.id),
+        exact_chat_id=opt_out_alias,
+        evidence_ref="inbound-stop-on-second-alias",
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "contact consent denied: contact has opted out" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_inbound_reply_after_contact_mapping_changes(db_session, monkeypatch):
+    """A queued, approved inbound reply must not follow a Contact remap to a stale chat."""
+    target_chat_id = "2348000000011@c.us"
+    replacement_chat_id = "2348000000012@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Stale inbound reply target",
+        contact_name="Stale inbound reply target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Do not deliver to a remapped destination"),
+        chat_id=target_chat_id,
+        message_id="PROD-INBOUND-REMAP-FENCE",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-inbound-remap",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    # Keep the inbound Message and queue's historical IDs intact, but move the
+    # Contact's current canonical and chat mappings away from the authorized target.
+    contact.whatsapp_id = replacement_chat_id
+    contact.chat_id = replacement_chat_id
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "current contact/chat mapping does not match recipient" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_scheduled_action_after_contact_mapping_changes(db_session, monkeypatch):
+    """A scheduled action cannot keep send authority after its target Contact is remapped."""
+    target_chat_id = "2348000000021@c.us"
+    replacement_chat_id = "2348000000022@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Stale scheduled target",
+        contact_name="Stale scheduled target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    scheduled = await ScheduledActionService(db_session).create_whatsapp_message(
+        target_reference="Stale scheduled target",
+        text="Do not deliver a stale scheduled action",
+        scheduled_for=utcnow() - timedelta(seconds=1),
+        timezone="Africa/Lagos",
+        idempotency_key="scheduled-contact-remap-fence",
+    )
+    action_id = int(scheduled["id"])
+    assert await ScheduledActionService(db_session).release_due() == 1
+    action = await db_session.get(ScheduledAction, action_id)
+    assert action is not None and action.outbound_queue_id is not None
+    row = await db_session.get(OutboundMessage, action.outbound_queue_id)
+    assert row is not None
+
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-scheduled-remap",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    contact.whatsapp_id = replacement_chat_id
+    contact.chat_id = replacement_chat_id
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "current contact/chat mapping does not match recipient" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_consent_expiry_after_final_locks_before_waha(db_session, monkeypatch):
+    """A consent TTL that passes while final dispatch locks are held must veto WAHA."""
+    target_chat_id = "2348000000051@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Consent expiry at final dispatch",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Consent must still be current at transport entry"),
+        chat_id=target_chat_id,
+        message_id="PROD-CONSENT-EXPIRY-FINAL-FENCE",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-final-lock-wait",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+
+    async def expire_consent_after_final_locks(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        consent_row = (
+            await session.execute(
+                select(ContactMessagingConsent).where(
+                    ContactMessagingConsent.contact_id == contact.id,
+                    ContactMessagingConsent.exact_chat_id == exact_chat_id,
+                )
+            )
+        ).scalar_one()
+        consent_row.expires_at = utcnow() - timedelta(seconds=1)
+        await session.flush()
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        expire_consent_after_final_locks,
+    )
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final contact consent denied: contact consent has expired" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_consent_after_approval_reservation_before_waha(db_session, monkeypatch):
+    """Consent expiry during the final approval reservation must still veto WAHA."""
+    target_chat_id = "2348000000054@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Consent expiry during approval reservation",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Consent must still be current after approval reservation"),
+        chat_id=target_chat_id,
+        message_id="PROD-CONSENT-EXPIRY-AFTER-APPROVAL-RESERVATION",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approved = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approved.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-approval-reservation",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_consume = OutboundAuthorizationService.consume_approval
+
+    async def consume_then_expire_consent(self, exact_approval_id, *, message):
+        consumed = await original_consume(
+            self,
+            exact_approval_id,
+            message=message,
+        )
+        assert consumed is True
+        # Model the TTL expiring while the final approval reservation was waiting.
+        # The final consent check must happen after this potentially blocking write.
+        await self.session.execute(
+            text(
+                """
+                UPDATE contact_messaging_consents
+                SET expires_at = clock_timestamp() - interval '1 second'
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :exact_chat_id
+                """
+            ),
+            {"contact_id": int(contact.id), "exact_chat_id": target_chat_id},
+        )
+        return consumed
+
+    monkeypatch.setattr(
+        OutboundAuthorizationService,
+        "consume_approval",
+        consume_then_expire_consent,
+    )
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final contact consent denied: contact consent has expired" in (row.error_message or "")
+    approval_status = (
+        await db_session.execute(
+            text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+    ).scalar_one()
+    assert approval_status == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_exact_owner_approval_is_consumed_at_the_final_dispatch_boundary(db_session, monkeypatch):
+    target_chat_id = "2348000000052@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Exact approval dispatch reservation",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="One exact approved external reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-APPROVAL-CONSUME-AT-DISPATCH",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approved = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approved.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-final-approval-dispatch",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+    ).scalar_one()
+
+    assert [operation for operation, _ in client.calls] == ["send_text"]
+    assert row.status == "sent"
+    assert status == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_expired_exact_owner_approval_at_final_boundary_never_reaches_waha(db_session, monkeypatch):
+    target_chat_id = "2348000000053@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Approval expiry at final dispatch",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="Approval must still be current at transport entry"),
+        chat_id=target_chat_id,
+        message_id="PROD-APPROVAL-EXPIRY-FINAL-FENCE",
+    )
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approved = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approved.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-approval-expiry",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+
+    async def expire_approval_after_final_fences(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        await session.execute(
+            text(
+                """
+                UPDATE outbound_approvals
+                SET expires_at = clock_timestamp() - interval '1 second'
+                WHERE id = :approval_id
+                """
+            ),
+            {"approval_id": approval_id},
+        )
+        await session.flush()
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        expire_approval_after_final_fences,
+    )
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final outbound authority recheck failed" in (row.error_message or "")
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM outbound_approvals WHERE id = :approval_id"),
+            {"approval_id": approval_id},
+        )
+    ).scalar_one()
+    assert status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_pending_stop_on_unmapped_alias_blocks_approved_queue_before_waha(db_session, monkeypatch):
+    """Sender identity must connect an unmapped STOP alias to the queued Contact."""
+    target_chat_id = "2348000000041@c.us"
+    unmapped_stop_chat_id = "987654321@lid"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Unmapped alias opt-out regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="An already-consented reply"),
+        chat_id=target_chat_id,
+        message_id="PROD-EXT-UNMAPPED-ALIAS-STOP",
+    )
+    assert row.status == "deferred"
+    context = OutboundAuthorizationService.context_from_queue_message(row)
+    assert context is not None
+    approval_id = await OutboundAuthorizationService(db_session).create_pending_approval(context=context)
+    approval = await OwnerOutboundApprovalService(db_session).approve(
+        approval_id,
+        owner_identity="OWNER",
+    )
+    assert approval.ok is True
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-before-unmapped-stop",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    # The transport alias is intentionally absent from Contact.whatsapp_id/chat_id.
+    # The stable sender identity is the only link to this Contact.
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO inbound_webhook_receipts (
+                event_key, session_name, chat_id, message_id, sender_identity_ids,
+                opt_out_intent, status, claim_token, updated_at
+            )
+            VALUES (
+                'unmapped-alias-stop-worker-test', 'test', :chat_id,
+                'unmapped-alias-stop-worker-test', jsonb_build_array(CAST(:sender_id AS text)),
+                TRUE, 'processing', 'test-claim-token', NOW()
+            )
+            """
+        ),
+        {"chat_id": unmapped_stop_chat_id, "sender_id": target_chat_id},
+    )
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "pending inbound opt-out intent" in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quiet_hours", "expected_reason"),
+    [
+        (
+            {"start": "00:00", "end": "00:00", "timezone": "Africa/Lagos"},
+            "contact policy quiet hours active",
+        ),
+        ({}, "contact policy quiet-hours configuration invalid"),
+    ],
+)
+async def test_scheduled_action_is_blocked_by_final_contact_quiet_hours(
+    db_session, monkeypatch, quiet_hours, expected_reason
+):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_CHAT)
+    chat_id = "2348000000091@c.us"
+    contact = Contact(
+        whatsapp_id=chat_id,
+        chat_id=chat_id,
+        display_name="Scheduled quiet-hours regression",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+    body = "owner-scheduled external message"
+    queue = await _scheduled_action_queue(
+        db_session,
+        contact,
+        body=body,
+        key=f"scheduled-quiet-hours-{expected_reason.replace(' ', '-')}",
+    )
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-scheduled-quiet-hours",
+        owner_identity="OWNER",
+    )
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=chat_id,
+        enabled=True,
+        allowed_categories=["normal_reply"],
+        quiet_hours=quiet_hours,
+    )
+    assert policy.ok is True
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(queue)
+
+    assert client.calls == []
+    assert queue.status == "deferred"
+    assert "final contact delivery window denied" in (queue.error_message or "")
+    assert expected_reason in (queue.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_scheduled_action_remains_exactly_once_outside_contact_quiet_hours(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", OWNER_CHAT)
+    fixed_now = datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.services.outbound_authorization_service.utcnow", lambda: fixed_now)
+    chat_id = "2348000000092@c.us"
+    contact = Contact(
+        whatsapp_id=chat_id,
+        chat_id=chat_id,
+        display_name="Scheduled outside quiet-hours control",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+    queue = await _scheduled_action_queue(
+        db_session,
+        contact,
+        body="scheduled message outside quiet hours",
+        key="scheduled-outside-quiet-hours-control",
+    )
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-scheduled-outside-window",
+        owner_identity="OWNER",
+    )
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=chat_id,
+        enabled=True,
+        allowed_categories=["normal_reply"],
+        quiet_hours={
+            "start": "09:00",
+            "end": "17:00",
+            "timezone": "Africa/Lagos",
+        },
+    )
+    assert policy.ok is True
+    await db_session.commit()
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(queue)
+
+    assert [operation for operation, _ in client.calls] == ["send_text"]
+    assert client.calls[0][1]["chatId"] == chat_id
+    assert queue.status == "sent"
+
+@pytest.mark.asyncio
+async def test_contact_policy_expiry_after_final_authority_check_blocks_before_waha(db_session, monkeypatch):
+    """A policy that expires during the last worker fences cannot authorize a send."""
+    target_chat_id = "2348000000091@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Expiring policy target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="This must not outlive its contact policy"),
+        chat_id=target_chat_id,
+        message_id="PROD-POLICY-EXPIRY-FINAL-FENCE",
+    )
+    metadata = dict(row.formatting_json or {})
+    metadata["delivery_policy"] = "authorized_external"
+    metadata["response_category"] = metadata.get("response_category") or "normal_reply"
+    row.formatting_json = metadata
+    row.status = "pending"
+    row.next_attempt_at = utcnow()
+    await db_session.flush()
+
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=target_chat_id,
+        enabled=True,
+        allowed_categories=[metadata["response_category"]],
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    assert policy.ok is True
+    consent = ContactMessagingConsentService(db_session)
+    await consent.grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-policy-expiry-final-fence",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+
+    async def expire_policy_after_authority_checks(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        await session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET expires_at = clock_timestamp() - interval '1 second',
+                    updated_at = clock_timestamp()
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :exact_chat_id
+                """
+            ),
+            {"contact_id": int(contact.id), "exact_chat_id": exact_chat_id},
+        )
+
+    # This hook runs after the worker's initial final-authority check, while all
+    # remaining dispatch fences are being evaluated. The policy expires in the same
+    # transaction, immediately before the quiet-hours check and final authority recheck.
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        expire_policy_after_authority_checks,
+    )
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "final outbound authority recheck failed" in (row.error_message or "")
+
+@pytest.mark.asyncio
+async def test_replaced_contact_policy_cannot_inherit_an_existing_queue_authority(db_session, monkeypatch):
+    """A new policy row cannot silently inherit the old row's in-flight authority."""
+    target_chat_id = "2348000000092@c.us"
+    contact = Contact(
+        whatsapp_id=target_chat_id,
+        chat_id=target_chat_id,
+        display_name="Replaced policy target",
+    )
+    db_session.add(contact)
+    await db_session.flush()
+
+    row = await _run_producer(
+        db_session,
+        monkeypatch,
+        _planned(text="This exact policy ID must remain authoritative"),
+        chat_id=target_chat_id,
+        message_id="PROD-POLICY-ID-REPLACEMENT",
+    )
+    metadata = dict(row.formatting_json or {})
+    metadata["delivery_policy"] = "authorized_external"
+    metadata["response_category"] = metadata.get("response_category") or "normal_reply"
+    row.formatting_json = metadata
+    row.status = "pending"
+    row.next_attempt_at = utcnow()
+    await db_session.flush()
+
+    policy = await OwnerContactAutomationPolicyService(db_session).upsert_exact(
+        permission="owner",
+        owner_identity="OWNER",
+        contact_id=int(contact.id),
+        exact_chat_id=target_chat_id,
+        enabled=True,
+        allowed_categories=[metadata["response_category"]],
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    assert policy.ok is True
+    original_policy_id = int(policy.policy_id)
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=target_chat_id,
+        evidence_ref="owner-attested-policy-id-replacement",
+        owner_identity="OWNER",
+    )
+    await db_session.commit()
+
+    original_lock = ContactMessagingConsentService.lock_opt_out_dispatch_boundary
+    replacement_ids = []
+
+    async def replace_policy_after_authority_check(session, exact_chat_id):
+        await original_lock(session, exact_chat_id)
+        await session.execute(
+            text(
+                """
+                DELETE FROM contact_automation_policies
+                WHERE contact_id = :contact_id AND exact_chat_id = :exact_chat_id
+                """
+            ),
+            {"contact_id": int(contact.id), "exact_chat_id": exact_chat_id},
+        )
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO contact_automation_policies (
+                    contact_id, exact_chat_id, enabled, allowed_categories,
+                    prohibited_categories, approval_required_categories, created_by,
+                    disabled_at, updated_at
+                ) VALUES (
+                    :contact_id, :exact_chat_id, true, CAST(:allowed_categories AS jsonb),
+                    '[]'::jsonb, '[]'::jsonb, 'OWNER', NULL, clock_timestamp()
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "contact_id": int(contact.id),
+                "exact_chat_id": exact_chat_id,
+                "allowed_categories": json.dumps([metadata["response_category"]]),
+            },
+        )
+        replacement_ids.append(int(result.scalar_one()))
+
+    monkeypatch.setattr(
+        ContactMessagingConsentService,
+        "lock_opt_out_dispatch_boundary",
+        replace_policy_after_authority_check,
+    )
+
+    client = _RecordingClient()
+    await _deliver(db_session, monkeypatch, client)
+    await db_session.refresh(row)
+
+    assert replacement_ids and replacement_ids[0] != original_policy_id
+    assert client.calls == []
+    assert row.status == "deferred"
+    assert "authority source or exact policy/approval ID changed" in (row.error_message or "")
+

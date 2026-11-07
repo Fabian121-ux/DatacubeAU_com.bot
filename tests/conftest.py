@@ -20,6 +20,8 @@ from app.models.schema import (
     AuditLog,
     BotConfig,
     Contact,
+    ContactMessagingConsent,
+    ContactMessagingConsentEvent,
     ConversationSummary,
     ConversationTimeline,
     FeedbackReview,
@@ -50,6 +52,7 @@ from app.db import Base
 # how committed `admin_accounts` rows survived teardown and made unrelated
 # command-control tests fail on `admin_accounts_normalized_whatsapp_id_key`.
 CLEANUP_MODELS = (
+    ContactMessagingConsent,
     ScheduledAction,
     PrivateMediaArtifact,
     OutboundMessage,
@@ -71,16 +74,15 @@ CLEANUP_MODELS = (
     FAQEntry,
     IdentityRegistryEntry,
     CommandCatalogEntry,
-    Contact,
     AdminAccount,
     AuditLog,
     BotConfig,
 )
 
 
-# Tables created by raw SQL migrations have no ORM model, so the model-based cleanup
-# above cannot reach them. `outbound_approvals` and `outbound_authorization_audit` are
-# removed transitively by their cascading parents, but the rest survive teardown.
+# Raw tables need explicit cleanup. Consent-event history is append-only during
+# application use; this disposable test fixture temporarily disables only its
+# TRUNCATE guard around teardown, then restores it before the next test.
 # A leaked `inbound_webhook_receipts` row makes a later test's webhook look like a
 # duplicate delivery, which silently suppresses routing.
 CLEANUP_RAW_TABLES = (
@@ -88,6 +90,7 @@ CLEANUP_RAW_TABLES = (
     "outbound_approvals",
     "outbound_authorization_audit",
     "contact_automation_policies",
+    "contact_messaging_consent_events",
     "view_once_media_metadata",
 )
 
@@ -109,7 +112,27 @@ async def _purge_database_state(session) -> None:
             )
         ).scalars().all()
         for table in present:
-            await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+            if table == "contact_messaging_consent_events":
+                # This is test-fixture teardown only. The guard remains active for
+                # the actual test assertion and for application code between tests.
+                await session.execute(
+                    text(
+                        "ALTER TABLE contact_messaging_consent_events "
+                        "DISABLE TRIGGER trg_contact_messaging_consent_events_no_truncate"
+                    )
+                )
+                await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+                await session.execute(
+                    text(
+                        "ALTER TABLE contact_messaging_consent_events "
+                        "ENABLE TRIGGER trg_contact_messaging_consent_events_no_truncate"
+                    )
+                )
+            else:
+                await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+    # Consent history is cleared above in disposable test teardown before Contact
+    # rows are deleted. Production code cannot disable this order or the DB trigger.
+    await session.execute(delete(Contact))
     await session.commit()
 
 

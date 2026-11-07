@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.utils.time import utcnow
 
 
@@ -112,21 +113,33 @@ class OutboundAuthorizationService:
         }
 
     @classmethod
-    def content_hash_for_message(cls, message: Any) -> str:
-        """Compute the media-aware authority digest for one concrete queue row.
+    def content_hash_for_fields(
+        cls,
+        text_value: str,
+        *,
+        media_url: str | None = None,
+        media_type: str | None = None,
+        media_caption: str | None = None,
+        formatting_json: Any = None,
+    ) -> str:
+        """Compute the canonical authority digest from persisted queue payload fields.
 
-        For a row carrying transport-affecting metadata (MIME/filename) the digest
-        additionally commits to those exact values under a versioned domain. Rows
-        without such metadata keep their historical digest byte-for-byte, so existing
-        durable text-only and locator-only approvals stay valid.
+        Both the live queue row and OWNER approval mutations must use this exact
+        function. Transport-affecting MIME/filename metadata is included when present;
+        text-only and locator-only rows retain their historical digest byte-for-byte.
         """
         base = cls.authority_content_hash(
-            str(getattr(message, "message_text", "") or ""),
-            media_url=getattr(message, "media_url", None),
-            media_type=getattr(message, "media_type", None),
-            media_caption=getattr(message, "media_caption", None),
+            str(text_value or ""),
+            media_url=media_url,
+            media_type=media_type,
+            media_caption=media_caption,
         )
-        transport = cls.transport_metadata_for_message(message)
+        metadata = formatting_json if isinstance(formatting_json, dict) else {}
+        transport = {
+            key: str(metadata.get(key) or "")
+            for key in cls._TRANSPORT_METADATA_KEYS
+            if metadata.get(key)
+        }
         if not transport:
             return base
         preimage = json.dumps(
@@ -136,6 +149,17 @@ class OutboundAuthorizationService:
             ensure_ascii=False,
         )
         return hashlib.sha256(f"{cls._TRANSPORT_BINDING_DOMAIN}{preimage}".encode("utf-8")).hexdigest()
+
+    @classmethod
+    def content_hash_for_message(cls, message: Any) -> str:
+        """Compute the canonical media-aware authority digest for one queue row."""
+        return cls.content_hash_for_fields(
+            str(getattr(message, "message_text", "") or ""),
+            media_url=getattr(message, "media_url", None),
+            media_type=getattr(message, "media_type", None),
+            media_caption=getattr(message, "media_caption", None),
+            formatting_json=getattr(message, "formatting_json", None),
+        )
 
     @classmethod
     def owner_payload_digest(cls, message: Any) -> str:
@@ -205,6 +229,9 @@ class OutboundAuthorizationService:
     @classmethod
     def context_from_queue_message(cls, message: Any) -> AuthorizationContext | None:
         metadata = message.formatting_json if isinstance(getattr(message, "formatting_json", None), dict) else {}
+        # The marker is one-way: direct authorization callers also reject this row.
+        if "delivery_outcome_uncertain" in metadata:
+            return None
         try:
             outbound_queue_id = int(message.id)
             inbound_message_id = int(metadata["inbound_message_id"])
@@ -233,6 +260,7 @@ class OutboundAuthorizationService:
         message: Any,
         *,
         now: datetime | None = None,
+        lock_chat_mapping: bool = False,
     ) -> tuple[AuthorizationContext | None, AuthorizationDecision]:
         """Authorize one concrete queue row without letting callers bypass context checks.
 
@@ -247,7 +275,15 @@ class OutboundAuthorizationService:
                 "none",
                 "queue row missing exact durable authority context or content hash mismatch",
             )
-        return context, await self.authorize(context, now=now)
+        if lock_chat_mapping:
+            decision = await self.authorize(
+                context,
+                now=now,
+                lock_chat_mapping=True,
+            )
+        else:
+            decision = await self.authorize(context, now=now)
+        return context, decision
 
     async def create_pending_approval(
         self,
@@ -322,35 +358,113 @@ class OutboundAuthorizationService:
         )
         return result.scalar_one_or_none() is not None
 
-    async def authorize(self, context: AuthorizationContext, *, now: datetime | None = None) -> AuthorizationDecision:
-        instant = now or utcnow()
+    async def check_contact_delivery_window(
+        self,
+        *,
+        contact_id: int | None,
+        exact_chat_id: str | None,
+        now: datetime | None = None,
+    ) -> AuthorizationDecision:
+        """Recheck contact quiet hours at the final pre-transport boundary.
 
-        approval = await self.session.execute(
+        This restriction is independent of whether a row is authorized by an exact
+        one-use approval, a contact policy, or an exact ScheduledAction binding. The
+        shared exact-chat advisory lock also serializes this read against OWNER policy
+        upserts when no policy row exists yet; FOR UPDATE keeps an existing row stable
+        through the caller's single transport attempt.
+        """
+        if (
+            not isinstance(contact_id, int)
+            or contact_id <= 0
+            or not isinstance(exact_chat_id, str)
+            or not ContactMessagingConsentService._is_direct_chat(exact_chat_id)
+        ):
+            return AuthorizationDecision(
+                False,
+                "contact_policy",
+                "exact contact/chat delivery-window identity invalid",
+            )
+
+        # Acquire the same lock used by Contact mapping writers before reading policy.
+        # OWNER policy mutations use it too, so a concurrent first INSERT cannot slip
+        # between a missing-row read and the outbound transport attempt.
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            exact_chat_id,
+        )
+        instant = now or utcnow()
+        result = await self.session.execute(
             text(
                 """
-                SELECT id
-                FROM outbound_approvals
-                WHERE outbound_queue_id = :outbound_queue_id
-                  AND inbound_message_id = :inbound_message_id
-                  AND target_chat_id = :target_chat_id
-                  AND content_sha256 = :content_sha256
-                  AND status = 'approved'
-                  AND expires_at > :instant
-                LIMIT 1
+                SELECT id, quiet_hours_json
+                FROM contact_automation_policies
+                WHERE contact_id = :contact_id
+                  AND exact_chat_id = :exact_chat_id
+                  AND enabled = true
+                  AND disabled_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
+                FOR UPDATE
                 """
             ),
             {
-                "outbound_queue_id": context.outbound_queue_id,
-                "inbound_message_id": context.inbound_message_id,
-                "target_chat_id": context.target_chat_id,
-                "content_sha256": context.content_sha256,
-                "instant": instant,
+                "contact_id": contact_id,
+                "exact_chat_id": exact_chat_id,
             },
         )
-        approval_id = approval.scalar_one_or_none()
-        if approval_id is not None:
-            return AuthorizationDecision(True, "owner_approval", "exact active owner approval", approval_id=int(approval_id))
+        row = result.mappings().first()
+        if row is None:
+            return AuthorizationDecision(
+                True,
+                "none",
+                "no active contact quiet-hours policy",
+            )
 
+        policy_id = int(row["id"])
+        quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
+        if quiet_active is None:
+            return AuthorizationDecision(
+                False,
+                "contact_policy",
+                "contact policy quiet-hours configuration invalid",
+                policy_id=policy_id,
+            )
+        if quiet_active:
+            return AuthorizationDecision(
+                False,
+                "contact_policy",
+                "contact policy quiet hours active",
+                policy_id=policy_id,
+            )
+        return AuthorizationDecision(
+            True,
+            "contact_policy",
+            "contact delivery window permits send",
+            policy_id=policy_id,
+        )
+
+    async def authorize(
+        self,
+        context: AuthorizationContext,
+        *,
+        now: datetime | None = None,
+        lock_chat_mapping: bool = False,
+    ) -> AuthorizationDecision:
+        # The initial queue-batch preflight must not accumulate several exact-chat
+        # advisory locks in one transaction. The final per-row dispatch fence opts
+        # into this lock so its order matches OWNER policy mutations and the
+        # final consent/delivery-window checks.
+        if not ContactMessagingConsentService._is_direct_chat(context.target_chat_id):
+            return AuthorizationDecision(False, "none", "exact contact/chat identity invalid")
+        if lock_chat_mapping:
+            await ContactMessagingConsentService.lock_exact_chat_mapping(
+                self.session,
+                context.target_chat_id,
+            )
+        instant = now or utcnow()
+
+        # Quiet hours are a contact-level delivery restriction, not an authority
+        # source. Lock and evaluate the current exact-chat policy before considering
+        # an OWNER approval so a one-use approval cannot bypass a configured window.
         policy = await self.session.execute(
             text(
                 """
@@ -361,26 +475,58 @@ class OutboundAuthorizationService:
                   AND exact_chat_id = :target_chat_id
                   AND enabled = true
                   AND disabled_at IS NULL
-                  AND (expires_at IS NULL OR expires_at > :instant)
-                LIMIT 1
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
                 """
             ),
             {
                 "contact_id": context.contact_id,
                 "target_chat_id": context.target_chat_id,
-                "instant": instant,
             },
         )
         row = policy.mappings().first()
+        policy_id = int(row["id"]) if row is not None else None
+        if row is not None:
+            quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
+            if quiet_active is None:
+                return AuthorizationDecision(False, "contact_policy", "contact policy quiet-hours configuration invalid", policy_id=policy_id)
+            if quiet_active:
+                return AuthorizationDecision(False, "contact_policy", "contact policy quiet hours active", policy_id=policy_id)
+
+        # OWNER approval remains an independent authority source. It is considered
+        # only after the authority-independent contact delivery window has passed.
+        approval = await self.session.execute(
+            text(
+                """
+                SELECT id
+                FROM outbound_approvals
+                WHERE outbound_queue_id = :outbound_queue_id
+                  AND inbound_message_id = :inbound_message_id
+                  AND target_chat_id = :target_chat_id
+                  AND content_sha256 = :content_sha256
+                  AND status = 'approved'
+                  AND expires_at > clock_timestamp()
+                LIMIT 1
+                """
+            ),
+            {
+                "outbound_queue_id": context.outbound_queue_id,
+                "inbound_message_id": context.inbound_message_id,
+                "target_chat_id": context.target_chat_id,
+                "content_sha256": context.content_sha256,
+            },
+        )
+        approval_id = approval.scalar_one_or_none()
+        if approval_id is not None:
+            return AuthorizationDecision(
+                True,
+                "owner_approval",
+                "exact active owner approval",
+                approval_id=int(approval_id),
+                policy_id=policy_id,
+            )
+
         if row is None:
             return AuthorizationDecision(False, "none", "no exact active owner approval or contact automation policy")
-
-        policy_id = int(row["id"])
-        quiet_active = self._quiet_hours_active(row["quiet_hours_json"], instant)
-        if quiet_active is None:
-            return AuthorizationDecision(False, "contact_policy", "contact policy quiet-hours configuration invalid", policy_id=policy_id)
-        if quiet_active:
-            return AuthorizationDecision(False, "contact_policy", "contact policy quiet hours active", policy_id=policy_id)
 
         allowed = {str(value).strip().lower() for value in (row["allowed_categories"] or [])}
         prohibited = {str(value).strip().lower() for value in (row["prohibited_categories"] or [])}
@@ -433,17 +579,51 @@ class OutboundAuthorizationService:
             return None
         return hour * 60 + minute
 
-    async def consume_approval(self, approval_id: int, *, now: datetime | None = None) -> bool:
-        instant = now or utcnow()
+    async def consume_approval(self, approval_id: int, *, message: Any) -> bool:
+        """Consume one exact OWNER approval at the final pre-transport boundary.
+
+        Consumption reserves the approval for one transport attempt, not proof of
+        delivery. If WAHA's outcome is uncertain, the queue row remains quarantined
+        and this approval stays consumed so neither restart nor OWNER requeue can
+        replay the same authority.
+        """
+        context = self.context_from_queue_message(message)
+        if context is None:
+            return False
+
         result = await self.session.execute(
             text(
                 """
                 UPDATE outbound_approvals
-                SET status = 'consumed', consumed_at = :instant, updated_at = :instant
-                WHERE id = :approval_id AND status = 'approved' AND expires_at > :instant
+                SET status = 'consumed',
+                    consumed_at = clock_timestamp(),
+                    updated_at = clock_timestamp()
+                WHERE id = :approval_id
+                  AND outbound_queue_id = :outbound_queue_id
+                  AND inbound_message_id = :inbound_message_id
+                  AND target_chat_id = :target_chat_id
+                  AND content_sha256 = :content_sha256
+                  AND status = 'approved'
+                  AND expires_at > clock_timestamp()
+                  AND EXISTS (
+                      SELECT 1
+                      FROM outbound_queue q
+                      WHERE q.id = :outbound_queue_id
+                        AND q.status = 'sending'
+                        AND q.chat_id = :target_chat_id
+                        AND q.formatting_json->>'content_sha256' = :content_sha256
+                        AND q.formatting_json->>'delivery_policy'
+                            IN ('approval_required', 'authorized_external')
+                  )
                 RETURNING id
                 """
             ),
-            {"approval_id": approval_id, "instant": instant},
+            {
+                "approval_id": approval_id,
+                "outbound_queue_id": context.outbound_queue_id,
+                "inbound_message_id": context.inbound_message_id,
+                "target_chat_id": context.target_chat_id,
+                "content_sha256": context.content_sha256,
+            },
         )
         return result.scalar_one_or_none() is not None
