@@ -59,9 +59,7 @@ jobs:
           python -m pip install pytest pytest-asyncio pytest-cov respx
 
       - name: Validate migration sequence before applying SQL
-        run: |
-          # Fail before executing any migration if this PR's merge ref skips a predecessor.
-          pytest tests/unit/test_migration_sequence_integrity.py -q
+        run: python bot_core/scripts/validate_migration_sequence.py bot_core/migrations
 
       - name: Apply database migrations
         run: |
