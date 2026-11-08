@@ -62,6 +62,26 @@ def test_legacy_audit_rows_can_derive_internet_used_from_diagnostics():
     assert internet_used_from_audit_details({"internet_used": False, **legacy}) is False
 
 
+def test_legacy_top_level_analytics_is_used_when_nested_diagnostics_are_partial():
+    legacy = {
+        "source_diagnostics": {"source": "FAQ", "identity": {"matched": True}},
+        "router_analytics": {"hits": {"internet": 2}},
+    }
+
+    assert internet_used_from_audit_details(legacy) is True
+
+
+def test_nested_zero_or_malformed_counter_is_authoritative_over_legacy_snapshot():
+    for value in (0, "1", True, float("nan"), float("inf"), float("-inf")):
+        details = {
+            "source_diagnostics": {
+                "router_analytics": {"hits": {"internet": value}},
+            },
+            "router_analytics": {"hits": {"internet": 2}},
+        }
+        assert internet_used_from_audit_details(details) is False
+
+
 def test_malformed_or_non_finite_internet_hit_counts_fail_closed():
     for value in ("unknown", "1", True, float("nan"), float("inf"), float("-inf")):
         diagnostics = {

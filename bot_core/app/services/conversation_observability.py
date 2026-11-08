@@ -32,6 +32,15 @@ def internet_used_from_diagnostics(source_diagnostics: dict[str, Any] | None) ->
     )
 
 
+def _has_internet_usage_evidence(diagnostics: dict[str, Any]) -> bool:
+    """Distinguish an explicit nested result from a partial legacy diagnostics object."""
+    if "internet" in diagnostics:
+        return True
+    analytics = diagnostics.get("router_analytics")
+    hits = analytics.get("hits") if isinstance(analytics, dict) else None
+    return isinstance(hits, dict) and "internet" in hits
+
+
 def internet_used_from_audit_details(details: dict[str, Any] | None) -> bool:
     """Read the explicit flag when present, with a safe legacy-row fallback."""
     audit_details = details if isinstance(details, dict) else {}
@@ -40,9 +49,13 @@ def internet_used_from_audit_details(details: dict[str, Any] | None) -> bool:
         return explicit_value if isinstance(explicit_value, bool) else False
 
     diagnostics = audit_details.get("source_diagnostics")
-    if isinstance(diagnostics, dict):
+    if isinstance(diagnostics, dict) and _has_internet_usage_evidence(diagnostics):
+        # A nested zero or malformed value is authoritative and must not be
+        # overridden by an older top-level snapshot.
         return internet_used_from_diagnostics(diagnostics)
 
+    # Some older rows carry router_analytics at the audit root while their
+    # source_diagnostics object is present but predates internet instrumentation.
     analytics = audit_details.get("router_analytics")
     hits = analytics.get("hits") if isinstance(analytics, dict) else None
     return bool(isinstance(hits, dict) and _positive_hit_count(hits.get("internet")))
