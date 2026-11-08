@@ -1,3 +1,27 @@
+# Fresh engineering verification delta — 2026-11-08 (PR #63 follow-up)
+
+This addendum records the only application-code change after the 2026-11-08 12:24 WAT snapshot below. It does not supersede the P0, migration, deployment, or human-decision blockers recorded there.
+
+## PR #63 — legacy conversation-observability fallback
+
+- Current exact head: `4c043c197895c77effba05506b4fff9830357f39` ([commit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/commit/4c043c197895c77effba05506b4fff9830357f39)).
+- Fixed a compatibility gap in `internet_used_from_audit_details()`: a legacy audit row could have a present but partial `source_diagnostics` object and a populated top-level `router_analytics.hits.internet`; the old helper returned false before reaching the top-level fallback. It now falls back only when nested diagnostics contain no internet-usage signal. An explicit nested zero or malformed value remains authoritative and fails closed.
+- Added regressions for partial nested diagnostics with a positive legacy top-level count, and for nested zero/malformed values overriding a conflicting positive legacy snapshot.
+- Exact-head Tests run [42495534660](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42495534660) succeeded: **805 passed, 1 warning, 76.12% coverage** (57% gate). The workflow applied migrations **001–033** to disposable PostgreSQL.
+- This run does not validate feature migrations 034–040, an installed-database upgrade, or the separate post-test DB-leakage audit. No local pytest execution was available; the exact-head Actions result is the validation evidence.
+- PR #63 still has one unresolved inline review thread; no APPROVED review exists. The code is source-addressed but awaits independent review. No merge or review-thread resolution occurred.
+
+## Current-state cross-check
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; recent-commit search returned no later main commit. Main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) remains the 2026-09-08 success.
+- The ten open PR heads remain: #63 `4c043c1`, #62 `6bf7619`, #61 `8a1c1db`, #60 `155430d`, #59 `b6a870d`, #57 `d831ce4`, #55 `b5cb5ff`, #50 `2dc4225`, #49 `bcd0033`, #48 `3acacbf`.
+- No open PR has an APPROVED review submission. The branch-protection endpoint returned 403 for this connection; current protection remains unverified.
+- PR #60's final contact-policy/consent expiry and STOP ordering blockers, #60/#62 deployment integration split, and the unintegrated 001–040 migration chain are unchanged from the 12:24 WAT snapshot below.
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.** This addendum is documentation-only; no application behavior, migrations, production database, deployment, or WAHA transport changed.
+
+---
+
 # Fresh engineering verification delta — 2026-11-08 12:24 WAT (11:24 UTC)
 
 This addendum supersedes the 08:17 WAT snapshot below for the current P0 dispatch blocker.
