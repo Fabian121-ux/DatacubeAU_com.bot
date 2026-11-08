@@ -16,6 +16,7 @@ from app.models.schema import AuditLog, Contact, Message, OutboundMessage, Route
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
 from app.services.memory_compaction_policy import effective_summary_thresholds
+from app.services.conversation_observability import finalize_router_decision_audit
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_metadata_service import OutboundMediaMetadataService
 from app.services.owner_command_service import OwnerCommandService
@@ -135,7 +136,7 @@ class InboundRouter:
             confidence=planned.kb_confidence,
             reply_sent=False,
         )
-        await self._save_audit_log(
+        router_decision_audit = await self._save_audit_log(
             action="router_decision",
             entity_type="router_decision",
             entity_id=str(decision.id),
@@ -354,6 +355,11 @@ class InboundRouter:
             decision_type=planned.decision_type.value,
             reply_deferred=reply_deferred,
         )
+        router_decision_audit.details_json = finalize_router_decision_audit(
+            router_decision_audit.details_json,
+            planned.source_diagnostics,
+        )
+        self.session.add(router_decision_audit)
         await self.session.commit()
         return asdict(RouteResult(
             status="ok",

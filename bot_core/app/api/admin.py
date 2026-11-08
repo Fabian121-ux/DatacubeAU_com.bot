@@ -13,6 +13,7 @@ from app.config import settings
 from app.core.experience_formatter import WhatsAppMessageFormat
 from app.core.message_normalizer import NormalizedMessage
 from app.core.router import InboundRouter
+from app.services.conversation_observability import internet_used_from_audit_details
 from app.db import get_db_session
 from app.models.enums import ChatType, DecisionType, GroupReplyMode
 from app.models.schema import (
@@ -366,6 +367,7 @@ async def recent_router_decisions(
                 "latency_ms": row[5] or 0,
                 "router_analytics": audit_map.get(str(row[0].id), {}).get("router_analytics") or {},
                 "source_diagnostics": audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {},
+                "internet_used": internet_used_from_audit_details(audit_map.get(str(row[0].id), {})),
                 "fallback_reason": ((audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("fallback") or {}).get("reason"),
                 "identity_used": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("identity"),
                 "memory_used": (audit_map.get(str(row[0].id), {}).get("source_diagnostics") or {}).get("memory"),
