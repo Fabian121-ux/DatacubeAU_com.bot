@@ -1,3 +1,20 @@
+## Fresh release-gate delta — 2026-11-08 05:20 WAT (2026-11-08 04:20 UTC)
+
+This snapshot supersedes the 2026-11-08 00:25 WAT checklist overlay. The PR #59 branch was at `00dc5b05e8967030be13eebeebd83e14688be3ec` immediately before this docs-only refresh; this update uses `[skip ci]` and claims no exact-head CI for itself.
+
+- **Main:** `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) passed 2026-09-08. Main has migrations 001–033. The main Tests workflow has no sequence preflight, schema audit, or post-test leakage audit.
+- **Latest overall CI:** [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded on #60 exact head `155430d29414e9d918062ce74d05cbee72edfa6a`: 974 passed, 1 warning, 76.50%. It applied 001–033 + 038–040 only; this is not integrated 001–040 proof.
+- **Open PR inventory:** #63 `13fad868` (1/1 unresolved, outdated); #62 `6bf76196` (9/9, 4 active); #61 `8a1c1dbf` (0/0); #60 `155430d2` (22/24, 9 active); #59 `00dc5b05` before this docs update (4/4, 1 active; no exact-head run); #57 `d831ce4e` (1/1, outdated); #55 `b5cb5ff4` (1/1, outdated); #50 `2dc42254` (5/13, 4 active); #49 `bcd0033e` (1/80, 1 active); #48 `3acacbfe` (0/15). No open PR has an APPROVED review submission.
+- **P0 dispatch:** #60 still has a time-of-check window because contact-policy authority is checked before later source/approval/consent/STOP waits, and consent is refreshed before the final pending-STOP read. Implement one final DB-clock reservation after all blocking locks, binding the same authority ID, exact current Contact/chat mapping, consent/expiry, terminal and pending STOP, and exact queue payload. OWNER must accept or revise the STOP one-attempt linearization contract. Keep uncertain outcomes quarantined; no blind retry.
+- **P0 integration:** combine #48's exact view-once source lock, success-only return marker, and PrivateMediaArtifact observation hooks with #60's consent/STOP/quiet-hours/approval/ScheduledAction/runtime-role controls in one worker path. Retention stays OFF.
+- **Human decisions:** confirm STOP reservation semantics; Contact-wide terminal opt-out/no routine re-consent; whether OWNER-attested consent plus opaque evidence reference is sufficient; and the #50 legacy-provenance policy (ambiguous old rows remain `legacy_unknown`/NULL or require auditable OWNER attestation; never infer from timestamp equality).
+- **Migration/deployment:** branch allocation is unique (#48=034, #50=035, #49=036–037, #60=038–040), but no integrated 001–040 fresh/upgrade/no-op proof exists. #60's runtime-role/service allowlists and #62's target/seed/sequence preflights are split; #62's Compose still exposes broad `.env.production` to API/WAHA and lacks #60's runtime role. Retain #55's schema-qualified leakage audit, #57's seed guard, and #61's sequence validator.
+- **Review and protection:** all ten open PRs were rechecked; none has an APPROVED review. Branch-protection read returned 403, so current protection is unverified; do not assume it is enabled.
+- **Validation limits:** no local tests, coverage, migrations, schema/leakage audit, Docker, or database execution occurred in this run. No code/migration/deployment/production DB/WAHA changes occurred.
+- **Release:** **NOT TEST READY.** Next safe step is one dedicated integration candidate after OWNER decisions, with fresh 001–040, installed 033→040 upgrade, second-run no-op, schema/full-suite/coverage/P0/leakage/runtime-role proof on the same exact head, and independent human review. **REAL WAHA ACTIONS: NONE.**
+
+---
+
 ## Fresh release-gate snapshot — 2026-11-08 00:25 WAT (2026-11-07 23:25 UTC)
 
 This snapshot supersedes the older verification sections below. It is evidence-only; do not treat branch-local CI as integrated release approval.
