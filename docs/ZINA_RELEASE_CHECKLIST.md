@@ -1,3 +1,42 @@
+# Fresh release verification — 2026-11-08 21:16 WAT
+
+This snapshot supersedes the 17:17 WAT status below. It is a live-state recheck, not release certification.
+
+## Mechanical evidence — re-verified
+
+- Main is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; its latest Tests run is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) (2026-09-08 success).
+- Latest repository Tests run: [42495534660](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42495534660), exact PR #63 head, success: **805 passed, 76.12%**; migrations **001–033 only**.
+- PR #60 exact-head run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded: **974 passed, 76.50%**; it applied **001–033 + 038–040 only**.
+- PR #62 exact-head run [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) succeeded: **866 passed, 76.01%**, with schema and leakage audits. Its pre-migration pytest preflight invokes the autouse `create_all()` fixture before SQL migrations, so this is **not** valid empty-database migration evidence. Replace that workflow step (and PR #61's matching step) with `python bot_core/scripts/validate_migration_sequence.py bot_core/migrations`.
+- No branch has proved the integrated 001–040 fresh install, installed 033→040 upgrade, second-run checksum/no-op, combined schema audit, zero leakage, and runtime-role privilege boundary together.
+
+## Product/safety blockers
+
+- **P0 outbound dispatch is not cleared.** PR #60 still has a post-recheck window: contact policy and quiet-hours checks occur before later source/approval/consent/STOP waits; final consent is checked before pending STOP. A single final PostgreSQL reservation after all locks must evaluate exact recipient/payload/media binding, consent and expiry, terminal/pending STOP, same policy ID and expiry/category, quiet hours, and one-use approval against one `clock_timestamp()`. Only that reservation permits one WAHA attempt; uncertain outcomes remain no-replay.
+- **Owner decision:** STOP before reservation blocks; STOP after reservation applies to later attempts. Confirm this linearization rule, contact-wide terminal opt-out/no routine re-consent, and whether OWNER-attested consent plus an opaque evidence reference is sufficient.
+- **View-once integration:** preserve #48's exact source lock and success-only return marker with #60's contact-consent/STOP fence in one worker. PrivateMediaArtifact storage remains metadata-only; `storage_locator=NULL`; retention OFF.
+- **Migration map:** #48=034, #50=035, #49=036–037, #60=038–040. The old duplicate-034 collision is renumbered, but the integrated chain is unproven.
+- **Identity Registry:** main already has #47 delete/search/single-fetch and migration 033 lifecycle/provenance columns. PR #50 fixes deleted/disabled introduction behavior, but migration 035's `updated_at = created_at` heuristic cannot reliably classify all legacy rows. Preserve ambiguous provenance as unknown/NULL or require OWNER attestation backed by immutable evidence.
+- **Deployment:** #62 has target/seed/sequence guards but broad `.env.production` still reaches API/WAHA and no restricted runtime role is provisioned. #60 has service allowlists/runtime-role provisioning but lacks #62's pre-DDL guard set. Reconcile into one candidate.
+- **Governance:** ten PRs remain open and none has an APPROVED review. Branch-protection status is unverified (the API read returned 403).
+
+## Current open PR heads
+
+- #62 `6bf7619656543829641b806b4b5488cdf8ace56e` — 10 unresolved threads.
+- #61 `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` — 1 unresolved.
+- #59 `61213a64eb425fe1761fe3b52fb2679097e3a5cd` (parent of this docs update) — 4 unresolved.
+- #63 `4c043c197895c77effba05506b4fff9830357f39` — 1 unresolved.
+- #60 `155430d29414e9d918062ce74d05cbee72edfa6a` — 23 unresolved / 25 total.
+- #50 `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` — 5 unresolved / 13 total.
+- #48 `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` — 0 unresolved / 15 total.
+- #55 `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` — 1 unresolved.
+- #57 `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` — 1 unresolved.
+- #49 `bcd0033e024b177561b8afd41589afe1897ba4de` — 1 unresolved / 80 total.
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.** Do not begin staged live testing until the P0 reservation, migration/deployment integration, independent review, and exact-candidate test gates are cleared.
+
+---
+
 # Fresh engineering verification delta — 2026-11-08 (PR #63 follow-up)
 
 This addendum records the only application-code change after the 2026-11-08 12:24 WAT snapshot below. It does not supersede the P0, migration, deployment, or human-decision blockers recorded there.
