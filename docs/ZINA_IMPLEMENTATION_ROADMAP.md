@@ -1,3 +1,33 @@
+# Fresh engineering verification delta — 2026-11-08 12:24 WAT (11:24 UTC)
+
+This addendum supersedes the 08:17 WAT snapshot below for the latest P0 dispatch review. It rechecks the exact current #60 worker/service source and all open PR heads. These are verification notes, not a code fix, approval, merge authorization, or release certification.
+
+## New P0 finding on PR #60 — quiet-hours and final reservation
+
+- PR #60 remains at exact head `155430d29414e9d918062ce74d05cbee72edfa6a`. Exact-head Tests run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded: **974 passed, 1 warning, 76.50% coverage**. This run is branch-local evidence only.
+- Source recheck confirms `background_workers.py` calls `check_contact_delivery_window()` before the later same-policy authority recheck, exact view-once source lock, one-use OWNER approval reservation, final consent refresh, and pending-STOP read. Those later awaits can cross the start of configured quiet hours; the current worker can then reach WAHA using the earlier delivery-window decision.
+- `check_contact_delivery_window()` is a restriction-only helper. Its query filters disabled/expired policy rows and its no-row branch returns allowed (“no active contact quiet-hours policy”). It must not be treated as proof that an earlier `contact_policy` authority remains valid.
+- Separate windows remain in the same ordering: the same-policy authority recheck at approximately `background_workers.py:304` precedes the source/approval/consent/STOP fences, and final consent at approximately lines 367–372 precedes the pending-STOP read at 403–405. A policy or consent can expire during those later waits.
+- Required shape: after queue, exact-chat mapping, Contact/consent, source, applicable ScheduledAction, and approval locks are held in one documented order, perform one final PostgreSQL dispatch-reservation statement immediately before transport. Evaluate current recipient mapping, exact queue/content/media binding, consent status/provenance/expiry, terminal and pending STOP, the same policy ID's enabled/disabled/expiry/category predicates, quiet hours, and exact one-use approval against one database-side `clock_timestamp()`. Only a returned reservation row permits the single WAHA attempt; no later authorization read/await may intervene. Preserve uncertain-outcome quarantine and no blind retry.
+- The current review thread was updated with this integration warning and concrete reservation guidance: [PR #60 review discussion](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4505857116). This review reply did not edit source or run tests.
+- PR #60 review state is now **23 unresolved / 25 total inline threads (10 active, 13 outdated)**. No APPROVED review is present.
+
+## Cross-PR integration and release gates
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; exact-main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) is still the 2026-09-08 success. Main still contains migrations 001–033 only.
+- Feature migration allocation is unique by current branch filenames: 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60). No candidate has proved the integrated 001–040 fresh install, installed 033→040 upgrade with representative rows, second-run checksum/no-op, schema audit, DB leakage, and runtime-role privileges together.
+- #61 and #62 contain the same migration validator blob (`606cd9881074dd8a2bdd65fd280be76bd987f469`); keep one canonical validator rather than creating another. #62 adds target/seed/sequence preflights, but its exact-head Compose still injects broad `.env.production` into API and WAHA and its runner does not provision/verify the restricted runtime role. #60 has the runtime-role provisioning and service allowlists, but lacks #62's pre-DDL target/seed/sequence preflights. Neither merge order is safe; one reviewed deployment candidate must preserve both.
+- #60's worker has the exact view-once source lock and success-only returned marker, but its observation/command services still lack #48's `PrivateMediaArtifactService` hooks. #48 has the metadata hooks but its worker branch lacks #60's contact-consent/STOP fence. Compose both in one authoritative worker path; retention and byte storage remain OFF.
+- #50's introduction/identity fallback findings are source-addressed on its current head, but migration 035 still uses `updated_at = created_at` as provenance evidence. This cannot reliably classify legacy rows whose timestamps were advanced by earlier deployments. Do not add another timestamp heuristic. Preserve ambiguous legacy provenance as unknown/NULL or require an explicit OWNER-attested classification/immutable historical seed record. OWNER decision required.
+- The 2026-09-08 roadmap/checklist status is stale against current code: main already contains the PR #47 Identity Registry delete/search/single-fetch endpoints and provenance/lifecycle columns. The current open PR #59 is the documentation refresh; its own documentation head has no exact-head CI run, and this addendum is docs-only.
+- Current branch-protection read returned 403 for this connection. Do not assume required independent review/checks are enabled.
+
+**Human decisions still required:** accept the one-attempt STOP linearization point (a STOP committed after the final reservation applies to subsequent attempts, not the already-reserved attempt); confirm contact-wide terminal opt-out/no routine re-consent; confirm whether OWNER attestation plus an opaque evidence reference is sufficient proof of external contact consent; choose unknown legacy provenance versus explicit OWNER attestation.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.** No code tests, migrations, deployment, production DB mutation, WAHA reconnection, real WhatsApp send, private-media retention activation, merge, or approval occurred in this documentation update.
+
+---
+
 # Fresh engineering verification delta — 2026-11-08 08:17 WAT (07:17 UTC)
 
 This snapshot supersedes the 05:20 WAT overlay below. It is based on a fresh read of main, all open PR heads, review threads/submissions, exact-head Tests runs, workflow YAML, migration trees, and deployment files. The existing PR #59 branch was at `211486c55203ed44bf4529878f4e0014af742ac3` before this docs-only update. This commit uses `[skip ci]`; it does not claim a test run for its own documentation change.
