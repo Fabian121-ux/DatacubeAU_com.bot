@@ -1,3 +1,29 @@
+# Fresh engineering verification delta — 2026-11-08 12:24 WAT (11:24 UTC)
+
+This addendum supersedes the 08:17 WAT snapshot below for the current P0 dispatch blocker.
+
+## Blocking P0 dispatch verification
+
+- PR #60 exact head: `155430d29414e9d918062ce74d05cbee72edfa6a`; exact-head Tests run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded (**974 passed, 1 warning, 76.50%**). This does not prove the integrated 001–040 migration chain or the final reservation race.
+- Fresh source review found `check_contact_delivery_window()` executes before later authority/source/approval/consent/STOP waits. Those waits can cross a configured quiet-hours start. The helper's no-active-row branch allows delivery and is not a continuing authority check for an earlier contact-policy-authorized row.
+- The same-policy authority recheck currently precedes the source/approval/consent/STOP waits; final consent refresh precedes the pending-STOP query. Therefore policy/consent expiry can still occur after their earlier checks. Require one final PostgreSQL reservation after all blocking locks, with all dynamic predicates evaluated against one `clock_timestamp()`; only its successful return permits the one WAHA attempt. Do not add another preflight that leaves a later wait window.
+- This finding and the single-reservation design were added to the existing [PR #60 review discussion](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4505857116). No source change or test run was made in this turn.
+
+## Other gates unchanged
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) is still the 2026-09-08 success. Main migration chain is 001–033.
+- Feature allocations remain 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60), with no integrated fresh/upgrade/no-op/schema/leakage/runtime-role proof.
+- #60/#62 deployment work still needs one candidate: #62 has pre-DDL target/seed/sequence guards but broad `.env.production` injection and no runtime-role provisioning; #60 has service allowlists/runtime-role provisioning but lacks #62's preflights. #61/#62 share the same validator blob; do not duplicate it.
+- #48/#60 worker changes must be composed: preserve #48's PrivateMediaArtifact observation/command hooks and #60's consent/STOP/source fences. Retention/byte storage remain OFF.
+- #50 migration 035's `updated_at = created_at` provenance heuristic remains unreliable for legacy rows. Preserve unknown provenance or require explicit OWNER attestation; do not infer from timestamps.
+- No open PR has an APPROVED review. Current branch-protection read returned 403; protection status is not verified.
+
+**OWNER decisions required:** STOP reservation linearization; contact-wide terminal opt-out/no routine re-consent; sufficiency of OWNER-attested contact-consent evidence; unknown legacy provenance versus explicit attestation.
+
+**Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.** No tests, migrations, deployment, production database changes, live WAHA action, merge, or approval occurred in this documentation update.
+
+---
+
 # Fresh engineering verification delta — 2026-11-08 08:17 WAT (07:17 UTC)
 
 This snapshot supersedes the 05:20 WAT overlay below. It is based on a fresh read of main, all open PR heads, review threads/submissions, exact-head Tests runs, workflow YAML, migration trees, and deployment files. The existing PR #59 branch was at `211486c55203ed44bf4529878f4e0014af742ac3` before this docs-only update. This commit uses `[skip ci]`; it does not claim a test run for its own documentation change.
