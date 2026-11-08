@@ -6,16 +6,66 @@ if [ -z "${DATABASE_URL_SYNC:-}" ]; then
   exit 1
 fi
 
+# Local fixture identities must never be rewritten by a normal production deploy.
+# RUN_LOCAL_SEEDS is an explicit opt-in for disposable development/test environments.
+RUN_LOCAL_SEEDS="${RUN_LOCAL_SEEDS:-false}"
+case "$RUN_LOCAL_SEEDS" in
+  true|false) ;;
+  *)
+    echo "RUN_LOCAL_SEEDS must be exactly 'true' or 'false'." >&2
+    exit 1
+    ;;
+esac
+
+# The production Compose migration service sets this marker explicitly. Even if
+# RUN_LOCAL_SEEDS is accidentally added to .env.production, fixture upserts fail
+# closed unless the operator explicitly overrides the marker for a dev/test run.
+if [ "$RUN_LOCAL_SEEDS" = "true" ]; then
+  case "${ZINA_DEPLOYMENT_ENV:-}" in
+    development|test) ;;
+    *)
+      echo "RUN_LOCAL_SEEDS=true requires ZINA_DEPLOYMENT_ENV=development or test." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# Migrations always target DATABASE_URL_SYNC, while schema_audit.py prefers
+# DATABASE_URL when it is set. Verify both identify the same database before the
+# first psql invocation, regardless of whether local fixture seeds are enabled.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+python3 "$SCRIPT_DIR/validate_migration_database_target.py" "${DATABASE_URL_SYNC}" "${DATABASE_URL:-}" "$RUN_LOCAL_SEEDS"
+
 APP_ROOT="${APP_ROOT:-/srv/app}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$APP_ROOT/bot_core/migrations}"
 SEEDS_DIR="${SEEDS_DIR:-$APP_ROOT/bot_core/seeds}"
 
+# Validate the entire migration bundle before the first database call. This must
+# precede even schema_migrations DDL so a missing predecessor cannot partially
+# mutate an installed database.
+MIGRATION_VALIDATOR="$APP_ROOT/bot_core/scripts/validate_migration_sequence.py"
+if [ ! -f "$MIGRATION_VALIDATOR" ]; then
+  echo "Migration sequence validator is missing: $MIGRATION_VALIDATOR" >&2
+  exit 1
+fi
+python "$MIGRATION_VALIDATOR" "$MIGRATIONS_DIR"
+
+
+# Do not inherit libpq connection-target overrides or session options into
+# schema-changing commands. PGHOSTADDR can redirect the network target even when
+# the URI hostname is validated; PGPORT can override the default when the URI omits it.
+# PGOPTIONS can alter search_path, and service variables inject unvalidated defaults.
 psql_cmd() {
-  psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X "$@"
+  # The migration/audit contract is explicitly public-schema based. URI and
+  # inherited libpq overrides are fenced above/below, but role/database-level
+  # defaults can still set a custom search_path; pin it for every session too.
+  env -u PGUSER -u PGHOSTADDR -u PGPORT -u PGOPTIONS -u PGSERVICE -u PGSERVICEFILE \
+    psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -q \
+      -c 'SET search_path TO public' "$@"
 }
 
 sql_scalar() {
-  psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -X -Atc "$1"
+  psql_cmd -Atc "$1"
 }
 
 table_exists() {
@@ -119,7 +169,19 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
 done
 
 for seed in "$SEEDS_DIR"/*.sql; do
-  echo "Applying seed $(basename "$seed")"
+  [ -f "$seed" ] || continue
+  seed_name="$(basename "$seed")"
+
+  case "$seed_name" in
+    *_local_seed.sql)
+      if [ "$RUN_LOCAL_SEEDS" != "true" ]; then
+        echo "Skipping local-only seed $seed_name (set RUN_LOCAL_SEEDS=true to opt in)"
+        continue
+      fi
+      ;;
+  esac
+
+  echo "Applying seed $seed_name"
   psql_cmd -f "$seed"
 done
 

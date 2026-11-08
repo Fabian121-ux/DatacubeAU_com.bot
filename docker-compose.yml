@@ -128,6 +128,8 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env.production
+    environment:
+      ZINA_DEPLOYMENT_ENV: production
     depends_on:
       postgres:
         condition: service_healthy
