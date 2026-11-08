@@ -1,3 +1,50 @@
+# Fresh engineering verification delta — 2026-11-08 22:22 WAT
+
+This snapshot supersedes the 21:16 WAT verification block below. It re-reads main, all ten open PR heads, all inline review-thread collections and review submissions, the latest Actions runs, workflow YAML, migration trees, and the current deployment branches. This is an engineering verification update, not release certification.
+
+## Governance correction
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`, with its latest commit dated 2026-09-08 11:09:59 UTC.
+- The live branch endpoint explicitly reports `protected=false`, `protection.enabled=false`, and required-status-check enforcement `off`. This corrects the earlier statement that protection was merely unverified after a 403 from a different endpoint. Main is not protected; do not rely on GitHub branch rules to enforce human review. The no-self-merge / human-gated-main policy remains mandatory.
+- Ten PRs remain open. Every review submission fetched is COMMENTED; none is APPROVED. Counts below are unresolved / total inline threads (active unresolved excludes outdated threads). #59's listed SHA is the pre-refresh head; this documentation update advances that branch.
+
+| PR | Exact head before this refresh | Unresolved / total (active) |
+|---|---|---:|
+| [#59 verification documentation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `8878b5c3cf831ea1d39349d51a066846d468819b` | 4 / 4 (1) |
+| [#62 deployment/seed integration](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `6bf7619656543829641b806b4b5488cdf8ace56e` | 10 / 10 (5) |
+| [#61 migration-sequence guard](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f` | 1 / 1 (1) |
+| [#63 observability audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `4c043c197895c77effba05506b4fff9830357f39` | 1 / 1 (0) |
+| [#60 contact-consent P0](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `155430d29414e9d918062ce74d05cbee72edfa6a` | 23 / 25 (10) |
+| [#50 Identity Registry lifecycle](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | 5 / 13 (4) |
+| [#48 PrivateMediaArtifact observation/return](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | 0 / 15 (0) |
+| [#55 DB-leakage audit](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | 1 / 1 (0) |
+| [#57 local-seed safety](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | 1 / 1 (0) |
+| [#49 Outbound Message Library foundation](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | 1 / 80 (1) |
+
+## CI and workflow evidence
+
+- Latest repository Tests run remains [42495534660](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42495534660), successful on PR #63 exact head `4c043c197895c77effba05506b4fff9830357f39`: 805 passed, 1 warning, 76.12% coverage. It applies migrations 001–033 only; it is not integrated 001–040 proof.
+- PR #60 exact-head run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) is successful: 974 passed, 1 warning, 76.50%; it applies 001–033 plus 038–040 only.
+- PR #62 exact-head run [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) is successful: 866 passed, 1 warning, 76.01%. Its pre-migration step runs `pytest tests/unit/test_migration_sequence_integrity.py -q`. On this exact branch, `tests/conftest.py` has a session-scoped autouse fixture that calls `Base.metadata.create_all()`; therefore the preflight creates ORM tables before the SQL migration loop. The job log's “already exists” notices confirm the empty-schema migration proof is invalidated. PR #61 has the same ordering defect. Replace both pre-migration pytest invocations with the pure, non-DB command `python bot_core/scripts/validate_migration_sequence.py bot_core/migrations`; keep the pytest regression in the normal suite after migrations.
+- Main's `.github/workflows/tests.yml` still applies the migration glob lexically and then runs pytest with a 57% coverage floor. It has no contiguous-sequence preflight, ORM schema audit, or post-test leakage audit. No test or migration was run by this documentation refresh.
+
+## New exact-head review gap on PR #63
+
+The latest #63 source diff has helper-level tests for `finalize_router_decision_audit()` and `internet_used_from_audit_details()`, but no route-level regression for the call-site persistence/API contract. A current PR comment requests a PostgreSQL-backed external approval-required route test that reloads `AuditLog(action='router_decision')` and verifies late `outbound_authority.approval_id/response_category` persisted, plus an assertion that `GET /admin/router-decisions/recent` exposes the expected `internet_used` boolean. The green 805-test run does not establish that route-level behavior. Keep #63 open for this regression and independent review.
+
+## P0, deployment, migration, and identity blockers
+
+- PR #60 remains the highest-risk unfinished slice. The exact current worker rechecks the original authority, then still awaits source locking, possible approval reservation, final consent refresh, and pending-STOP lookup before WAHA. The final consent refresh is before the pending-STOP read. Contact-policy expiry and quiet-hours start can therefore cross later waits after the earlier authority/window checks. The review's safe design remains one final PostgreSQL dispatch-reservation statement after all relevant locks, evaluating exact recipient mapping, exact queue/content/media binding, current consent and expiry, terminal/pending STOP, the same policy ID's enabled/disabled/expiry/category state, quiet hours, and any exact one-use OWNER approval against one database-side `clock_timestamp()`. Only a returned reservation permits the single WAHA attempt; no later authorization read may intervene. Preserve uncertain-send quarantine and no blind replay.
+- The OWNER must confirm STOP linearization: STOP committed before reservation blocks that attempt; STOP committed after reservation applies to subsequent attempts. Contact-wide terminal opt-out/no routine re-consent and sufficiency of OWNER-attested consent plus an opaque evidence reference also need explicit policy decisions.
+- Migration filenames are unique across current branches: 034 (#48), 035 (#50), 036–037 (#49), 038–040 (#60). Main is 001–033. No single candidate has proved fresh 001–040, installed 033→040 upgrade with representative rows, second-run checksum/no-op, combined schema audit, zero DB leakage, and runtime-role privilege proof together.
+- Deployment changes remain mutually incomplete: #60 has service-specific API/WAHA environment allowlists and restricted runtime-role provisioning, but lacks #62's pre-DDL database-target/seed/sequence guards and local-seed opt-in. #62 has those preflights and schema/leakage checks, but its Compose still injects broad `.env.production` into API/WAHA/migrate and it does not provision the restricted runtime role. #61's sequence validator is already present in #62 and should not be treated as a separate deliverable. Build one reviewed integration candidate preserving both boundaries; neither merge order is safe.
+- PR #50's introduction boundary now suppresses unavailable Zina/OWNER identity claims. Migration 035 still uses `updated_at = created_at` to infer legacy seed provenance; earlier scored reads could have changed that timestamp before the migration. Preserve ambiguous legacy provenance as unknown/NULL or require explicit OWNER attestation backed by immutable evidence. Do not add another timestamp heuristic.
+- #48's exact-source view-once lock and success-only return marker must be preserved when its PrivateMediaArtifact metadata hooks are composed with #60's consent/STOP fence. Metadata only: `storage_locator` remains NULL and retention remains OFF. #49 remains a content-library foundation only; no producer/selection/dashboard integration should precede P0 closure.
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.** No application code, tests, migrations, production DB, deployment, WAHA transport, approval, or merge changed in this documentation update.
+
+---
+
 # Fresh engineering verification delta — 2026-11-08 21:16 WAT
 
 This snapshot supersedes the 17:17 WAT live-state counts below. It was checked against the exact current `main` ref, all ten open PR heads, all review-thread collections/submissions, recent Actions runs and logs, workflow YAML, migration trees, and deployment branches. It is a verification/documentation update only; it does not certify a release.
