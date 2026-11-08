@@ -58,6 +58,9 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pytest pytest-asyncio pytest-cov respx
 
+      - name: Validate migration sequence before applying SQL
+        run: python bot_core/scripts/validate_migration_sequence.py bot_core/migrations
+
       - name: Apply database migrations
         run: |
           for migration in bot_core/migrations/*.sql; do
