@@ -1,3 +1,41 @@
+# Fresh release verification — 2026-11-08 23:31 WAT
+
+This snapshot supersedes the 22:22 WAT overlay below. It records current evidence only; it does not certify controlled testing.
+
+## Main, workflow, and review governance
+
+- Main: `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest commit 2026-09-08 11:09:59 UTC. Main is explicitly unprotected; required status checks are off.
+- Main roadmap/checklist status was last verified 2026-09-08 against `0034587a90bb8d5a79bda41e85091cfea33b969d`; do not treat those checked boxes as current evidence.
+- Main Tests workflow applies migrations 001–033 without a sequence preflight, schema audit, or leakage audit. Latest main run remains [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) on 2026-09-08.
+- Ten PRs are open. All fetched review submissions are COMMENTED; none is APPROVED. Current unresolved/total inline threads (active unresolved): #63 1/1 (0), #62 10/10 (4), #61 1/1 (0), #60 23/25 (10), #59 4/4 (1), #57 1/1 (0), #55 1/1 (0), #50 5/13 (4), #49 1/80 (1), #48 0/15 (0).
+
+## Exact-head CI evidence
+
+- Latest overall Tests run [42530285588](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530285588) — PR #62 head `1fd70c13db57786182ff8311dc7daff7f898e133`: **866 passed, 1 warning, 76.01%**. The pure migration preflight, fresh 001–033 SQL loop, schema audit, and post-test leakage audit passed. This is not 001–040 evidence.
+- PR #61 run [42530270167](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530270167): **809 passed, 1 warning, 76.01%**; pure preflight and fresh 001–033 migration loop passed; no separate schema/leakage gate.
+- PR #63 run [42530179319](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530179319): **806 passed, 1 warning, 76.12%**; 001–033 only. A PostgreSQL-backed route regression now proves late approval diagnostics survive the router commit and appear in `GET /admin/router-decisions/recent`, including `internet_used=true`. It uses a fake approval service and never calls WAHA.
+- #61 and #62 replaced pre-migration pytest with `python bot_core/scripts/validate_migration_sequence.py bot_core/migrations`. The old pytest command invoked an autouse fixture that ran `Base.metadata.create_all()` before the SQL migration loop; the pure validator avoids DB mutation before migrations.
+
+## Migration and deployment gates
+
+- Migration allocation is now unique: main 001–033; #48 034; #50 035; #49 036–037; #60 038–040. The historical collision is resolved.
+- Still required on one exact integrated candidate: fresh 001–040 PostgreSQL install; installed 033→040 upgrade with representative rows; checksum/no-op second run; schema audit; zero DB leakage; restricted runtime-role privilege proof; P0 adversarial matrix.
+- #60 provides restricted API runtime-role provisioning and API/WAHA environment isolation but lacks #62's database-target, local-seed, and sequence preflights. #62 provides those preflights but its Compose still mounts broad `.env.production` into API/WAHA and does not provision/verify the restricted runtime role. Neither merge order is safe; integrate one reviewed candidate.
+- #60 still lacks a final atomic dispatch reservation after every lock and time-sensitive check. Consent is revalidated before a later pending-STOP lookup; quiet hours and policy expiry can cross while later checks wait. Require one DB-clock reservation binding exact recipient/payload/media, consent/expiry, terminal/pending STOP, policy state/expiry/category, quiet hours, and one-use OWNER approval before the single WAHA attempt.
+- Human decisions: STOP linearization; Contact-wide terminal opt-out scope across aliases/no routine re-consent; sufficiency of OWNER-attested consent plus opaque evidence reference; legacy Identity Registry provenance treatment (unknown/NULL versus explicit OWNER attestation/immutable evidence).
+
+## Remaining product/architecture gates
+
+- #50's shared introduction now honors unavailable `zina`/`fabian` and is project-neutral. Migration 035's `updated_at = created_at` provenance heuristic remains unreliable for pre-033 rows previously touched by reads; do not infer provenance from timestamps.
+- #49 is still foundation-only: no live producer/selection/dashboard integration before P0 closure.
+- #48 is metadata-only; `storage_locator` remains NULL and private-media retention remains OFF. Preserve exact-source lock and success-only return marker in the eventual #60 worker integration.
+- #63, #61, and #62 received new branch commits and exact-head CI evidence; all PRs remain open and no independent APPROVED review exists.
+- Main branch protection/required independent review must be enabled before any merge. No self-merge or auto-merge.
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.** No production DB mutation, live deployment, WAHA send/reconnection, approval, or merge occurred.
+
+---
+
 # Fresh release verification — 2026-11-08 22:22 WAT
 
 This snapshot supersedes the 21:16 WAT status below. It is a live-state verification update, not release certification.
