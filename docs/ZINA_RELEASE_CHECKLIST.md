@@ -1,3 +1,44 @@
+# Fresh release verification — 2026-11-08 22:22 WAT
+
+This snapshot supersedes the 21:16 WAT status below. It is a live-state verification update, not release certification.
+
+## Main, governance, and CI
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08). The branch endpoint explicitly reports `protected=false` and required-status-check enforcement `off`; main is not protected. Preserve the explicit human-gated merge policy.
+- Latest repository Tests run [42495534660](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42495534660) succeeded on PR #63 head `4c043c197895c77effba05506b4fff9830357f39`: 805 passed, 1 warning, 76.12%; migrations 001–033 only.
+- PR #60 run [42340254616](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42340254616) succeeded: 974 passed, 76.50%; migrations 001–033 + 038–040 only.
+- PR #62 run [42210751706](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42210751706) succeeded: 866 passed, 76.01%, but its pre-migration pytest command invokes the autouse `Base.metadata.create_all()` fixture before SQL migrations. This is not valid empty-database migration evidence. PR #61 has the same issue. Use the pure migration validator command before the migration loop; keep pytest after migrations.
+- No candidate proves integrated 001–040 fresh install, installed 033→040 upgrade, second-run checksum/no-op, combined schema audit, zero leakage, and least-privilege runtime-role checks together.
+
+## Current release blockers
+
+- **P0 outbound dispatch remains blocked.** PR #60's final authority/policy check still precedes later source/approval/consent/STOP waits. A single final PostgreSQL reservation must evaluate recipient mapping, exact text/media binding, consent/expiry, terminal and pending STOP, the same policy ID and expiry/category, quiet hours, and exact one-use OWNER approval against one `clock_timestamp()`. Only its returned row may authorize one WAHA attempt; uncertain outcomes remain quarantined.
+- **OWNER decisions required:** STOP before reservation blocks; STOP after reservation applies to later attempts; confirm contact-wide terminal opt-out/no routine re-consent; confirm whether OWNER-attested consent plus an opaque evidence reference is sufficient; choose unknown legacy provenance/NULL versus explicit OWNER attestation for migration 035.
+- **Deployment integration is not safe to merge in either order:** #60 has runtime-role/service-environment isolation but lacks #62's pre-DDL target/seed/sequence guards; #62 has the preflights but still exposes broad `.env.production` to API/WAHA/migrate and does not provision the restricted runtime role. #61's migration-sequence validator is already included in #62. Build one combined candidate.
+- **PR #63 observability needs a route-level regression:** helper tests alone do not prove late outbound-authority details persist in the committed router-decision audit or that the recent-decisions API returns `internet_used`.
+- **Migration allocation:** #48=034, #50=035, #49=036–037, #60=038–040. Unique branch filenames do not prove the integrated chain.
+- Preserve #48's exact view-once source lock/success-only marker with #60's consent/STOP worker fence. PrivateMediaArtifact remains metadata-only; retention OFF.
+- Main already contains #47's Identity Registry delete/search/single-fetch and migration 033 lifecycle/provenance. #50's introduction behavior is source-addressed, but the historical provenance heuristic remains unsafe for pre-upgrade rows.
+
+## Open PR review state
+
+All ten open PRs were re-read. Every review submission is COMMENTED; **none is APPROVED**. Unresolved / total inline threads (active unresolved in parentheses):
+
+- #59 `8878b5c3cf831ea1d39349d51a066846d468819b` (pre-refresh): 4 / 4 (1)
+- #62 `6bf7619656543829641b806b4b5488cdf8ace56e`: 10 / 10 (5)
+- #61 `8a1c1dbf4185db44ff026c811ae9f0db6dc9b72f`: 1 / 1 (1)
+- #63 `4c043c197895c77effba05506b4fff9830357f39`: 1 / 1 (0; outdated)
+- #60 `155430d29414e9d918062ce74d05cbee72edfa6a`: 23 / 25 (10)
+- #50 `2dc4225465c41a0aa47b2a762b7d37bf8e34764a`: 5 / 13 (4)
+- #48 `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca`: 0 / 15 (0)
+- #55 `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c`: 1 / 1 (0; outdated)
+- #57 `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba`: 1 / 1 (0; outdated)
+- #49 `bcd0033e024b177561b8afd41589afe1897ba4de`: 1 / 80 (1)
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.** No production database, deployment, real WhatsApp send, WAHA reconnection, merge, or approval occurred in this update.
+
+---
+
 # Fresh release verification — 2026-11-08 21:16 WAT
 
 This snapshot supersedes the 17:17 WAT status below. It is a live-state recheck, not release certification.
