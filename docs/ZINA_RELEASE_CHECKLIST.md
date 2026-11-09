@@ -1,3 +1,47 @@
+# Fresh release-gate verification — 2026-11-09 06:16 WAT
+
+This snapshot supersedes the 05:44 WAT block below. It records current evidence only and does not authorize real WhatsApp testing.
+
+## Main and review baseline
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main Tests run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded on that exact SHA. Main still applies 001–033 without the newer sequence, schema, and leakage gates.
+- The main branch endpoint reports `protected=false` with no required status checks.
+- Ten open PRs remain; review submissions are `COMMENTED` only. There is **no independent APPROVED review**.
+
+## Current release gates
+
+| Gate | Current evidence | Status |
+|---|---|---|
+| P0 consent/dispatch exact-head CI | #60 head `da092894`; run [42562415248](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42562415248) was cancelled during pytest after migrations completed | **NOT VERIFIED** |
+| P0 final quiet-hours boundary regression | Final one-clock reservation is present; deterministic “window begins while a final fence waits” regression is not present in the inspected worker tests | **OPEN** |
+| Contiguous migration numbering | #61 run [42530270167](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530270167) passed on 001–033 | **BRANCH-LOCAL ONLY** |
+| Fresh install 001–040 | No integrated candidate has applied the complete ordered chain | **NOT VERIFIED** |
+| Installed upgrade 033→040 | No integrated upgrade evidence | **NOT VERIFIED** |
+| Second-run no-op/checksum | Not demonstrated for combined 001–040 | **NOT VERIFIED** |
+| Schema audit and DB leakage | #62 run [42530285588](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530285588) and #55 run [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) are green on 001–033 only | **BRANCH-LOCAL ONLY** |
+| Restricted runtime DB role / Compose allowlists | #60 has the restricted runtime role; #62 still injects broad `.env.production` into postgres/API/WAHA/migrate | **INTEGRATION BLOCKED** |
+| View-once + consent worker composition | #48 and #60 contain complementary hooks on separate branches | **CUMULATIVE TEST REQUIRED** |
+| Independent review | No open PR has an APPROVED review; #60 has 23 unresolved threads | **NOT SATISFIED** |
+| Mobile dashboard CRUD / complete observability | #63 improves decision audit and internet-used visibility; broader management remains incomplete | **INCOMPLETE** |
+| Controlled staged test plan | No integrated release candidate has passed the above gates | **NOT READY** |
+
+## Migration and deployment order
+
+Proposed unique allocation is **#48 → 034, #50 → 035, #49 → 036–037, #60 → 038–040**. The former duplicate-034 collision is resolved in branch allocation only; fresh 001–040 and installed 033→040 remain unproven.
+
+The integration candidate must retain #61's contiguous migration validator, #62's target/seed/libpq preflights, #55's schema-qualified leakage audit, and #57's local-seed policy while preserving #60's API-only restricted runtime DB URL, migration-only owner credentials, and WAHA-only environment allowlist. #62's current Compose still mounts `.env.production` into all four services; do not merge it unchanged after #60.
+
+## Human decisions still required
+
+1. Accept the STOP final-reservation boundary (a STOP after the snapshot may lose one already-reserved attempt) or request a stronger protocol.
+2. Decide whether OWNER attestation plus a bounded evidence reference is sufficient consent evidence, or require verifiable contact-originated evidence.
+3. Choose a reliable legacy Identity Registry provenance/backfill rule; timestamp equality cannot reconstruct rows already touched by old reads.
+4. Confirm the assistant/OWNER-only generic introduction; project facts remain in their own Identity Registry entries.
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Fresh release-gate verification — 2026-11-09 05:44 WAT
 
 This snapshot supersedes the 2026-11-08 23:31 WAT overlay below. It records current evidence only; it does not authorize real WhatsApp testing.
