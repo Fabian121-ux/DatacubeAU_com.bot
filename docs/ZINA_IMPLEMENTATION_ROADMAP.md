@@ -1,3 +1,56 @@
+# Fresh engineering verification delta — 2026-11-09 06:16 WAT
+
+This snapshot supersedes the 05:44 WAT snapshot below. It records the current repository/PR state and is **not** release certification.
+
+## Main, CI, and review governance
+
+- `main` is still `5aadd725ed9da08a5eb84eb42b64f0f45f231c79` (last commit 2026-09-08 11:09:59Z). The latest main Tests run verified here is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), successful on that exact SHA. Main's workflow still applies migrations 001–033 and does not run the newer sequence preflight, integrated schema audit, or post-test leakage gate.
+- The live branch endpoint reports `protected=false` and no required status checks for `main`. Do not rely on branch protection to prevent a bypass.
+- Review submissions on all ten open PRs are `COMMENTED`; **no PR has an APPROVED review**.
+- Latest run on the P0 PR #60 exact head is [42562415248](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42562415248), now **cancelled** during the pytest step after the SQL migration step completed. It is not a pass. Do not carry forward the 05:44 WAT “in progress” status.
+
+## Exact open-PR snapshot
+
+| PR | Exact head | Latest exact-head Tests evidence | Unresolved / total inline threads | Current state |
+|---|---|---|---:|---|
+| [#48](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/48) | `3acacbfe14eabd7e279dfc720b4a46ca71f4f7ca` | [40158094566 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40158094566) | 0 / 15 | Migration 034; metadata/observation wiring only; retention OFF |
+| [#49](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/49) | `bcd0033e024b177561b8afd41589afe1897ba4de` | [39920982545 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/39920982545) | 1 / 80 | Migrations 036–037; message-library foundation only, not live producer/selection/dashboard integration |
+| [#50](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/50) | `2dc4225465c41a0aa47b2a762b7d37bf8e34764a` | [42085040529 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42085040529) | 5 / 13 | Migration 035; identity lifecycle fixes; legacy-default provenance remains unresolved |
+| [#55](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/55) | `b5cb5ff4691b2b9caa293c95e4d562daa8e0e55c` | [41713366314 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) | 1 / 1 | DB-leakage audit gate; branch-local 001–033 evidence |
+| [#57](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/57) | `d831ce4e3dd7e56f38d8563dc63abc44f8c37bba` | [40169146406 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/40169146406) | 1 / 1 | Local fixture seed opt-in; branch-local 001–033 evidence |
+| [#59](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/59) | `5fc0c1575589b5b89cb3dda82a0b49f6f33820a5` before this refresh | Docs-only; `[skip ci]`; no exact-head CI claimed | 4 / 4 | Verification-doc refresh only |
+| [#60](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60) | `da092894413fb939d0c9c5febee6e639fde2ed0f` | [42562415248 cancelled](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42562415248) | 23 / 25 | P0 contact-consent/dispatch reservation; migrations 038–040; exact-head pytest not verified |
+| [#61](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/61) | `84d781b6b607e5e09fea2890e38ce746ed78ba09` | [42530270167 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530270167) | 1 / 1 | Contiguous migration-numbering preflight; tested against 001–033 only |
+| [#62](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/62) | `1fd70c13db57786182ff8311dc7daff7f898e133` | [42530285588 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530285588) | 10 / 10 | Seed/target/schema/leakage hardening; tested against 001–033 only |
+| [#63](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/63) | `2ad30777904028a82f3f08f1b3c23a3e04216150` | [42530179319 success](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530179319) | 1 / 1 | Router-decision audit persistence and internet-used observability; 001–033 only |
+
+Thread totals include resolved/outdated threads; unresolved counts are the current API state. The green runs above are branch-local evidence, not integrated release proof.
+
+## Migration and deployment integration
+
+- The former duplicate-034 allocation is now unique across active feature branches: **#48 = 034; #50 = 035; #49 = 036–037; #60 = 038–040**. This resolves the numbering collision in branch allocation only; no combined 001–040 execution has been demonstrated.
+- #61 adds contiguous numbering validation. #62 adds target/seed/libpq preflights, but its current `docker-compose.yml` still mounts broad `.env.production` into postgres, API, WAHA, and migrate. #60 has service-specific environment allowlists and the restricted runtime API DB role, but does not carry #62's complete target/seed/sequence preflights. Integrate these contracts rather than merging either branch unchanged.
+- Preserve #55's public-schema-qualified leakage audit and #57's seed policy. The latest #62 green run applied only 001–033; it does not prove 034–040 or an installed upgrade.
+- Required combined proof remains: fresh PostgreSQL 16 install 001–040; representative installed 033→040 upgrade; second-run checksum/no-op; combined schema audit; runtime-role privilege checks; zero ORM/raw-table leakage; and the full P0 mock-WAHA adversarial matrix.
+
+## P0 exact-head review delta
+
+- PR #60 head `da092894413fb939d0c9c5febee6e639fde2ed0f` now contains a single final dispatch-reservation query using a materialized PostgreSQL `clock_timestamp()` after the source, approval, consent, mapping, policy, and safety fences. It checks current mapping, consent provenance/expiry, terminal and pending opt-out, exact policy ID/expiry, and quiet-hours; the worker derives the quiet-hours decision from that same timestamp before the one transport call.
+- A fresh review reply was posted on [the existing quiet-hours thread](https://github.com/Fabian121-ux/DatacubeAU_com.bot/pull/60#discussion_r4509667891): the source implementation is present, but a deterministic regression that holds a final fence until quiet-hours begins is still missing. Exact-head CI is cancelled, so this behavior is not verified by a passing run.
+- **OWNER decision required:** the current STOP linearization treats the final reservation snapshot as the in-flight boundary. A STOP visible in that snapshot blocks; a STOP committed after the snapshot may not recall the already-reserved single attempt, but blocks subsequent attempts. Accept this one-attempt boundary or require a different reservation/transport protocol.
+- Consent evidence policy also remains a human decision: whether an OWNER attestation plus bounded evidence reference is sufficient, or contact-originated evidence must be verifiable. Do not invent that policy.
+
+## Other architectural blockers
+
+- PR #50 migration 035 still relies on `updated_at = created_at` to identify legacy defaults. That cannot reliably recover system-seeded rows already touched by the old scored-read path; choose a reliable provenance/backfill rule before merge.
+- PR #49 remains only the Outbound Message Library foundation. Do not integrate it into live producers until P0 and migration/deployment reconciliation are complete.
+- PR #48 is metadata-only; private bytes are absent and retention remains OFF. Its view-once source-lock/returned-marker hooks must be composed with #60's consent/STOP/approval fences in one worker before any release claim.
+- PR #63 has one unresolved (outdated) review thread; its branch-local success does not establish integrated audit correctness or broader dashboard completeness.
+
+No local test suite, PostgreSQL migration execution, production deployment, or live WAHA operation was run by this documentation refresh. **Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Fresh engineering verification delta — 2026-11-09 05:44 WAT
 
 This snapshot supersedes the 2026-11-08 23:31 WAT overlay below. It is an evidence snapshot, not release certification.
