@@ -1,3 +1,46 @@
+# Fresh release-gate verification — 2026-11-09 07:15 WAT
+
+This snapshot supersedes the 06:16 WAT block below. It records current evidence only and does not authorize real WhatsApp testing.
+
+## Current release gates
+
+| Gate | Current evidence | Status |
+|---|---|---|
+| Main exact-head CI | Main `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; run [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390) succeeded; migrations 001–033 only | **MAIN BASELINE ONLY** |
+| #60 P0 exact-head CI | Head `da092894413fb939d0c9c5febee6e639fde2ed0f`; run [42562415248](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42562415248) cancelled at the 20-minute job timeout during pytest after SQL migrations | **NOT VERIFIED** |
+| #60 final quiet-hours boundary regression | One-clock final reservation exists; no deterministic test yet crosses quiet-hours start while a final fence waits | **OPEN** |
+| #60 STOP / ingress diagnostic | Last visible completed pytest line was the direct-chat parameter of the claimed-STOP race at 54%; no later progress/traceback/fault dump. Isolate the LID parameter first without weakening the STOP receipt veto | **DIAGNOSIS OPEN** |
+| #60 view-once worker fence | Exact source row lock before dispatch and success-only returned marker are now present on #60 | **SOURCE PRESENT; COMBINED TESTS REQUIRED** |
+| #48 PrivateMediaArtifact metadata wiring | Still separate from #60 worker source/return fence; worker has no PrivateMediaArtifactService call | **INTEGRATION OPEN** |
+| Contiguous migration preflight | #61 run [42530270167](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530270167) passed on 001–033; #62 run [42530285588](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530285588) passed on 001–033 | **BRANCH-LOCAL ONLY** |
+| #61 / #62 ancestry | #62 is 37 ahead / 1 behind #61 from merge base `8a1c1db`; both workflows currently contain the same database-free validator command | **RECONCILE BEFORE MERGE** |
+| Fresh install 001–040 | No integrated candidate has applied the complete ordered chain | **NOT VERIFIED** |
+| Installed upgrade 033→040 | No integrated upgrade evidence | **NOT VERIFIED** |
+| Second-run no-op/checksum | Not demonstrated for combined 001–040 | **NOT VERIFIED** |
+| Schema audit and DB leakage | #62 passed these gates on 001–033 only; not integrated with 034–040 | **BRANCH-LOCAL ONLY** |
+| Restricted runtime DB role / Compose allowlists | #60 has the restricted runtime role; #62 still mounts broad `.env.production` into postgres/API/WAHA/migrate | **INTEGRATION BLOCKED** |
+| Independent review | Ten PRs remain open; every submitted review is COMMENTED; no APPROVED review; unresolved thread counts have increased on #48/#49/#50/#60/#62 | **NOT SATISFIED** |
+| Controlled staged test plan | Integrated P0, migration, deployment and independent-review gates remain open | **NOT READY** |
+
+## Exact migration allocation
+
+Unique branch allocation remains #48 → 034, #50 → 035, #49 → 036–037, #60 → 038–040. The old duplicate-034 collision is resolved only at the filename-allocation level. No integrated 001–040 fresh/upgrade/no-op/schema/leakage/runtime-role proof exists.
+
+## Immediate next safe engineering step
+
+1. Isolate the timed-out #60 parametrized STOP ingress test in disposable PostgreSQL, starting with the unmapped-LID parameter; preserve the committed receipt and final pending-STOP veto.
+2. Add a deterministic final-reservation quiet-hours boundary regression with a zero-send assertion and outside-window exactly-once control.
+3. Re-run exact #60 head; record full-suite/coverage and migration scope separately.
+4. Reconcile #48 metadata observation/return writes with #60's now-present view-once source lock and success-only returned marker in the single worker.
+5. Reconcile #61/#62 ancestry and preserve #60 service-specific Compose allowlists while retaining #62 preflight/schema/leakage gates.
+6. Run integrated fresh 001–040 and installed 033→040 upgrade/no-op/schema/leakage/runtime-role matrix on disposable PostgreSQL.
+
+**Human decisions still required:** STOP linearization (a STOP after the final reservation snapshot may lose one already-reserved attempt); the minimum acceptable OWNER-attested consent evidence; and conservative legacy Identity Registry provenance for migration 035.
+
+**Private-media retention: OFF. Controlled-test readiness: NOT TEST READY. REAL WAHA ACTIONS: NONE.**
+
+---
+
 # Fresh release-gate verification — 2026-11-09 06:16 WAT
 
 This snapshot supersedes the 05:44 WAT block below. It records current evidence only and does not authorize real WhatsApp testing.
