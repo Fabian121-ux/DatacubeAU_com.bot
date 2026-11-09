@@ -153,8 +153,8 @@ Files added for VPS deployment:
 
 1. Copy your production env template to `.env.production` and review it before deployment.
 2. Set `WAHA_IMAGE` to the WAHA Core image/tag you actually run.
-3. Reuse the current WAHA credentials from your existing WAHA host config for `WAHA_API_KEY`, `WAHA_DASHBOARD_PASSWORD`, and `WHATSAPP_SWAGGER_PASSWORD`.
-4. Set strong values for `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, and `ADMIN_API_TOKEN`.
+3. Reuse the current WAHA credentials from your existing WAHA host config for `WAHA_API_KEY`, `WAHA_DASHBOARD_USERNAME`, `WAHA_DASHBOARD_PASSWORD`, `WHATSAPP_SWAGGER_USERNAME`, and `WHATSAPP_SWAGGER_PASSWORD`.
+4. Set strong values for `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `ADMIN_API_TOKEN`, and `ZINA_RUNTIME_DB_PASSWORD`. The runtime password must match the password component of `DATABASE_URL_RUNTIME` (URL-encode reserved characters in the URL).
 5. Keep the internal Docker URLs and webhook subscriptions exactly as follows:
 
 ```text
@@ -238,10 +238,14 @@ ENVIRONMENT=production
 API_HOST=0.0.0.0
 API_PORT=8080
 POSTGRES_USER=datacube
-POSTGRES_PASSWORD=<strong-db-password>
+POSTGRES_PASSWORD=<strong-migration-owner-password>
 POSTGRES_DB=datacube_bot
-DATABASE_URL=postgresql+asyncpg://datacube:<strong-db-password>@postgres:5432/datacube_bot
-DATABASE_URL_SYNC=postgresql://datacube:<strong-db-password>@postgres:5432/datacube_bot
+DATABASE_URL=postgresql+asyncpg://datacube:<url-encoded-migration-owner-password>@postgres:5432/datacube_bot
+DATABASE_URL_SYNC=postgresql://datacube:<url-encoded-migration-owner-password>@postgres:5432/datacube_bot
+DATABASE_URL_RUNTIME=postgresql+asyncpg://zina_runtime:<url-encoded-runtime-password>@postgres:5432/datacube_bot
+ZINA_RUNTIME_DB_PASSWORD=<same-raw-runtime-password>
+ZINA_RUNTIME_DB_ROLE=zina_runtime
+
 WAHA_SERVICE_URL=http://waha:3000
 WAHA_API_KEY=<reuse-the-value-from-your-current-waha-.env>
 WAHA_SESSION_NAME=default
@@ -259,6 +263,8 @@ ADMIN_COOKIE_SECURE=false
 ADMIN_API_TOKEN=<strong-admin-token-for-scripts>
 LOCAL_TEST_DM_WHATSAPP_ID=<your-test-number>@c.us
 ```
+
+The migration service provisions the zina_runtime login as a separate NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOINHERIT role. The API receives only DATABASE_URL_RUNTIME; the migration service alone receives migration-owner URLs and the runtime-role bootstrap password; WAHA receives only its transport allowlist. The runtime role receives normal application DML/sequence access but no ownership or role membership. On contact_messaging_consent_events, it receives SELECT/INSERT only—no UPDATE, DELETE, TRUNCATE, REFERENCES, or TRIGGER privilege—so it cannot disable append-only guards. The migration runner validates that all three URLs target the same database endpoint and that the runtime username/password match the bootstrap settings. Rotate the runtime password by changing DATABASE_URL_RUNTIME (URL-encoded password) and ZINA_RUNTIME_DB_PASSWORD together before the next deployment.
 
 `deploy/scripts/deploy.sh` validates these webhook values and fails closed if the production env still points at the legacy `/webhooks/waha` route or omits `message.revoked`.
 

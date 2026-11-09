@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass
+import json
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 
 
 @dataclass(slots=True, frozen=True)
@@ -14,6 +17,9 @@ class InboundReceipt:
     session_name: str | None
     chat_id: str | None
     message_id: str | None
+    opt_out_intent: bool = False
+    sender_identity_ids: tuple[str, ...] = ()
+    sender_contact_ids: tuple[str, ...] = ()
 
 
 class InboundClaimLostError(RuntimeError):
@@ -59,6 +65,13 @@ class InboundIdempotencyService:
         _claim_tokens.set(updated)
 
     async def claim(self, receipt: InboundReceipt) -> bool:
+        # Keep STOP visibility ahead of all mapping/contact locks. Outbound consent
+        # preflight can hold those locks for the duration of a send; acquiring them
+        # here would let that worker reach its final veto while this STOP is invisible.
+        # The durable claim below is therefore committed first; the shared dispatch
+        # boundary is acquired afterward to serialize STOP processing with a dispatch
+        # that has already won its final pre-transport boundary.
+
         claim_token = str(uuid4())
         result = await self.session.execute(
             text(
@@ -68,6 +81,9 @@ class InboundIdempotencyService:
                     session_name,
                     chat_id,
                     message_id,
+                    sender_identity_ids,
+                    sender_contact_ids,
+                    opt_out_intent,
                     status,
                     claim_token,
                     updated_at
@@ -77,6 +93,9 @@ class InboundIdempotencyService:
                     :session_name,
                     :chat_id,
                     :message_id,
+                    CAST(:sender_identity_ids AS jsonb),
+                    CAST(:sender_contact_ids AS jsonb),
+                    :opt_out_intent,
                     'processing',
                     :claim_token,
                     NOW()
@@ -85,12 +104,35 @@ class InboundIdempotencyService:
                 SET session_name = EXCLUDED.session_name,
                     chat_id = EXCLUDED.chat_id,
                     message_id = EXCLUDED.message_id,
+                    sender_identity_ids = (
+                        SELECT COALESCE(jsonb_agg(DISTINCT identity_id), '[]'::jsonb)
+                        FROM jsonb_array_elements(
+                            COALESCE(inbound_webhook_receipts.sender_identity_ids, '[]'::jsonb)
+                            || EXCLUDED.sender_identity_ids
+                        ) AS identities(identity_id)
+                    ),
+                    sender_contact_ids = (
+                        SELECT COALESCE(jsonb_agg(DISTINCT contact_id), '[]'::jsonb)
+                        FROM jsonb_array_elements(
+                            COALESCE(inbound_webhook_receipts.sender_contact_ids, '[]'::jsonb)
+                            || EXCLUDED.sender_contact_ids
+                        ) AS identities(contact_id)
+                    ),
+                    opt_out_intent = inbound_webhook_receipts.opt_out_intent OR EXCLUDED.opt_out_intent,
                     status = 'processing',
                     claim_token = EXCLUDED.claim_token,
                     updated_at = NOW()
-                WHERE inbound_webhook_receipts.status = 'processing'
-                  AND inbound_webhook_receipts.updated_at
-                      < NOW() - (:lease_seconds * INTERVAL '1 second')
+                WHERE (
+                    (
+                        inbound_webhook_receipts.status = 'processing'
+                        AND inbound_webhook_receipts.updated_at
+                            < NOW() - (:lease_seconds * INTERVAL '1 second')
+                    )
+                    OR (
+                        EXCLUDED.opt_out_intent IS TRUE
+                        AND inbound_webhook_receipts.opt_out_intent IS NOT TRUE
+                    )
+                )
                 RETURNING claim_token
                 """
             ),
@@ -99,15 +141,56 @@ class InboundIdempotencyService:
                 "session_name": receipt.session_name,
                 "chat_id": receipt.chat_id,
                 "message_id": receipt.message_id,
+                "sender_identity_ids": json.dumps(list(receipt.sender_identity_ids)),
+                "sender_contact_ids": json.dumps(list(receipt.sender_contact_ids)),
+                "opt_out_intent": bool(receipt.opt_out_intent),
                 "claim_token": claim_token,
                 "lease_seconds": self.PROCESSING_LEASE_SECONDS,
             },
         )
         returned_token = result.scalar_one_or_none()
         claimed = returned_token is not None
+        if not claimed and receipt.opt_out_intent:
+            # A duplicate STOP must not acquire a second routing lease, but it may
+            # enrich a still-pending receipt if a Contact became resolvable after the
+            # first claim. Keep claim_token/status/updated_at untouched so this cannot
+            # steal the active worker or extend its processing lease.
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE inbound_webhook_receipts
+                    SET sender_identity_ids = (
+                            SELECT COALESCE(jsonb_agg(DISTINCT identity_id), '[]'::jsonb)
+                            FROM jsonb_array_elements(
+                                COALESCE(sender_identity_ids, '[]'::jsonb)
+                                || CAST(:sender_identity_ids AS jsonb)
+                            ) AS identities(identity_id)
+                        ),
+                        sender_contact_ids = (
+                            SELECT COALESCE(jsonb_agg(DISTINCT contact_id), '[]'::jsonb)
+                            FROM jsonb_array_elements(
+                                COALESCE(sender_contact_ids, '[]'::jsonb)
+                                || CAST(:sender_contact_ids AS jsonb)
+                            ) AS identities(contact_id)
+                        ),
+                        opt_out_intent = TRUE
+                    WHERE event_key = :event_key
+                      AND status = 'processing'
+                    """
+                ),
+                {
+                    "event_key": receipt.event_key,
+                    "sender_identity_ids": json.dumps(list(receipt.sender_identity_ids)),
+                    "sender_contact_ids": json.dumps(list(receipt.sender_contact_ids)),
+                },
+            )
         await self.session.commit()
         if claimed:
             self._remember_token(receipt.event_key, str(returned_token))
+            if receipt.opt_out_intent:
+                await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+                    self.session, receipt.chat_id or ""
+                )
         return claimed
 
     async def mark_completed(self, event_key: str, *, commit: bool = True) -> None:
@@ -160,9 +243,31 @@ class InboundIdempotencyService:
             self._forget_token(event_key, claim_token)
 
     async def release_failed(self, event_key: str) -> None:
-        """Release only this worker's failed claim so WAHA may safely retry."""
+        """Release a failed claim without discarding an accepted opt-out intent.
+
+        A failed opt-out receipt stays in ``processing`` with an expired lease: the
+        next WAHA retry can reclaim it immediately, while the final outbound fence
+        continues to deny delivery if no retry arrives or routing keeps failing.
+        """
         claim_token = self._token_for(event_key)
         if claim_token:
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE inbound_webhook_receipts
+                    SET updated_at = NOW() - ((:lease_seconds + 1) * INTERVAL '1 second')
+                    WHERE event_key = :event_key
+                      AND claim_token = :claim_token
+                      AND status = 'processing'
+                      AND opt_out_intent IS TRUE
+                    """
+                ),
+                {
+                    "event_key": event_key,
+                    "claim_token": claim_token,
+                    "lease_seconds": self.PROCESSING_LEASE_SECONDS,
+                },
+            )
             await self.session.execute(
                 text(
                     """
@@ -170,6 +275,7 @@ class InboundIdempotencyService:
                     WHERE event_key = :event_key
                       AND claim_token = :claim_token
                       AND status = 'processing'
+                      AND opt_out_intent IS NOT TRUE
                     """
                 ),
                 {"event_key": event_key, "claim_token": claim_token},

@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.utils.time import utcnow
 
 
@@ -67,6 +68,12 @@ class OwnerContactAutomationPolicyService:
         if not created_by:
             return ContactAutomationPolicyResult(False, None, "owner identity required")
 
+        # Serialize policy creation/update with the worker's final delivery-window
+        # check, including when no policy row exists for SELECT FOR UPDATE to lock.
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            durable_chat_id,
+        )
         result = await self.session.execute(
             text(
                 """
@@ -81,7 +88,7 @@ class OwnerContactAutomationPolicyService:
                     CAST(:prohibited_categories AS jsonb),
                     CAST(:approval_required_categories AS jsonb),
                     CAST(:quiet_hours_json AS jsonb), :expires_at,
-                    :created_by, CASE WHEN :enabled THEN NULL ELSE :instant END, :instant
+                    :created_by, CASE WHEN :enabled THEN NULL::timestamptz ELSE CAST(:instant AS timestamptz) END, CAST(:instant AS timestamptz)
                 )
                 ON CONFLICT (contact_id, exact_chat_id) DO UPDATE SET
                     enabled = EXCLUDED.enabled,
@@ -93,8 +100,8 @@ class OwnerContactAutomationPolicyService:
                     quiet_hours_json = EXCLUDED.quiet_hours_json,
                     expires_at = EXCLUDED.expires_at,
                     created_by = EXCLUDED.created_by,
-                    disabled_at = CASE WHEN EXCLUDED.enabled THEN NULL ELSE :instant END,
-                    updated_at = :instant
+                    disabled_at = CASE WHEN EXCLUDED.enabled THEN NULL::timestamptz ELSE CAST(:instant AS timestamptz) END,
+                    updated_at = CAST(:instant AS timestamptz)
                 RETURNING id
                 """
             ),
@@ -136,6 +143,10 @@ class OwnerContactAutomationPolicyService:
         if not (owner_identity or "").strip():
             return ContactAutomationPolicyResult(False, None, "owner identity required")
 
+        await ContactMessagingConsentService.lock_exact_chat_mapping(
+            self.session,
+            durable_chat_id,
+        )
         instant = utcnow()
         result = await self.session.execute(
             text(

@@ -5,7 +5,7 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 
 from app.config import settings
 from app.db import SessionLocal
@@ -14,6 +14,7 @@ from app.models.schema import AuditLog, OutboundMessage, WahaOutage
 from app.services.conversation_open_loop_service import ConversationOpenLoopService
 from app.services.conversation_takeover_service import ConversationTakeoverService
 from app.services.logging_service import log_event
+from app.services.contact_messaging_consent_service import ContactMessagingConsentService
 from app.services.outbound_authorization_service import OutboundAuthorizationService
 from app.services.outbound_media_dispatch_service import (
     MediaDispatchDecision,
@@ -153,7 +154,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         )
         messages = (await session.execute(stmt)).scalars().all()
         due_messages: list[OutboundMessage] = []
-        approval_ids: dict[int, int] = {}
         authority = OutboundAuthorizationService(session)
         safety = OutboundSafetyLimitService(session)
         for message in messages:
@@ -167,7 +167,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     commit=False,
                 )
                 continue
-            allowed, reason, approval_id = await _delivery_authorized(session, authority, message)
+            allowed, reason, _approval_id, _authority_type, _policy_id = await _delivery_authorized(session, authority, message)
             if not allowed:
                 await _mark_delivery_blocked(session, message, reason=reason)
                 continue
@@ -176,8 +176,6 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 if not safety_decision.allowed:
                     await _mark_delivery_blocked(session, message, reason=safety_decision.reason)
                     continue
-            if approval_id is not None:
-                approval_ids[int(message.id)] = approval_id
             message.status = "sending"
             message.updated_at = now
             due_messages.append(message)
@@ -186,6 +184,79 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
         processed = 0
         for message in due_messages:
             processed += 1
+            # The initial batch check prevents unauthorized rows from being claimed.
+            # Re-lock and refresh each row after that batch commit so a payload, approval,
+            # policy, or scheduled-action mutation between claim and dispatch cannot use
+            # the stale in-memory object to reach WAHA.
+            await session.refresh(message, with_for_update=True)
+            if message.status != "sending":
+                await session.rollback()
+                continue
+            final_allowed, final_reason, final_approval_id, final_authority_type, final_policy_id = await _delivery_authorized(
+                session,
+                OutboundAuthorizationService(session),
+                message,
+                lock_chat_mapping=True,
+            )
+            if not final_allowed:
+                await _mark_delivery_blocked(
+                    session,
+                    message,
+                    reason=f"final outbound authority recheck failed: {final_reason}",
+                )
+                await session.commit()
+                continue
+            if (
+                final_authority_type == "contact_policy" and final_policy_id is None
+            ) or (
+                final_authority_type == "owner_approval" and final_approval_id is None
+            ):
+                await _mark_delivery_blocked(
+                    session,
+                    message,
+                    reason="final outbound authority is missing its exact policy/approval ID",
+                )
+                await session.commit()
+                continue
+
+            # This is the final external-contact consent fence, after the queue batch has
+            # been committed as "sending". The consent service materializes an UNKNOWN
+            # row if absent, then SELECTs it FOR UPDATE. Keep this transaction open through
+            # the single WAHA attempt so grant/revoke/opt-out serialize on the same key.
+            # OWNER self-DM remains on its existing exact-recipient + payload binding.
+            if not _is_owner_chat_id(message.chat_id):
+                consent = await ContactMessagingConsentService(session).authorize_outbound_queue_message(
+                    message,
+                )
+                if not consent.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"contact consent denied: {consent.reason}",
+                    )
+                    await session.commit()
+                    continue
+
+            # Revalidate after the final authority, policy, Contact, and consent locks.
+            # authorize() acquires the global transaction-scoped reservation lock, which
+            # remains held through the single transport attempt and durable outcome.
+            # This closes the gap where a row waits >1 minute at a final fence and its
+            # timestamp-based reservation would otherwise age out before dispatch.
+            if not _is_owner_chat_id(message.chat_id):
+                final_safety = await OutboundSafetyLimitService(session).authorize(
+                    message,
+                    now=utcnow(),
+                    contact_id=consent.contact_id,
+                )
+                if not final_safety.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final outbound safety recheck failed: {final_safety.reason}",
+                    )
+                    await session.commit()
+                    continue
+
             dispatch: MediaDispatchDecision | None = None
             if message.media_url:
                 # Runs only after the final authorization fence and safety limits have
@@ -196,6 +267,229 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(session, message, reason=dispatch.reason)
                     await session.commit()
                     continue
+            # Acquire the exact-chat mapping/Contact locks before the remaining
+            # final fences. Ingress commits a STOP receipt before it waits on these
+            # locks, so the final database-time reservation below sees a STOP that
+            # arrives while policy, approval, source, or consent checks are waiting.
+            if not _is_owner_chat_id(message.chat_id):
+                await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
+                    session, message.chat_id
+                )
+
+                # Quiet hours are a delivery restriction, not an authority source.
+                # Apply the same final check to exact approvals and ScheduledActions;
+                # keep its advisory/row locks through the one transport attempt.
+                delivery_window = await OutboundAuthorizationService(
+                    session
+                ).check_contact_delivery_window(
+                    contact_id=consent.contact_id,
+                    exact_chat_id=message.chat_id,
+                )
+                if not delivery_window.allowed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final contact delivery window denied: {delivery_window.reason}",
+                    )
+                    await session.commit()
+                    continue
+
+                # Revalidate the original authority after every potentially blocking
+                # final fence. A contact-policy row can expire while consent, safety,
+                # or STOP locks are being acquired; absence of an active policy is not
+                # authority for a row whose only authority was that policy. Exact
+                # OWNER approvals and locked ScheduledActions remain independently
+                # valid and are re-proved by this same authoritative helper.
+                rechecked_allowed, rechecked_reason, rechecked_approval_id, rechecked_authority_type, rechecked_policy_id = await _delivery_authorized(
+                    session,
+                    OutboundAuthorizationService(session),
+                    message,
+                    lock_chat_mapping=True,
+                )
+                authority_changed = rechecked_authority_type != final_authority_type
+                if final_authority_type == "owner_approval":
+                    authority_changed = authority_changed or rechecked_approval_id != final_approval_id
+                elif final_authority_type == "contact_policy":
+                    authority_changed = authority_changed or rechecked_policy_id != final_policy_id
+                if not rechecked_allowed or authority_changed:
+                    reason = (
+                        f"final outbound authority recheck failed: {rechecked_reason}"
+                        if not rechecked_allowed
+                        else "final outbound authority source or exact policy/approval ID changed before dispatch"
+                    )
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=reason,
+                    )
+                    await session.commit()
+                    continue
+                final_approval_id = rechecked_approval_id
+
+            # A queued OWNER view-once return must still reference an active, exact source.
+            # Lock that authoritative row before reserving the one-use approval and keep
+            # the lock through the single WAHA attempt so OWNER deletion cannot race send.
+            source_available, source_reason = await _lock_owner_view_once_source(
+                session, message
+            )
+            if not source_available:
+                await _mark_delivery_blocked(
+                    session, message, reason=source_reason
+                )
+                await session.commit()
+                continue
+
+            # Reserve an exact one-use OWNER approval only after recipient, content,
+            # safety, delivery-window, final authority, and source checks. The single
+            # database-time dispatch reservation below then rechecks consent, policy
+            # expiry, quiet hours, and STOP state; a denied attempt never replays the
+            # consumed approval.
+            approval_id = final_approval_id
+            if approval_id is not None:
+                consumed = await OutboundAuthorizationService(session).consume_approval(
+                    approval_id,
+                    message=message,
+                )
+                if not consumed:
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason="final exact one-use OWNER approval reservation failed: approval expired, was consumed, or its queue binding changed",
+                    )
+                    await session.commit()
+                    continue
+
+            # This one PostgreSQL statement is the final external-contact fence. It
+            # rechecks mapping, consent expiry/provenance, terminal and pending STOP,
+            # the exact contact-policy ID/expiry, and quiet-hours time against one
+            # materialized database clock after every potentially blocking lock.
+            dispatch_reservation = None
+            if not _is_owner_chat_id(message.chat_id):
+                dispatch_reservation = await ContactMessagingConsentService(
+                    session
+                ).reserve_final_dispatch_attempt(
+                    consent.contact_id,
+                    message.chat_id,
+                    authority_type=final_authority_type,
+                    policy_id=final_policy_id,
+                )
+                if not dispatch_reservation.allowed:
+                    if approval_id is not None:
+                        session.add(
+                            AuditLog(
+                                action="outbound_approval_consumed_dispatch_blocked",
+                                entity_type="outbound_queue",
+                                entity_id=str(message.id),
+                                details_json={
+                                    "chat_id": message.chat_id,
+                                    "approval_id": approval_id,
+                                    "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                                    "reason": dispatch_reservation.reason,
+                                    "checked_at": (
+                                        dispatch_reservation.checked_at.isoformat()
+                                        if dispatch_reservation.checked_at is not None
+                                        else None
+                                    ),
+                                    "delivery_attempt_reserved": False,
+                                },
+                            )
+                        )
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=(
+                            "final contact dispatch reservation denied: "
+                            f"{dispatch_reservation.reason}"
+                        ),
+                    )
+                    await session.commit()
+                    continue
+
+                quiet_active = (
+                    OutboundAuthorizationService._quiet_hours_active(
+                        dispatch_reservation.quiet_hours_json,
+                        dispatch_reservation.checked_at,
+                    )
+                    if dispatch_reservation.checked_at is not None
+                    else None
+                )
+                if quiet_active is None or quiet_active:
+                    quiet_reason = (
+                        "contact policy quiet-hours configuration invalid"
+                        if quiet_active is None
+                        else "contact policy quiet hours active"
+                    )
+                    if approval_id is not None:
+                        session.add(
+                            AuditLog(
+                                action="outbound_approval_consumed_dispatch_blocked",
+                                entity_type="outbound_queue",
+                                entity_id=str(message.id),
+                                details_json={
+                                    "chat_id": message.chat_id,
+                                    "approval_id": approval_id,
+                                    "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                                    "reason": quiet_reason,
+                                    "checked_at": (
+                                        dispatch_reservation.checked_at.isoformat()
+                                        if dispatch_reservation.checked_at is not None
+                                        else None
+                                    ),
+                                    "delivery_attempt_reserved": False,
+                                },
+                            )
+                        )
+                    await _mark_delivery_blocked(
+                        session,
+                        message,
+                        reason=f"final contact delivery window denied: {quiet_reason}",
+                    )
+                    await session.commit()
+                    continue
+
+                session.add(
+                    AuditLog(
+                        action="external_dispatch_reserved",
+                        entity_type="outbound_queue",
+                        entity_id=str(message.id),
+                        details_json={
+                            "chat_id": message.chat_id,
+                            "authority_type": final_authority_type,
+                            "policy_id": final_policy_id,
+                            "approval_id": approval_id,
+                            "consent_id": dispatch_reservation.consent_id,
+                            "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                            "checked_at": (
+                                dispatch_reservation.checked_at.isoformat()
+                                if dispatch_reservation.checked_at is not None
+                                else None
+                            ),
+                            "delivery_attempt_reserved": True,
+                        },
+                    )
+                )
+
+            if approval_id is not None:
+                session.add(
+                    AuditLog(
+                        action="outbound_approval_consumed_for_dispatch",
+                        entity_type="outbound_queue",
+                        entity_id=str(message.id),
+                        details_json={
+                            "chat_id": message.chat_id,
+                            "approval_id": approval_id,
+                            "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                            "dispatch_reserved_at": (
+                                dispatch_reservation.checked_at.isoformat()
+                                if dispatch_reservation is not None
+                                and dispatch_reservation.checked_at is not None
+                                else None
+                            ),
+                            "delivery_attempt_reserved": True,
+                        },
+                    )
+                )
+
             try:
                 if dispatch is not None:
                     response = await _send_authorized_media(client, message, dispatch.plan)
@@ -208,28 +502,7 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     reason=f"WAHA delivery outcome uncertain; automatic replay blocked: {exc}",
                 )
             else:
-                approval_id = approval_ids.get(int(message.id))
-                if approval_id is not None:
-                    consumed = await OutboundAuthorizationService(session).consume_approval(approval_id)
-                    if not consumed:
-                        session.add(
-                            AuditLog(
-                                action="outbound_approval_consumption_invariant_failed",
-                                entity_type="outbound_queue",
-                                entity_id=str(message.id),
-                                details_json={
-                                    "chat_id": message.chat_id,
-                                    "approval_id": approval_id,
-                                },
-                            )
-                        )
-                        log_event(
-                            logger,
-                            logging.ERROR,
-                            "outbound_approval_consumption_invariant_failed",
-                            queue_id=message.id,
-                            approval_id=approval_id,
-                        )
+                await _mark_owner_view_once_returned(session, message)
                 message.status = "sent"
                 message.error_message = None
                 message.updated_at = utcnow()
@@ -244,6 +517,8 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                             "delivery_snapshot": _delivery_snapshot(message),
                             "waha_response": response,
                             "approval_id": approval_id,
+                            "authority_type": final_authority_type,
+                            "policy_id": final_policy_id,
                         },
                     )
                 )
@@ -299,7 +574,96 @@ async def _send_authorized_media(client: WAHAClient, message: OutboundMessage, p
     raise WahaClientError(f"unsupported outbound media operation: {plan.operation}")
 
 
-async def _delivery_authorized(session, authority: OutboundAuthorizationService, message: OutboundMessage) -> tuple[bool, str, int | None]:
+
+async def _lock_owner_view_once_source(session, message: OutboundMessage) -> tuple[bool, str]:
+    """Hold the exact view-once source row through the one OWNER return attempt."""
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("source") != "owner_view_once":
+        return True, ""
+    source_message_id = metadata.get("source_message_id")
+    if not isinstance(source_message_id, str) or not source_message_id.strip():
+        return False, "owner view-once return missing exact source message id"
+    source_chat_id = metadata.get("source_chat_id")
+    if not isinstance(source_chat_id, str) or not source_chat_id.strip():
+        return False, "owner view-once return missing exact source chat id"
+    command_message_id = metadata.get("command_message_id")
+    if not isinstance(command_message_id, str) or not command_message_id.strip():
+        return False, "owner view-once return missing exact command message id"
+
+    result = await session.execute(
+        text(
+            """
+            SELECT source_message_id, source_chat_id FROM view_once_media_metadata
+            WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+            FOR UPDATE
+            """
+        ),
+        {"source_message_id": source_message_id},
+    )
+    source = result.mappings().one_or_none()
+    if source is None:
+        return False, "view-once source was deleted or is no longer active before dispatch"
+    if str(source["source_chat_id"] or "") != source_chat_id:
+        return False, "view-once source chat does not match authoritative metadata before dispatch"
+    return True, ""
+
+
+async def _mark_owner_view_once_returned(session, message: OutboundMessage) -> None:
+    """Record the return only after WAHA confirms the single transport attempt."""
+    metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if metadata.get("source") != "owner_view_once":
+        return
+    source_message_id = metadata.get("source_message_id")
+    if not isinstance(source_message_id, str) or not source_message_id.strip():
+        log_event(logger, logging.ERROR, "view_once_return_delivery_invariant_failed", queue_id=message.id)
+        return
+    result = await session.execute(
+        text(
+            """
+            UPDATE view_once_media_metadata
+            SET returned_to_owner_at = now(), last_observed_at = now()
+            WHERE source_message_id = :source_message_id AND deleted_at IS NULL
+            """
+        ),
+        {"source_message_id": source_message_id},
+    )
+    if result.rowcount != 1:
+        session.add(
+            AuditLog(
+                action="view_once_return_delivery_invariant_failed",
+                entity_type="outbound_queue",
+                entity_id=str(message.id),
+                details_json={"source_message_id": source_message_id},
+            )
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "view_once_return_delivery_invariant_failed",
+            queue_id=message.id,
+            source_message_id=source_message_id,
+        )
+        return
+    session.add(
+        AuditLog(
+            action="view_once_returned_to_owner",
+            entity_type="view_once_media_metadata",
+            entity_id=source_message_id,
+            details_json={
+                "outbound_queue_id": message.id,
+                "source_message_id": source_message_id,
+            },
+        )
+    )
+
+
+async def _delivery_authorized(
+    session,
+    authority: OutboundAuthorizationService,
+    message: OutboundMessage,
+    *,
+    lock_chat_mapping: bool = False,
+) -> tuple[bool, str, int | None, str | None, int | None]:
     """Apply the final outbound authorization fence against exact durable authority.
 
     Exact configured OWNER self-DM remains allowed. Router-generated external replies
@@ -308,6 +672,8 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
     the action is still enabled and queued. Missing metadata is never itself authority.
     """
     metadata = message.formatting_json if isinstance(message.formatting_json, dict) else {}
+    if "delivery_outcome_uncertain" in metadata:
+        return False, "queue row has an uncertain prior transport outcome; replay denied", None, None, None
     delivery_policy = str(metadata.get("delivery_policy") or "").strip().lower()
 
     if _is_owner_chat_id(message.chat_id):
@@ -320,23 +686,29 @@ async def _delivery_authorized(session, authority: OutboundAuthorizationService,
         # rather than delivered, so a producer that forgets to stamp fails safe instead
         # of silently inheriting unbounded authority from the destination alone.
         if not OutboundAuthorizationService.owner_payload_matches(message):
-            return False, "owner queue row payload is not bound to its authorized content", None
-        return True, "exact configured owner chat with bound payload", None
+            return False, "owner queue row payload is not bound to its authorized content", None, None, None
+        return True, "exact configured owner chat with bound payload", None, "owner_chat", None
 
     if not delivery_policy:
         if await _is_exact_scheduled_action_binding(session, message, metadata):
-            return True, "exact durable scheduled action binding", None
-        return False, "external queue row missing explicit durable outbound authority", None
+            return True, "exact durable scheduled action binding", None, "scheduled_action", None
+        return False, "external queue row missing explicit durable outbound authority", None, None, None
 
     if delivery_policy == "immediate":
-        return False, "legacy external immediate router reply is not durably authorized", None
+        return False, "legacy external immediate router reply is not durably authorized", None, None, None
     if delivery_policy not in {"approval_required", "authorized_external"}:
-        return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None
+        return False, f"unknown router delivery policy: {delivery_policy or 'missing'}", None, None, None
 
-    _context, decision = await authority.authorize_queue_message(message)
+    if lock_chat_mapping:
+        _context, decision = await authority.authorize_queue_message(
+            message,
+            lock_chat_mapping=True,
+        )
+    else:
+        _context, decision = await authority.authorize_queue_message(message)
     if not decision.allowed:
-        return False, decision.reason, None
-    return True, decision.reason, decision.approval_id
+        return False, decision.reason, None, decision.authority_type, decision.policy_id
+    return True, decision.reason, decision.approval_id, decision.authority_type, decision.policy_id
 
 
 async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, metadata: dict[str, Any]) -> bool:
@@ -359,6 +731,11 @@ async def _is_exact_scheduled_action_binding(session, message: OutboundMessage, 
             .where(ScheduledAction.status == "queued")
             .where(ScheduledAction.is_enabled.is_(True))
             .limit(1)
+            # The caller already owns the outbound_queue row lock. Lock the exact
+            # action second and refresh any identity-map copy so OWNER state changes
+            # serialize with this final reservation through transport + outcome commit.
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -422,8 +799,13 @@ async def _mark_delivery_uncertain(
     """Quarantine a row whose external send outcome cannot be proven.
 
     Replaying an uncertain row risks a duplicate real-world message. PostgreSQL keeps
-    the row and evidence for OWNER reconciliation; no retry is scheduled automatically.
+    the row and evidence for OWNER reconciliation; a durable one-way marker blocks
+    both OWNER requeue and the final worker fence from replaying this exact row.
     """
+    # This marker survives restart and is deliberately never cleared by requeue.
+    metadata = dict(message.formatting_json) if isinstance(message.formatting_json, dict) else {}
+    metadata["delivery_outcome_uncertain"] = True
+    message.formatting_json = metadata
     message.status = "deferred"
     message.error_message = reason[:2000]
     message.updated_at = utcnow()
@@ -439,6 +821,7 @@ async def _mark_delivery_uncertain(
                 "reason": message.error_message,
                 "retry_count": message.retry_count,
                 "automatic_replay": False,
+                "delivery_outcome_uncertain": True,
             },
         )
     )
@@ -451,6 +834,7 @@ async def _mark_delivery_uncertain(
         queue_id=message.id,
         chat_id=message.chat_id,
         automatic_replay=False,
+        delivery_outcome_uncertain=True,
     )
 
 

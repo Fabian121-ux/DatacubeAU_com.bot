@@ -16,22 +16,37 @@ echo "========================================="
 # Check environment file
 if [ ! -f "$ENV_FILE" ]; then
     echo "Error: $ENV_FILE not found!"
-    echo "Copy from .env.example or your managed production template and configure it"
+    echo "Copy from .env.production.example and configure every required secret"
     exit 1
 fi
 
-# Load environment
-export $(cat "$ENV_FILE" | grep -v '^#' | xargs)
+# Read only the deployment values needed for preflight. Compose reads the same
+# file with --env-file, and each container receives an explicit allowlist in
+# docker-compose.yml; the complete host file is never mounted into a service.
+get_env_value() {
+    awk -v key="$1" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$ENV_FILE" \
+      | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+WHATSAPP_HOOK_URL="$(get_env_value WHATSAPP_HOOK_URL)"
+WHATSAPP_HOOK_EVENTS="$(get_env_value WHATSAPP_HOOK_EVENTS)"
+DATABASE_URL="$(get_env_value DATABASE_URL)"
+DATABASE_URL_SYNC="$(get_env_value DATABASE_URL_SYNC)"
+DATABASE_URL_RUNTIME="$(get_env_value DATABASE_URL_RUNTIME)"
+ZINA_RUNTIME_DB_PASSWORD="$(get_env_value ZINA_RUNTIME_DB_PASSWORD)"
+
+if [ -z "$DATABASE_URL" ] || [ -z "$DATABASE_URL_SYNC" ] || [ -z "$DATABASE_URL_RUNTIME" ] || [ -z "$ZINA_RUNTIME_DB_PASSWORD" ]; then
+    echo "Error: migration-owner URLs, DATABASE_URL_RUNTIME, and ZINA_RUNTIME_DB_PASSWORD are required."
+    exit 1
+fi
 
 # Deleted-message lifecycle requires the combined event gateway and message.revoked.
-# Refuse a stale production env instead of silently letting Compose override safe defaults.
 EXPECTED_HOOK_URL="http://api:8080/webhooks/waha-events"
-if [ "${WHATSAPP_HOOK_URL:-}" != "$EXPECTED_HOOK_URL" ]; then
+if [ "$WHATSAPP_HOOK_URL" != "$EXPECTED_HOOK_URL" ]; then
     echo "Error: WHATSAPP_HOOK_URL must be $EXPECTED_HOOK_URL"
     echo "Current value: ${WHATSAPP_HOOK_URL:-<unset>}"
     exit 1
 fi
-case ",${WHATSAPP_HOOK_EVENTS:-}," in
+case ",$WHATSAPP_HOOK_EVENTS," in
     *,message.revoked,*) ;;
     *)
         echo "Error: WHATSAPP_HOOK_EVENTS must include message.revoked"
@@ -40,9 +55,13 @@ case ",${WHATSAPP_HOOK_EVENTS:-}," in
         ;;
 esac
 
+compose() {
+    docker compose --env-file "$ENV_FILE" "$@"
+}
+
 echo "Building and starting services..."
-docker compose build
-docker compose up -d
+compose build
+compose up -d
 
 echo "Waiting for services to be healthy..."
 sleep 10

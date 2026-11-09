@@ -2,8 +2,10 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    env_file:
-      - .env.production
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env.production}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -26,11 +28,84 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env.production
+    # Explicit allowlist: the API receives only its runtime DB URL and application
+    # settings. Migration-owner URLs/passwords are never mounted into this container.
     environment:
+      APP_NAME: ${APP_NAME:-Zina AU WhatsApp Bot}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_HOST: ${API_HOST:-0.0.0.0}
+      API_PORT: 8080
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-zina}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env.production}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?Set ADMIN_SESSION_SECRET in .env.production}
+      ADMIN_SESSION_TTL_SECONDS: ${ADMIN_SESSION_TTL_SECONDS:-86400}
+      ADMIN_LOGIN_MAX_FAILURES: ${ADMIN_LOGIN_MAX_FAILURES:-5}
+      ADMIN_LOGIN_LOCKOUT_SECONDS: ${ADMIN_LOGIN_LOCKOUT_SECONDS:-900}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-true}
+      STARTUP_VALIDATE_DB: ${STARTUP_VALIDATE_DB:-true}
+      DATABASE_URL: ${DATABASE_URL_RUNTIME:?Set DATABASE_URL_RUNTIME for the non-owner API role}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
       WAHA_SERVICE_URL: ${WAHA_SERVICE_URL:-http://waha:3000}
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-}
       WAHA_API_KEY: ${WAHA_API_KEY:?Set WAHA_API_KEY in .env.production}
+      WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
+      WAHA_SEND_PATH: ${WAHA_SEND_PATH:-/api/sendText}
+      WAHA_SEND_IMAGE_PATH: ${WAHA_SEND_IMAGE_PATH:-/api/sendImage}
+      WAHA_SESSION_STATUS_PATH: ${WAHA_SESSION_STATUS_PATH:-/api/sessions}
+      WAHA_CHATS_PATH: ${WAHA_CHATS_PATH:-/api/{session}/chats}
+      WAHA_REQUEST_TIMEOUT_SECONDS: ${WAHA_REQUEST_TIMEOUT_SECONDS:-15}
+      WAHA_REQUEST_RETRY_COUNT: ${WAHA_REQUEST_RETRY_COUNT:-2}
+      WAHA_REQUEST_RETRY_BACKOFF_SECONDS: ${WAHA_REQUEST_RETRY_BACKOFF_SECONDS:-1.0}
+      BOT_WA_NUMBER: ${BOT_WA_NUMBER:-}
+      OWNER_WHATSAPP_IDS: ${OWNER_WHATSAPP_IDS:-}
+      BOT_MENTION_ALIASES: ${BOT_MENTION_ALIASES:-datacube bot,datacubeau}
+      ENABLE_AUTO_REPLY: ${ENABLE_AUTO_REPLY:-true}
+      GROUP_DEFAULT_REPLY_MODE: ${GROUP_DEFAULT_REPLY_MODE:-mention_only}
+      GROUP_DEFAULT_COOLDOWN_SECONDS: ${GROUP_DEFAULT_COOLDOWN_SECONDS:-45}
+      DM_DEFAULT_COOLDOWN_SECONDS: ${DM_DEFAULT_COOLDOWN_SECONDS:-6}
+      KB_MAX_CHUNKS: ${KB_MAX_CHUNKS:-3}
+      KB_MIN_SCORE: ${KB_MIN_SCORE:-0.34}
+      KB_REPLY_MAX_CHARS: ${KB_REPLY_MAX_CHARS:-420}
+      RECENT_ITEMS_LIMIT: ${RECENT_ITEMS_LIMIT:-50}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_MODEL_LIGHT: ${OPENROUTER_MODEL_LIGHT:-openai/gpt-4o-mini}
+      OPENROUTER_MODEL_DEEP: ${OPENROUTER_MODEL_DEEP:-openai/gpt-4o}
+      OPENROUTER_TIMEOUT_SECONDS: ${OPENROUTER_TIMEOUT_SECONDS:-25}
+      OPENROUTER_RETRY_COUNT: ${OPENROUTER_RETRY_COUNT:-2}
+      OPENROUTER_MAX_TOKENS: ${OPENROUTER_MAX_TOKENS:-600}
+      SEARXNG_URL: ${SEARXNG_URL:-http://localhost:8081}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY:-}
+      EXCHANGERATE_API_KEY: ${EXCHANGERATE_API_KEY:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      GIPHY_API_KEY: ${GIPHY_API_KEY:-}
+      INTERNET_ENABLED: ${INTERNET_ENABLED:-false}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
+      NEWS_ENABLED: ${NEWS_ENABLED:-false}
+      WEATHER_ENABLED: ${WEATHER_ENABLED:-false}
+      CURRENCY_ENABLED: ${CURRENCY_ENABLED:-false}
+      YOUTUBE_ENABLED: ${YOUTUBE_ENABLED:-false}
+      IMAGE_SEARCH_ENABLED: ${IMAGE_SEARCH_ENABLED:-false}
+      STICKER_SEARCH_ENABLED: ${STICKER_SEARCH_ENABLED:-false}
+      INTERNET_PROVIDER: ${INTERNET_PROVIDER:-searxng}
+      INTERNET_DAILY_LIMIT_PER_USER: ${INTERNET_DAILY_LIMIT_PER_USER:-25}
+      INTERNET_CACHE_TTL_SECONDS: ${INTERNET_CACHE_TTL_SECONDS:-900}
+      INTERNET_SMART_DETECTION_ENABLED: ${INTERNET_SMART_DETECTION_ENABLED:-true}
+      TYPING_DELAY_ENABLED: ${TYPING_DELAY_ENABLED:-true}
+      MIN_TYPING_DELAY_SECONDS: ${MIN_TYPING_DELAY_SECONDS:-1.0}
+      MAX_TYPING_DELAY_SECONDS: ${MAX_TYPING_DELAY_SECONDS:-6.0}
+      SHOW_SOURCE_BADGES: ${SHOW_SOURCE_BADGES:-false}
+      SHOW_CONTEXT_BADGES: ${SHOW_CONTEXT_BADGES:-true}
+      ENABLE_SIGNATURE_STYLE: ${ENABLE_SIGNATURE_STYLE:-true}
+      WHATSAPP_MESSAGE_FORMAT: ${WHATSAPP_MESSAGE_FORMAT:-automatic}
+      LOCAL_TEST_DM_WHATSAPP_ID: ${LOCAL_TEST_DM_WHATSAPP_ID:-234000000000@c.us}
+      LOCAL_TEST_GROUP_CHAT_ID: ${LOCAL_TEST_GROUP_CHAT_ID:-120363000000000000@g.us}
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,25 +131,24 @@ services:
     restart: unless-stopped
     init: true
     shm_size: "512m"
-    env_file:
-      - .env.production
+    # WAHA receives only transport credentials/settings, never database URLs,
+    # admin tokens, or AI/provider secrets.
     environment:
       WHATSAPP_API_KEY: ${WAHA_API_KEY:?Set WAHA_API_KEY in .env.production}
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-}
+      WHATSAPP_FILES_FOLDER: ${WHATSAPP_FILES_FOLDER:-/app/.media}
       WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://api:8080/webhooks/waha-events}
-      # `message` carries normal inbound traffic, `message.any` carries owner-authored
-      # controls, and `message.revoked` drives Zina's durable deleted-message lifecycle.
-      # Existing idempotency collapses duplicate message deliveries; revoke transitions
-      # are separately keyed by the revoked source message ID.
       WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message,message.any,message.revoked}
-      # WAHA supports arbitrary global webhook custom headers. Reuse the existing
-      # WAHA API secret on the internal service-to-service webhook so FastAPI can
-      # authenticate inbound events before trusting caller-controlled `fromMe` data.
       WHATSAPP_HOOK_CUSTOM_HEADERS: X-Api-Key:${WAHA_API_KEY:?Set WAHA_API_KEY in .env.production}
       WHATSAPP_HOOK_RETRIES_POLICY: ${WHATSAPP_HOOK_RETRIES_POLICY:-linear}
       WHATSAPP_HOOK_RETRIES_DELAY_SECONDS: ${WHATSAPP_HOOK_RETRIES_DELAY_SECONDS:-2}
       WHATSAPP_HOOK_RETRIES_ATTEMPTS: ${WHATSAPP_HOOK_RETRIES_ATTEMPTS:-6}
       WAHA_AUTO_START_DELAY_SECONDS: ${WAHA_AUTO_START_DELAY_SECONDS:-5}
       WHATSAPP_RESTART_ALL_SESSIONS: ${WHATSAPP_RESTART_ALL_SESSIONS:-true}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-}
+      WHATSAPP_SWAGGER_USERNAME: ${WHATSAPP_SWAGGER_USERNAME:-}
+      WHATSAPP_SWAGGER_PASSWORD: ${WHATSAPP_SWAGGER_PASSWORD:-}
     depends_on:
       api:
         condition: service_healthy
@@ -126,8 +200,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env.production
+    # Only the migration service receives owner credentials and the one-time
+    # runtime-role bootstrap secret needed to provision the restricted API login.
+    environment:
+      APP_ROOT: /srv/app
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the migration-owner async URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:?Set DATABASE_URL_SYNC to the migration-owner sync URL}
+      DATABASE_URL_RUNTIME: ${DATABASE_URL_RUNTIME:?Set DATABASE_URL_RUNTIME to the restricted API URL}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      ZINA_RUNTIME_DB_PASSWORD: ${ZINA_RUNTIME_DB_PASSWORD:?Set ZINA_RUNTIME_DB_PASSWORD}
+      ZINA_RUNTIME_DB_ROLE: ${ZINA_RUNTIME_DB_ROLE:-zina_runtime}
+      RUN_LOCAL_SEEDS: ${RUN_LOCAL_SEEDS:-false}
+      ALLOW_LOCAL_SEEDS_IN_DEPLOY: ${ALLOW_LOCAL_SEEDS_IN_DEPLOY:-false}
     depends_on:
       postgres:
         condition: service_healthy

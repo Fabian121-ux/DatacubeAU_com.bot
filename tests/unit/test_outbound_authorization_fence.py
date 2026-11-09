@@ -57,7 +57,7 @@ async def test_immediate_router_reply_to_external_contact_fails_closed(monkeypat
     )
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is False
     assert "legacy external immediate" in reason
@@ -75,7 +75,7 @@ async def test_immediate_router_reply_to_exact_owner_chat_remains_authorized(mon
     message.formatting_json = OutboundAuthorizationService.stamp_owner_payload(message)
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is True
     assert reason == "exact configured owner chat with bound payload"
@@ -91,7 +91,7 @@ async def test_owner_chat_row_without_payload_binding_fails_closed(monkeypatch):
     message = _message(chat_id="333@c.us", formatting_json={"delivery_policy": "immediate"})
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is False
     assert "payload is not bound" in reason
@@ -106,7 +106,7 @@ async def test_owner_chat_row_mutated_after_stamp_fails_closed(monkeypatch):
     message.message_text = "mutated after authority"
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is False
     assert "payload is not bound" in reason
@@ -122,7 +122,7 @@ async def test_owner_push_to_exact_owner_chat_remains_authorized(monkeypatch):
     message.formatting_json = OutboundAuthorizationService.stamp_owner_payload(message)
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is True
     assert reason == "exact configured owner chat with bound payload"
@@ -136,7 +136,7 @@ async def test_metadata_less_external_queue_row_fails_closed(monkeypatch):
     message = _message(chat_id="222@c.us", formatting_json=None, message_id=91)
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is False
     assert reason == "external queue row missing explicit durable outbound authority"
@@ -161,7 +161,7 @@ async def test_external_scheduled_action_requires_exact_durable_binding(monkeypa
 
     monkeypatch.setattr(background_workers, "_is_exact_scheduled_action_binding", exact_binding)
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(object(), authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(object(), authority, message)
 
     assert allowed is True
     assert reason == "exact durable scheduled action binding"
@@ -185,7 +185,7 @@ async def test_external_scheduled_action_mismatch_cannot_bypass_fence(monkeypatc
 
     monkeypatch.setattr(background_workers, "_is_exact_scheduled_action_binding", no_exact_binding)
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(object(), authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(object(), authority, message)
 
     assert allowed is False
     assert reason == "external queue row missing explicit durable outbound authority"
@@ -251,7 +251,7 @@ async def test_unknown_router_policy_fails_closed(monkeypatch):
     )
     authority = _Authority()
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is False
     assert "unknown router delivery policy" in reason
@@ -275,7 +275,7 @@ async def test_approval_required_router_reply_delegates_to_exact_durable_authori
         )
     )
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is True
     assert reason == "exact active owner approval"
@@ -292,9 +292,36 @@ async def test_approval_required_router_reply_without_authority_fails_closed(mon
     )
     authority = _Authority(AuthorizationDecision(False, "none", "content hash mismatch"))
 
-    allowed, reason, approval_id = await background_workers._delivery_authorized(None, authority, message)
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(None, authority, message)
 
     assert allowed is False
     assert reason == "content hash mismatch"
     assert approval_id is None
     assert authority.calls == 1
+
+@pytest.mark.asyncio
+async def test_contact_policy_authority_preserves_exact_policy_id(monkeypatch):
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    message = _message(
+        chat_id="222@c.us",
+        formatting_json={"delivery_policy": "authorized_external"},
+    )
+    authority = _Authority(
+        AuthorizationDecision(
+            True,
+            "contact_policy",
+            "exact active contact policy",
+            policy_id=41,
+        )
+    )
+
+    allowed, reason, approval_id, authority_type, policy_id = await background_workers._delivery_authorized(
+        None, authority, message
+    )
+
+    assert allowed is True
+    assert reason == "exact active contact policy"
+    assert approval_id is None
+    assert authority_type == "contact_policy"
+    assert policy_id == 41
+
