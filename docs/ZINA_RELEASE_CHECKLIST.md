@@ -1,3 +1,53 @@
+# Fresh release-gate verification — 2026-11-09 05:44 WAT
+
+This snapshot supersedes the 2026-11-08 23:31 WAT overlay below. It records current evidence only; it does not authorize real WhatsApp testing.
+
+## Main and CI baseline
+
+- Main remains `5aadd725ed9da08a5eb84eb42b64f0f45f231c79`; latest main commit is 2026-09-08 11:09:59 UTC.
+- Latest main Tests run is [34219252390](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/34219252390), green on that exact SHA. Main's workflow still applies 001–033 without the sequence preflight, integrated schema audit, or DB-leakage audit.
+- The checked-in main roadmap/checklist were last verified 2026-09-08 against `0034587a90bb8d5a79bda41e85091cfea33b969d`. Treat those historical checkmarks as unverified until the gates below are rerun on an integrated candidate.
+- No open PR has an `APPROVED` review submission. All ten open PRs remain open; review submissions are COMMENTED only.
+
+## Release gates — current result
+
+| Gate | Current evidence | Release status |
+|---|---|---|
+| Exact-head P0 consent/dispatch suite | #60 head `da092894`; Tests run [42562415248](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42562415248) is still in progress; migration step completed, pytest still running | **NOT VERIFIED** |
+| Contiguous SQL migration chain | #61 run [42530270167](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530270167) green on 001–033; proposed feature order is 034–040 | **NOT INTEGRATED** |
+| Fresh install 001–040 | No current exact candidate has applied the complete ordered chain | **NOT VERIFIED** |
+| Installed DB upgrade 033→040 | No current exact candidate has completed the integrated upgrade | **NOT VERIFIED** |
+| Second-run no-op/checksum | Not demonstrated for the combined 001–040 candidate | **NOT VERIFIED** |
+| ORM schema audit + post-test DB leakage | #62 run [42530285588](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/42530285588) passed on 001–033; #55 run [41713366314](https://github.com/Fabian121-ux/DatacubeAU_com.bot/actions/runs/41713366314) passed on 001–033 | **BRANCH-LOCAL ONLY** |
+| Restricted runtime DB role + deployment allowlists | #60 has the restricted-role work; #62's current Compose still mounts `.env.production` into postgres/API/WAHA/migrate | **INTEGRATION BLOCKED** |
+| P0 STOP/consent/quiet-hours/policy-expiry fence | #60 source now has a single DB-clock final reservation; exact-head CI is pending and 23 inline threads remain unresolved | **NOT VERIFIED** |
+| Exact view-once source lock + success-only marker | Hooks are present in #60's current worker; #48 separately carries migration 034 and artifact observation wiring | **CUMULATIVE TEST REQUIRED** |
+| Independent review | Zero APPROVED reviews across the ten open PRs | **NOT SATISFIED** |
+| Mobile dashboard CRUD / full observability | #63 improves router-decision audit persistence and internet-used visibility; broader management and observability work remains | **INCOMPLETE** |
+| Controlled staged test plan | No current integrated release candidate or validated staged plan | **NOT READY** |
+
+## Migration and deployment order
+
+The active feature branches now allocate unique numbers: **#48 → 034, #50 → 035, #49 → 036–037, #60 → 038–040**. Main remains at 033. The old duplicate-034 collision is resolved in branch allocation only; the combined chain and installed upgrade are not yet proven.
+
+PR #61 adds the contiguous-numbering preflight. PR #62 adds seed/target/schema/leakage protections, but its current Compose still passes broad `.env.production` to all four services (postgres, api, waha, migrate). That would undo #60's restricted API runtime-role/service-environment boundary if integrated unchanged. The integration candidate must preserve both sets of protections, plus #55's leakage gate and #57's local-seed opt-in.
+
+## P0 decisions still owned by Fabian
+
+1. **STOP linearization:** a STOP visible in the final reservation snapshot blocks that attempt. A STOP committed after the snapshot is treated as applying to subsequent attempts; the already-reserved one attempt may proceed. Confirm that this one-attempt boundary is acceptable, or require a different transport reservation protocol.
+2. **Consent evidence:** decide whether an OWNER attestation plus a bounded evidence reference is sufficient, or require verifiable contact-originated evidence. Do not silently invent the evidence policy.
+
+#60 remains draft/open with 23 unresolved threads and no independent approval. The latest exact-head Tests run is not yet complete. No merge, deployment, production DB mutation, or live WAHA operation is authorized by these checks.
+
+## Next controlled-readiness step
+
+After #60's exact-head run finishes, independently review its final reservation and adversarial PostgreSQL/mock-WAHA tests. Then validate one integrated disposable candidate with fresh 001–040, installed 033→040 upgrade, second-run no-op/checksum, schema audit, zero DB leakage, runtime-role privilege checks, and the combined #48/#60 view-once + consent worker matrix. Keep every PR open until independent approvals and all blocking threads are resolved.
+
+**Controlled-test readiness: NOT TEST READY. Private-media retention: OFF. REAL WAHA ACTIONS: NONE.**
+
+
+---
+
 # Fresh release verification — 2026-11-08 23:31 WAT
 
 This snapshot supersedes the 22:22 WAT overlay below. It records current evidence only; it does not certify controlled testing.
