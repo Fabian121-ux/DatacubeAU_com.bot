@@ -27,6 +27,14 @@ class ConsentDecision:
     contact_id: int | None = None
     consent_id: int | None = None
 
+@dataclass(frozen=True, slots=True)
+class DispatchReservationDecision:
+    allowed: bool
+    reason: str
+    checked_at: datetime | None = None
+    consent_id: int | None = None
+    quiet_hours_json: object | None = None
+
 
 class ContactMessagingConsentService:
     """Single authority for exact-contact/chat consent and opt-out serialization.
@@ -481,6 +489,250 @@ class ContactMessagingConsentService:
             await self.session.execute(text("SELECT clock_timestamp()"))
         ).scalar_one()
         return self._consent_decision_for_row(row, contact_id, database_now)
+
+    async def reserve_final_dispatch_attempt(
+        self,
+        contact_id: int | None,
+        exact_chat_id: str,
+        *,
+        authority_type: str | None,
+        policy_id: int | None,
+    ) -> DispatchReservationDecision:
+        """Take the final external-contact dispatch snapshot using one DB clock.
+
+        The worker calls this only after it holds the queue, exact-chat mapping,
+        Contact, consent, policy, ScheduledAction/view-once source, safety-reservation,
+        and any one-use approval locks. No authorization query may follow this
+        statement before the single WAHA attempt. Ingress commits an opt-out receipt
+        before waiting on those locks, so the receipt predicate below is the
+        linearization point: a STOP visible in this snapshot denies this attempt;
+        a later STOP vetoes subsequent attempts.
+        """
+        if (
+            not isinstance(contact_id, int)
+            or contact_id <= 0
+            or not isinstance(exact_chat_id, str)
+            or not self._is_direct_chat(exact_chat_id)
+        ):
+            return DispatchReservationDecision(
+                False,
+                "exact contact/chat dispatch identity is invalid",
+            )
+        if authority_type not in {"contact_policy", "owner_approval", "scheduled_action"}:
+            return DispatchReservationDecision(
+                False,
+                "external dispatch authority type is invalid",
+            )
+        if authority_type == "contact_policy" and (
+            not isinstance(policy_id, int) or policy_id <= 0
+        ):
+            return DispatchReservationDecision(
+                False,
+                "contact automation policy ID is missing at final dispatch reservation",
+            )
+
+        result = await self.session.execute(
+            text(
+                """
+                WITH dispatch_clock AS MATERIALIZED (
+                    SELECT clock_timestamp() AS checked_at
+                ),
+                current_contact AS MATERIALIZED (
+                    SELECT
+                        c.id,
+                        c.whatsapp_id,
+                        c.chat_id,
+                        c.waha_contact_id,
+                        c.waha_participant_id,
+                        dc.checked_at
+                    FROM contacts AS c
+                    CROSS JOIN dispatch_clock AS dc
+                    WHERE c.id = :contact_id
+                ),
+                current_consent AS MATERIALIZED (
+                    SELECT
+                        consent.id,
+                        consent.status,
+                        consent.provenance,
+                        consent.evidence_ref,
+                        consent.granted_at,
+                        consent.expires_at
+                    FROM contact_messaging_consents AS consent
+                    JOIN current_contact AS contact
+                      ON contact.id = consent.contact_id
+                    WHERE consent.exact_chat_id = :exact_chat_id
+                ),
+                active_policy AS MATERIALIZED (
+                    SELECT policy.id, policy.quiet_hours_json
+                    FROM contact_automation_policies AS policy
+                    JOIN current_contact AS contact
+                      ON contact.id = policy.contact_id
+                    WHERE policy.exact_chat_id = :exact_chat_id
+                      AND policy.enabled IS TRUE
+                      AND policy.disabled_at IS NULL
+                      AND (
+                          policy.expires_at IS NULL
+                          OR policy.expires_at > contact.checked_at
+                      )
+                    ORDER BY policy.id DESC
+                    LIMIT 1
+                )
+                SELECT
+                    dispatch_clock.checked_at,
+                    (contact.id IS NOT NULL) AS contact_exists,
+                    (
+                        SELECT COUNT(*)
+                        FROM contacts AS mapped
+                        WHERE mapped.whatsapp_id = :exact_chat_id
+                           OR mapped.chat_id = :exact_chat_id
+                    ) AS mapping_count,
+                    COALESCE(
+                        contact.whatsapp_id = :exact_chat_id
+                        OR contact.chat_id = :exact_chat_id,
+                        FALSE
+                    ) AS mapping_matches,
+                    EXISTS (
+                        SELECT 1
+                        FROM contact_messaging_consent_events AS event
+                        WHERE event.event_type = 'opted_out'
+                          AND (
+                              event.contact_id = contact.id
+                              OR event.exact_chat_id IN (
+                                  contact.whatsapp_id,
+                                  contact.chat_id,
+                                  contact.waha_contact_id,
+                                  contact.waha_participant_id
+                              )
+                          )
+                    ) AS terminal_opt_out,
+                    EXISTS (
+                        SELECT 1
+                        FROM inbound_webhook_receipts AS receipt
+                        WHERE receipt.opt_out_intent IS TRUE
+                          AND receipt.status = 'processing'
+                          AND (
+                              receipt.chat_id IN (
+                                  contact.whatsapp_id,
+                                  contact.chat_id
+                              )
+                              OR receipt.sender_identity_ids ?| ARRAY_REMOVE(
+                                  ARRAY[
+                                      contact.whatsapp_id::text,
+                                      contact.chat_id::text,
+                                      contact.waha_contact_id::text,
+                                      contact.waha_participant_id::text
+                                  ],
+                                  NULL::text
+                              )
+                              OR receipt.sender_contact_ids ? CAST(contact.id AS text)
+                          )
+                    ) AS pending_opt_out,
+                    COALESCE(
+                        (
+                            SELECT
+                                consent.status = 'consented'
+                                AND consent.provenance IN ('owner_attested', 'owner_reconsent')
+                                AND NULLIF(BTRIM(consent.evidence_ref), '') IS NOT NULL
+                                AND consent.granted_at IS NOT NULL
+                                AND consent.expires_at > dispatch_clock.checked_at
+                            FROM current_consent AS consent
+                        ),
+                        FALSE
+                    ) AS consent_current,
+                    COALESCE(
+                        (
+                            SELECT CASE
+                                WHEN consent.status = 'opted_out'
+                                    THEN 'contact has opted out'
+                                WHEN consent.status = 'revoked'
+                                    THEN 'contact consent has been revoked'
+                                WHEN consent.status <> 'consented'
+                                    THEN 'contact consent is unknown'
+                                WHEN consent.provenance IS NULL
+                                  OR consent.provenance NOT IN ('owner_attested', 'owner_reconsent')
+                                  OR NULLIF(BTRIM(consent.evidence_ref), '') IS NULL
+                                  OR consent.granted_at IS NULL
+                                  OR consent.expires_at IS NULL
+                                    THEN 'contact consent lacks required provenance or expiry'
+                                WHEN consent.expires_at <= dispatch_clock.checked_at
+                                    THEN 'contact consent has expired'
+                                ELSE NULL
+                            END
+                            FROM current_consent AS consent
+                        ),
+                        'contact consent is unknown'
+                    ) AS consent_reason,
+                    (SELECT id FROM current_consent) AS consent_id,
+                    CASE
+                        WHEN :authority_type = 'contact_policy'
+                            THEN EXISTS (
+                                SELECT 1
+                                FROM active_policy
+                                WHERE id = :policy_id
+                            )
+                        WHEN :authority_type IN ('owner_approval', 'scheduled_action')
+                            THEN TRUE
+                        ELSE FALSE
+                    END AS authority_current,
+                    (SELECT quiet_hours_json FROM active_policy LIMIT 1) AS quiet_hours_json
+                FROM dispatch_clock
+                LEFT JOIN current_contact AS contact ON TRUE
+                """
+            ),
+            {
+                "contact_id": contact_id,
+                "exact_chat_id": exact_chat_id,
+                "authority_type": authority_type,
+                "policy_id": policy_id,
+            },
+        )
+        row = result.mappings().one()
+        checked_at = row["checked_at"]
+        if not row["contact_exists"]:
+            return DispatchReservationDecision(
+                False,
+                "durable Contact disappeared before final dispatch reservation",
+                checked_at=checked_at,
+            )
+        if int(row["mapping_count"] or 0) != 1 or not row["mapping_matches"]:
+            return DispatchReservationDecision(
+                False,
+                "current contact/chat mapping does not match recipient",
+                checked_at=checked_at,
+            )
+        if row["terminal_opt_out"]:
+            return DispatchReservationDecision(
+                False,
+                "contact has a terminal opt-out",
+                checked_at=checked_at,
+            )
+        if row["pending_opt_out"]:
+            return DispatchReservationDecision(
+                False,
+                "pending inbound opt-out intent; external delivery denied",
+                checked_at=checked_at,
+            )
+        if not row["consent_current"]:
+            return DispatchReservationDecision(
+                False,
+                str(row["consent_reason"]),
+                checked_at=checked_at,
+                consent_id=int(row["consent_id"]) if row["consent_id"] is not None else None,
+            )
+        if not row["authority_current"]:
+            return DispatchReservationDecision(
+                False,
+                "contact automation policy expired or changed before dispatch reservation",
+                checked_at=checked_at,
+                consent_id=int(row["consent_id"]) if row["consent_id"] is not None else None,
+            )
+        return DispatchReservationDecision(
+            True,
+            "final external dispatch reservation acquired",
+            checked_at=checked_at,
+            consent_id=int(row["consent_id"]) if row["consent_id"] is not None else None,
+            quiet_hours_json=row["quiet_hours_json"],
+        )
 
     async def _resolve_owner_chat(self, exact_chat_id: str) -> Contact:
         if not self._is_direct_chat(exact_chat_id):

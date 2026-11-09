@@ -70,6 +70,36 @@ class _RecordingClient:
         raise AssertionError("formatted text regression must use the text send path")
 
 
+async def _insert_contact_policy(
+    db_session,
+    contact_id: int,
+    exact_chat_id: str,
+    *,
+    expires_at=None,
+) -> int:
+    result = await db_session.execute(
+        text(
+            """
+            INSERT INTO contact_automation_policies (
+                contact_id, exact_chat_id, enabled, allowed_categories,
+                prohibited_categories, approval_required_categories,
+                quiet_hours_json, expires_at, created_by
+            ) VALUES (
+                :contact_id, :exact_chat_id, TRUE, '["normal_reply"]'::jsonb,
+                '[]'::jsonb, '[]'::jsonb, NULL, :expires_at, 'OWNER'
+            )
+            RETURNING id
+            """
+        ),
+        {
+            "contact_id": contact_id,
+            "exact_chat_id": exact_chat_id,
+            "expires_at": expires_at,
+        },
+    )
+    return int(result.scalar_one())
+
+
 @pytest.mark.asyncio
 async def test_stale_sending_row_is_quarantined_without_waha_replay(db_session, monkeypatch):
     now = utcnow()
@@ -157,6 +187,9 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
         evidence_ref="owner-attested-2026-10-24",
         owner_identity="OWNER",
     )
+    policy_id = await _insert_contact_policy(
+        db_session, int(test_contact.id), "222@c.us"
+    )
     row = OutboundMessage(
         chat_id="222@c.us",
         message_text=text,
@@ -179,7 +212,7 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
     async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "exact active contact policy", policy_id=41)
+        return context, AuthorizationDecision(True, "contact_policy", "exact active contact policy", policy_id=policy_id)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -203,9 +236,9 @@ async def test_authorized_external_worker_preserves_whatsapp_formatting_exactly(
     ("authority_type", "approval_id", "consent_state"),
     [
         ("contact_policy", None, "unknown"),
-        ("one_use_approval", 123, "unknown"),
+        ("owner_approval", 123, "unknown"),
         ("contact_policy", None, "opted_out"),
-        ("one_use_approval", 123, "opted_out"),
+        ("owner_approval", 123, "opted_out"),
     ],
 )
 @pytest.mark.asyncio
@@ -284,6 +317,98 @@ async def test_external_contact_consent_is_required_even_when_authority_allows(
     assert "contact consent denied" in (row.error_message or "")
     expected_consent_reason = "unknown" if consent_state == "unknown" else "opted out"
     assert expected_consent_reason in (row.error_message or "")
+
+
+
+@pytest.mark.asyncio
+async def test_contact_policy_expiry_after_final_authority_recheck_blocks_before_waha(
+    db_session, test_contact, monkeypatch
+):
+    """A policy that expires after the authority recheck cannot use stale authority."""
+    now = utcnow()
+    chat_id = "222@c.us"
+    test_contact.whatsapp_id = chat_id
+    test_contact.chat_id = chat_id
+    await db_session.flush()
+
+    source = Message(
+        contact_id=test_contact.id,
+        chat_id=chat_id,
+        chat_type="dm",
+        direction="inbound",
+        message_text="original inbound",
+        normalized_text="original inbound",
+        message_type="text",
+    )
+    db_session.add(source)
+    await db_session.flush()
+    await ContactMessagingConsentService(db_session).grant_for_chat(
+        exact_chat_id=chat_id,
+        evidence_ref="owner-attested-policy-expiry-race",
+        owner_identity="OWNER",
+    )
+    policy_id = await _insert_contact_policy(
+        db_session,
+        int(test_contact.id),
+        chat_id,
+        expires_at=now + timedelta(minutes=5),
+    )
+
+    reply_text = "policy must still be active at the final reservation"
+    queue = OutboundMessage(
+        chat_id=chat_id,
+        message_text=reply_text,
+        formatting_json={
+            "delivery_policy": "authorized_external",
+            "inbound_message_id": source.id,
+            "contact_id": test_contact.id,
+            "content_sha256": OutboundAuthorizationService.content_hash(reply_text),
+            "response_category": "normal_reply",
+        },
+        status="pending",
+        retry_count=0,
+        max_retries=3,
+        next_attempt_at=now - timedelta(seconds=1),
+        updated_at=now - timedelta(seconds=1),
+    )
+    db_session.add(queue)
+    await db_session.commit()
+
+    async def _safe(self, message, *, now=None, contact_id=None):
+        return OutboundSafetyDecision(True, "within bounded outbound safety limits")
+
+    async def expire_policy_after_final_authority_recheck(session, message):
+        # Runs after final _delivery_authorized() and the policy-row lock.
+        # This simulates expiry while later source/approval/consent fences wait.
+        await session.execute(
+            text(
+                """
+                UPDATE contact_automation_policies
+                SET expires_at = clock_timestamp() - interval '1 second'
+                WHERE id = :policy_id
+                """
+            ),
+            {"policy_id": policy_id},
+        )
+        return True, ""
+
+    monkeypatch.setattr(background_workers, "SessionLocal", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(background_workers.settings, "owner_whatsapp_ids", "111@c.us")
+    monkeypatch.setattr(background_workers.OutboundSafetyLimitService, "authorize", _safe)
+    monkeypatch.setattr(
+        background_workers,
+        "_lock_owner_view_once_source",
+        expire_policy_after_final_authority_recheck,
+    )
+    client = _RecordingClient()
+
+    processed = await background_workers._deliver_due_outbound_messages(client)
+
+    await db_session.refresh(queue)
+    assert processed == 1
+    assert client.calls == []
+    assert queue.status == "deferred"
+    assert "contact automation policy expired or changed" in (queue.error_message or "")
 
 
 @pytest.mark.asyncio
@@ -459,13 +584,16 @@ async def test_contact_remap_after_queue_creation_blocks_external_dispatch(
         evidence_ref=f"owner-remap-{source_kind}",
         owner_identity="OWNER",
     )
+    policy_id = await _insert_contact_policy(
+        db_session, int(test_contact.id), old_chat
+    )
     # The Contact is then remapped before the final worker fence executes.
     test_contact.whatsapp_id = new_chat
     test_contact.chat_id = new_chat
     await db_session.commit()
 
     async def _authorized(session, authority, message, *, lock_chat_mapping=False):
-        return True, "test authority permits this row", None, "contact_policy", 41
+        return True, "test authority permits this row", None, "contact_policy", policy_id
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -509,6 +637,9 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
         evidence_ref="owner-attested-stop-race",
         owner_identity="OWNER",
     )
+    policy_id = await _insert_contact_policy(
+        db_session, int(test_contact.id), "222@c.us"
+    )
     reply_text = "previously consented reply"
     queue = OutboundMessage(
         chat_id="222@c.us",
@@ -538,7 +669,7 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
     async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=41)
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=policy_id)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -548,16 +679,24 @@ async def test_claimed_stop_vetoes_send_before_routing_can_apply_consent(
 
     at_final_veto = asyncio.Event()
     resume_dispatch = asyncio.Event()
-    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent_for_contact
+    original_reservation = ContactMessagingConsentService.reserve_final_dispatch_attempt
 
-    async def pause_at_final_veto(service, locked_contact_id):
+    async def pause_at_final_veto(
+        service, locked_contact_id, exact_chat_id, *, authority_type, policy_id
+    ):
         at_final_veto.set()
         await resume_dispatch.wait()
-        return await original_pending_check(service, locked_contact_id)
+        return await original_reservation(
+            service,
+            locked_contact_id,
+            exact_chat_id,
+            authority_type=authority_type,
+            policy_id=policy_id,
+        )
 
     monkeypatch.setattr(
         ContactMessagingConsentService,
-        "has_pending_opt_out_intent_for_contact",
+        "reserve_final_dispatch_attempt",
         pause_at_final_veto,
     )
     client = _RecordingClient()
@@ -714,6 +853,9 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
         evidence_ref="owner-attested-alias-stop-race",
         owner_identity="OWNER",
     )
+    policy_id = await _insert_contact_policy(
+        db_session, int(test_contact.id), target_chat_id
+    )
     reply_text = "must be vetoed by STOP on the mapped alias"
     queue = OutboundMessage(
         chat_id=target_chat_id,
@@ -743,7 +885,7 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
     async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=41)
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=policy_id)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -753,16 +895,24 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
 
     at_final_veto = asyncio.Event()
     resume_dispatch = asyncio.Event()
-    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent_for_contact
+    original_reservation = ContactMessagingConsentService.reserve_final_dispatch_attempt
 
-    async def pause_at_final_veto(service, checked_contact_id):
+    async def pause_at_final_veto(
+        service, checked_contact_id, exact_chat_id, *, authority_type, policy_id
+    ):
         at_final_veto.set()
         await resume_dispatch.wait()
-        return await original_pending_check(service, checked_contact_id)
+        return await original_reservation(
+            service,
+            checked_contact_id,
+            exact_chat_id,
+            authority_type=authority_type,
+            policy_id=policy_id,
+        )
 
     monkeypatch.setattr(
         ContactMessagingConsentService,
-        "has_pending_opt_out_intent_for_contact",
+        "reserve_final_dispatch_attempt",
         pause_at_final_veto,
     )
     client = _RecordingClient()
@@ -854,7 +1004,7 @@ async def test_pending_stop_on_mapped_alias_blocks_queued_other_alias(
 async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_followups(
     db_session, test_contact, monkeypatch, uncertain
 ):
-    """A STOP after the final veto read cannot cancel the reserved attempt, but vetoes later rows."""
+    """A STOP after the DB-time reservation cannot cancel this attempt, but vetoes later rows."""
     now = utcnow()
     chat_id = "222@c.us"
     test_contact.whatsapp_id = chat_id
@@ -876,6 +1026,9 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
         exact_chat_id=chat_id,
         evidence_ref="owner-attested-reserved-send",
         owner_identity="OWNER",
+    )
+    policy_id = await _insert_contact_policy(
+        db_session, int(test_contact.id), chat_id
     )
 
     reply_text = "one attempt already reserved"
@@ -907,7 +1060,7 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
     async def _authorized(self, message, *, lock_chat_mapping=False):
         context = self.context_from_queue_message(message)
         assert context is not None
-        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=41)
+        return context, AuthorizationDecision(True, "contact_policy", "current contact policy", policy_id=policy_id)
 
     async def _safe(self, message, *, now=None, contact_id=None):
         return OutboundSafetyDecision(True, "within bounded outbound safety limits")
@@ -917,18 +1070,26 @@ async def test_stop_after_dispatch_reservation_allows_one_attempt_and_blocks_fol
 
     reservation_reached = asyncio.Event()
     release_reserved_attempt = asyncio.Event()
-    original_pending_check = ContactMessagingConsentService.has_pending_opt_out_intent_for_contact
+    original_reservation = ContactMessagingConsentService.reserve_final_dispatch_attempt
 
-    async def pause_after_final_veto_read(service, locked_contact_id):
-        pending = await original_pending_check(service, locked_contact_id)
-        assert pending is False, "the reservation boundary must be reached with no prior STOP"
+    async def pause_after_final_veto_read(
+        service, locked_contact_id, exact_chat_id, *, authority_type, policy_id
+    ):
+        decision = await original_reservation(
+            service,
+            locked_contact_id,
+            exact_chat_id,
+            authority_type=authority_type,
+            policy_id=policy_id,
+        )
+        assert decision.allowed is True, "the reservation boundary must be reached with no prior STOP"
         reservation_reached.set()
         await release_reserved_attempt.wait()
-        return pending
+        return decision
 
     monkeypatch.setattr(
         ContactMessagingConsentService,
-        "has_pending_opt_out_intent_for_contact",
+        "reserve_final_dispatch_attempt",
         pause_after_final_veto_read,
     )
     client = _UncertainClient() if uncertain else _RecordingClient()
@@ -1178,7 +1339,7 @@ async def test_uncertain_approved_external_send_cannot_be_requeued_or_replayed(
 async def test_stop_committed_during_one_use_approval_reservation_blocks_before_waha(
     db_session, test_contact, monkeypatch
 ):
-    """A STOP committed while approval reservation waits must be seen by the final veto."""
+    """A STOP committed while approval reservation waits must be seen by final reservation."""
     now = utcnow()
     chat_id = "222@c.us"
     test_contact.whatsapp_id = chat_id

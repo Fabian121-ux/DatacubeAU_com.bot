@@ -268,10 +268,9 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
             # Acquire the exact-chat mapping/Contact locks before the remaining
-            # final fences, but defer the pending-receipt read until the last
-            # pre-transport boundary. Ingress commits a STOP receipt before it waits
-            # on these locks, so the final read below can observe a STOP that arrives
-            # while policy, approval, or consent checks are still waiting.
+            # final fences. Ingress commits a STOP receipt before it waits on these
+            # locks, so the final database-time reservation below sees a STOP that
+            # arrives while policy, approval, source, or consent checks are waiting.
             if not _is_owner_chat_id(message.chat_id):
                 await ContactMessagingConsentService.lock_opt_out_dispatch_boundary(
                     session, message.chat_id
@@ -341,9 +340,10 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                 continue
 
             # Reserve an exact one-use OWNER approval only after recipient, content,
-            # safety, delivery-window, final authority, and source checks. The final
-            # consent and pending-STOP vetoes still run after this reservation; if
-            # either denies, the approval remains consumed and cannot be replayed.
+            # safety, delivery-window, final authority, and source checks. The single
+            # database-time dispatch reservation below then rechecks consent, policy
+            # expiry, quiet hours, and STOP state; a denied attempt never replays the
+            # consumed approval.
             approval_id = final_approval_id
             if approval_id is not None:
                 consumed = await OutboundAuthorizationService(session).consume_approval(
@@ -359,18 +359,21 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await session.commit()
                     continue
 
-            # This is the last time-bounded external-contact authorization check.
-            # It deliberately follows the final delivery-window/authority checks and
-            # the potentially blocking one-use approval reservation. No further
-            # authorization query may run before the single transport attempt.
+            # This one PostgreSQL statement is the final external-contact fence. It
+            # rechecks mapping, consent expiry/provenance, terminal and pending STOP,
+            # the exact contact-policy ID/expiry, and quiet-hours time against one
+            # materialized database clock after every potentially blocking lock.
+            dispatch_reservation = None
             if not _is_owner_chat_id(message.chat_id):
-                final_consent = await ContactMessagingConsentService(
+                dispatch_reservation = await ContactMessagingConsentService(
                     session
-                ).revalidate_locked_outbound_queue_message_consent(
+                ).reserve_final_dispatch_attempt(
                     consent.contact_id,
                     message.chat_id,
+                    authority_type=final_authority_type,
+                    policy_id=final_policy_id,
                 )
-                if not final_consent.allowed:
+                if not dispatch_reservation.allowed:
                     if approval_id is not None:
                         session.add(
                             AuditLog(
@@ -381,7 +384,12 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                                     "chat_id": message.chat_id,
                                     "approval_id": approval_id,
                                     "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
-                                    "reason": final_consent.reason,
+                                    "reason": dispatch_reservation.reason,
+                                    "checked_at": (
+                                        dispatch_reservation.checked_at.isoformat()
+                                        if dispatch_reservation.checked_at is not None
+                                        else None
+                                    ),
                                     "delivery_attempt_reserved": False,
                                 },
                             )
@@ -389,21 +397,28 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(
                         session,
                         message,
-                        reason=f"final contact consent denied: {final_consent.reason}",
+                        reason=(
+                            "final contact dispatch reservation denied: "
+                            f"{dispatch_reservation.reason}"
+                        ),
                     )
                     await session.commit()
                     continue
 
-            # This is the final pending-STOP veto, adjacent to the one transport
-            # attempt. The receipt claim commits before ingress waits on the mapping
-            # lock held above, so this read observes STOPs committed during any of the
-            # later policy/approval/consent fences. Once it completes, one attempt is
-            # reserved; a later STOP applies to subsequent attempts.
-            if not _is_owner_chat_id(message.chat_id):
-                pending_opt_out = await ContactMessagingConsentService(
-                    session
-                ).has_pending_opt_out_intent_for_contact(consent.contact_id)
-                if pending_opt_out:
+                quiet_active = (
+                    OutboundAuthorizationService._quiet_hours_active(
+                        dispatch_reservation.quiet_hours_json,
+                        dispatch_reservation.checked_at,
+                    )
+                    if dispatch_reservation.checked_at is not None
+                    else None
+                )
+                if quiet_active is None or quiet_active:
+                    quiet_reason = (
+                        "contact policy quiet-hours configuration invalid"
+                        if quiet_active is None
+                        else "contact policy quiet hours active"
+                    )
                     if approval_id is not None:
                         session.add(
                             AuditLog(
@@ -414,7 +429,12 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                                     "chat_id": message.chat_id,
                                     "approval_id": approval_id,
                                     "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
-                                    "reason": "pending inbound opt-out intent; external delivery denied",
+                                    "reason": quiet_reason,
+                                    "checked_at": (
+                                        dispatch_reservation.checked_at.isoformat()
+                                        if dispatch_reservation.checked_at is not None
+                                        else None
+                                    ),
                                     "delivery_attempt_reserved": False,
                                 },
                             )
@@ -422,10 +442,32 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                     await _mark_delivery_blocked(
                         session,
                         message,
-                        reason="pending inbound opt-out intent; external delivery denied",
+                        reason=f"final contact delivery window denied: {quiet_reason}",
                     )
                     await session.commit()
                     continue
+
+                session.add(
+                    AuditLog(
+                        action="external_dispatch_reserved",
+                        entity_type="outbound_queue",
+                        entity_id=str(message.id),
+                        details_json={
+                            "chat_id": message.chat_id,
+                            "authority_type": final_authority_type,
+                            "policy_id": final_policy_id,
+                            "approval_id": approval_id,
+                            "consent_id": dispatch_reservation.consent_id,
+                            "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                            "checked_at": (
+                                dispatch_reservation.checked_at.isoformat()
+                                if dispatch_reservation.checked_at is not None
+                                else None
+                            ),
+                            "delivery_attempt_reserved": True,
+                        },
+                    )
+                )
 
             if approval_id is not None:
                 session.add(
@@ -437,6 +479,12 @@ async def _deliver_due_outbound_messages(client: WAHAClient) -> int:
                             "chat_id": message.chat_id,
                             "approval_id": approval_id,
                             "content_sha256": OutboundAuthorizationService.content_hash_for_message(message),
+                            "dispatch_reserved_at": (
+                                dispatch_reservation.checked_at.isoformat()
+                                if dispatch_reservation is not None
+                                and dispatch_reservation.checked_at is not None
+                                else None
+                            ),
                             "delivery_attempt_reserved": True,
                         },
                     )
